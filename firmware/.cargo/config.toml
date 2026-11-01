@@ -1,5 +1,6 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-rs run --chip nRF54L15"
+# --verify: the TAG has been seen to mis-program silently over the DK's DEBUG OUT link.
+runner = "probe-rs run --chip nRF54L15 --verify"
 
 [build]
 target = "thumbv8m.main-none-eabihf"

@@ -7,12 +7,17 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **Upstream PRs** from the forks: bt-hci step parsing, nrf-sdc CS bindings, TrouBLE CS
       feature, `iso` import fix and connection-parameter-update identifier fix (drop the blank-line
       commit first).
+- [ ] **nrf-sdc fork docs:** say on `cs_count` / `cs_cfg` that they must follow the `support_*`
+      calls and `cs_antenna_switch_callback` (the SDC ignores or rejects them otherwise).
 - [ ] **nrf-sdc optional follow-up:**
       `LeCsTest` binding (variable-length tail, hand-written like `LeSetExtAdvData`).
 - [ ] **bt-hci follow-up (optional):** rename `reserved` → `cs_enhancements` in create-config and
       test params (API change, so a separate PR).
-- [ ] **First boot on a TAG:** check the boot log (SDC memory, CS capabilities); verify DC/DC,
-      crystals and the antenna-switch default (DEF-2, DEF-3, DEF-4).
+- [ ] **TAG programming link** (DEF-16): find why first writes fail verification. Try 3.3 V from
+      the DK instead of the coin cell, a reseated or proper SWD adapter, and the standalone J-Link
+      Pro (which doesn't connect to the TAG yet either).
+- [ ] **After first boot:** check the antenna-switch default and callback, and boot a DK (DEF-2,
+      DEF-3).
 - [ ] **Two-TAG CS ranging, first run:** flash a reflector and an initiator (README), and capture
       both RTT logs. The firmware side is done and untested (DEF-1).
 - [ ] **Host capture parser** (DEF-15): read both boards' `CSR`/`CSC` lines, join them by procedure
@@ -28,7 +33,8 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **Calibrate the range σ model** from captures (DEF-7).
 - [ ] **Sink role:** frames out over USB CDC (COBS/postcard).
 - [ ] **`navgrid monitor`:** terminal mesh-state view plus JSON-lines log (FR-S5).
-- [ ] **P-5 embassy-nrf:** nRF54L DC/DC and crystal load-cap config, upstream.
+- [ ] **P-5 embassy-nrf:** nRF54L crystal load-cap config, and stale GRTC state cleared by the
+      time driver at init, upstream.
 - [ ] **CI:** host tests and clippy, plus firmware clippy and build for both boards.
 
 ## P1 — find my keys, first cut

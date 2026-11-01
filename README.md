@@ -44,9 +44,22 @@ cargo dk                   # nRF54L15 DK
 cargo build --release --features board-tag   # build only
 ```
 
-On boot the node sets up DC/DC and the crystal load caps, selects antenna 0, and logs its ID,
-config and the controller's CS capabilities. If the SDC memory pool size is wrong, the log prints
-the exact number needed; set `SDC_MEM` in `node/src/main.rs` to it.
+On boot the node clears GRTC state left by earlier firmware, sets the crystal load caps, selects
+antenna 0, and logs its ID, config and the controller's CS capabilities. If the SDC memory pool
+size is wrong, the log prints the exact number needed; set `SDC_MEM` in `node/src/main.rs` to it.
+
+### Programming a TAG
+
+- **Connection:** the TAG plugs into the DK's `DEBUG OUT` header. The DK's onboard J-Link then
+  debugs the TAG instead of the DK's own chip.
+- **Power:** a CR2032 **or** 3.3 V on the DK's `VDD SWD0` pin (jumper from a `VDDIO` pin), never
+  both.
+- **Probe:** with more than one probe attached, set `PROBE_RS_PROBE=<VID:PID:serial>` from
+  `probe-rs list`.
+- **Autodetect:** `probe-rs info` fails to autodetect the chip (its memory APs have no ROM
+  table), but `--chip nRF54L15`, which the runner passes, works.
+- **Verify:** the runner verifies every flash. If verification fails, flash again; an unverified
+  image runs corrupted code and faults at random places (DEF-16).
 
 ### Two-board Channel Sounding (P0 bring-up)
 

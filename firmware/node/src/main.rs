@@ -1,6 +1,6 @@
 //! navgrid node firmware.
 //!
-//! Bring-up firmware (phase P0). It sets up the board (DC/DC, crystals, antenna switch), starts
+//! Bring-up firmware (phase P0). It sets up the board (crystals, antenna switch), starts
 //! MPSL and the SoftDevice Controller with every Channel Sounding role and the board's antennas
 //! enabled, and logs the controller's CS capabilities. Then, depending on the build-time role
 //! (see `cs`), it either advertises and reflects, or connects to a reflector, pairs, and runs CS
@@ -13,7 +13,6 @@ mod board;
 mod crypto;
 mod cs;
 
-use bt_hci::cmd::SyncCmd;
 use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilities;
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
@@ -47,8 +46,10 @@ const L2CAP_RXQ: u8 = 3;
 /// Links that can hold a CS configuration at once. Each costs ~4–7 KB of SDC memory depending
 /// on antenna paths (`SDC_MEM_CS` in sdc.h).
 const CS_LINKS: u8 = 6;
-/// SDC memory pool. If this is off, the SDC logs the exact requirement at boot.
-const SDC_MEM: usize = 112 * 1024;
+/// SDC memory pool. The TAG figure (2 antennas, 4 paths) is what its SDC reported; one antenna
+/// saves 1 KiB per CS link for each of the 3 extra paths. If this is off, the SDC logs the exact
+/// requirement at boot.
+const SDC_MEM: usize = if board::ANTENNAS > 1 { 93_192 } else { 74_760 };
 
 #[embassy_executor::task]
 async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
@@ -62,16 +63,9 @@ fn build_sdc<'d, const N: usize>(
     mem: &'d mut sdc::Mem<N>,
     antennas: u8,
 ) -> Result<sdc::SoftdeviceController<'d>, sdc::Error> {
-    // With diversity, a link has up to local × remote antennas paths (4 between two TAGs).
-    // Without it, one path, whatever the peer has (NodeConfig::diversity).
+    // Order matters (found on hardware): the SDC sizes CS memory only once CS support is on, and
+    // rejects more than one antenna (EINVAL) until the switch callback is set.
     let builder = sdc::Builder::new()?
-        .cs_count(CS_LINKS)?
-        .cs_cfg(if antennas > 1 { 4 } else { 1 }, antennas)?;
-    let builder = match board::ANTENNA_SWITCH {
-        Some(switch) if antennas > 1 => builder.cs_antenna_switch_callback(switch),
-        _ => builder,
-    };
-    builder
         .support_adv()
         .support_ext_adv()
         .support_peripheral()
@@ -82,7 +76,16 @@ fn build_sdc<'d, const N: usize>(
         .support_channel_sounding_initiator_role_peripheral()
         .support_channel_sounding_reflector_role_central()
         .support_channel_sounding_reflector_role_peripheral()
-        .support_channel_sounding_mode3()
+        .support_channel_sounding_mode3();
+    let builder = match board::ANTENNA_SWITCH {
+        Some(switch) if antennas > 1 => builder.cs_antenna_switch_callback(switch),
+        _ => builder,
+    };
+    // With diversity, a link has up to local × remote antennas paths (4 between two TAGs).
+    // Without it, one path, whatever the peer has (NodeConfig::diversity).
+    builder
+        .cs_count(CS_LINKS)?
+        .cs_cfg(if antennas > 1 { 4 } else { 1 }, antennas)?
         .central_count(CENTRAL_LINKS)?
         .peripheral_count(PERIPHERAL_LINKS)?
         .buffer_cfg(
@@ -104,8 +107,10 @@ fn static_address() -> [u8; 6] {
     addr
 }
 
-async fn log_cs_capabilities(sdc: &sdc::SoftdeviceController<'_>) {
-    let caps = match LeCsReadLocalSupportedCapabilities::new().exec(sdc).await {
+/// Runs once the host is up: the controller disallows CS commands until the host has announced
+/// Channel Sounding support, which the runner does while initialising (`stack.command` waits).
+async fn log_cs_capabilities(stack: &Host<'_, '_>) {
+    let caps = match stack.command(LeCsReadLocalSupportedCapabilities::new()).await {
         Ok(caps) => caps,
         Err(e) => {
             warn!("CS capabilities: {:?}", e);
@@ -126,7 +131,7 @@ async fn log_cs_capabilities(sdc: &sdc::SoftdeviceController<'_>) {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    board::init_power_and_clocks();
+    board::early_init();
     let mut config = config::Config::default();
     config.clock_speed = config::ClockSpeed::CK128;
     config.hfclk_source = config::HfclkSource::ExternalXtal;
@@ -198,7 +203,6 @@ async fn main(spawner: Spawner) {
     id[..6].copy_from_slice(&addr);
     let node = NodeId(u64::from_le_bytes(id));
     info!("navgrid node {=u64:012x} on {}, {}", node.0, board::NAME, node_cfg);
-    log_cs_capabilities(&sdc).await;
 
     let mut resources: HostResources<DefaultPacketPool, MAX_LINKS, L2CAP_CHANNELS> = HostResources::new();
     let stack = trouble_host::new(sdc, &mut resources)
@@ -222,19 +226,20 @@ async fn main(spawner: Spawner) {
         interval_max: adv_interval,
         ..Default::default()
     };
-    if cs::is_initiator() {
-        let peer = unwrap!(
+    let peer = cs::is_initiator().then(|| {
+        unwrap!(
             cs::peer(),
             "NAVGRID_PEER must be the reflector's node ID (12 hex digits)"
-        );
-        let _ = join(runner.run_with_handler(&cs::Events), initiator(&stack, peer)).await;
-    } else {
-        let _ = join(
-            runner.run_with_handler(&cs::Events),
-            reflector(&stack, &adv_data[..adv_len], &adv_params),
         )
-        .await;
-    }
+    });
+    let role = async {
+        log_cs_capabilities(&stack).await;
+        match peer {
+            Some(peer) => initiator(&stack, peer).await,
+            None => reflector(&stack, &adv_data[..adv_len], &adv_params).await,
+        }
+    };
+    let _ = join(runner.run_with_handler(&cs::Events), role).await;
 }
 
 type Host<'a, 'd> = Stack<'a, SoftdeviceController<'d>, DefaultPacketPool>;

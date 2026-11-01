@@ -2,6 +2,48 @@
 
 Newest first. Conventions: [README](README.md).
 
+## 2026-11-02
+
+**First boot on a TAG.** The node boots to advertising on an nRF54L15 TAG (through the DK's
+`DEBUG OUT`) and reports its CS capabilities: 1 config, 2 antennas, 4 paths, both roles, mode 3,
+2M CS_SYNC PHY. Four fixes were needed.
+
+- **Hang in `embassy_nrf::init`: stale GRTC state.**
+  - **Symptom:** the CPU sat in `GRTC_2` forever. GRTC channel 6 had its domain-2 interrupt
+    enabled and `EVENTS_COMPARE[6]` latched. embassy's time driver unmasks `GRTC_2` but owns and
+    clears only channel 11.
+  - **Cause:** probably the Nordic demo's system timer. The GRTC survives every reset short of a
+    power cycle, and the TAG has stayed on its coin cell (the pre-init defmt timestamp read 315 s).
+  - **Fix:** `board::early_init` now clears every GRTC interrupt enable, compare channel and
+    event before `init`. This belongs in embassy-nrf too (P-5).
+- **DC/DC:** `embassy_nrf::init` already enables DC/DC on nRF54L, after the FICR trims and clocks,
+  so our earlier enable is gone. Enabling it before the trims had coincided with the SWD link
+  dropping; that was not pinned down.
+- **SDC builder order.**
+  - `cs_count` doesn't count toward memory until the `support_*` calls have run.
+  - `cs_cfg` with 2 antennas returns `EINVAL` until the antenna-switch callback is set.
+  - The builder now runs support, then callback, then configuration. Measured need: 93,192 bytes
+    on a TAG (the guess was 112 KiB). For one antenna the figure is 74,760, derived from 1 KiB per
+    extra path per CS link.
+- **CS capabilities read:** it returned *Command Disallowed* when run on the bare SDC before
+  TrouBLE's init, which is what sets the CS host-support feature bit. It now goes through
+  `stack.command`, which waits for init.
+
+**TAG programming is unreliable (DEF-16).**
+
+- **Symptom:** every first run of a newly flashed image faulted, each time somewhere different:
+  - an undefined instruction in the FICR trim loop;
+  - an unaligned trap in P-256 point arithmetic;
+  - a jump to `0x1e`;
+  - a BusFault inside the SDC.
+
+  Reruns of the same image booted cleanly, 7 of 7.
+- **Why:** with `--verify`, the first write of a new image fails verification, and SWD protocol
+  and USB transport errors follow. The faults were the CPU running a partly programmed image.
+- **Runner:** it now passes `--verify`.
+- **Cause:** still open. Candidates are the supply during RRAM writes, the trimmed SWD adapter,
+  or the probe link.
+
 ## 2026-11-01
 
 **CS bring-up firmware** (not yet run on hardware).

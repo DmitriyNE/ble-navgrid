@@ -208,8 +208,9 @@ Work needed:
     the runner task, so the app copies step data out and returns.
 - **P-3** navgrid: inline PCT transfer first, RAS as fallback (D-4).
 - **P-4** navgrid: distance estimation (`navgrid-ranging`).
-- **P-5** `embassy-nrf`: nRF54L DC/DC and crystal load-capacitor config. Upstream PR; until then
-  `board.rs` does it.
+- **P-5** `embassy-nrf`: nRF54L crystal load-capacitor config, and a time driver that clears
+  stale GRTC interrupt state at init. Upstream PR; until then `board.rs` does both. (DC/DC needs
+  nothing: `init` already enables it.)
 - **P-6 `bt-hci`:**
   - **Fix the step parser:** parse CS step data row-major (mode, channel, length, data per step)
     for subevent result and subevent result continue, and replace the test data with the real
