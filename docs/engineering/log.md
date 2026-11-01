@@ -4,6 +4,21 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-01
 
+**CS bring-up firmware** (not yet run on hardware).
+
+- **Roles:** the build-time role picks initiator or reflector. The initiator connects at 20 ms,
+  pairs, and runs Nordic's `ras_initiator` sequence and values: default settings, remote
+  capabilities, create config, CS security, procedure parameters, procedure enable. Each async
+  step waits for its completion event, with a 5 s timeout.
+- **Capture:** both sides log raw subevents (`CSR`/`CSC` lines with HCI-layout step bytes), so the
+  first measurement needs neither RAS nor inline PCT transfer.
+- **Pairing crypto:** TrouBLE's `security` feature needs embassy-crypto drivers. RustCrypto
+  supplies AES-128 and P-256. The RNG is ChaCha20 seeded from CRACEN at boot, because the SDC owns
+  CRACEN from then on.
+- **Size:** flash 193 → 323 KB (pairing crypto, central role), RAM 145 KB.
+- **Cross-check:** Zephyr's own HCI struct for a CS step (`mode, channel, length, data[]`)
+  independently confirms the row-major layout behind the bt-hci fix.
+
 **Firmware on the patched forks.** All three forks are pushed and public, and match the local
 `main`s. The firmware now pins `DmitriyNE/bt-hci` `4886657` (plus `bt-hci-transport` from the same
 checkout), `DmitriyNE/nrf-sdc` `f705f4c` and `GreatKet/trouble` `fa9886d` (with `channel-sounding`).

@@ -13,8 +13,11 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       test params (API change, so a separate PR).
 - [ ] **First boot on a TAG:** check the boot log (SDC memory, CS capabilities); verify DC/DC,
       crystals and the antenna-switch default (DEF-2, DEF-3, DEF-4).
-- [ ] **Two-TAG CS ranging:** inline PCT transfer first, RAS as fallback (R-8). Stream raw step
-      data to the host over RTT/USB.
+- [ ] **Two-TAG CS ranging, first run:** flash a reflector and an initiator (README), and capture
+      both RTT logs. The firmware side is done and untested (DEF-1).
+- [ ] **Host capture parser** (DEF-15): read both boards' `CSR`/`CSC` lines, join them by procedure
+      counter, extract mode-2 PCTs per channel, and feed `navgrid-ranging`. Then try inline PCT
+      transfer (`cs_enhancements`) so the initiator alone has both sides (R-8).
 - [ ] **Cross-check estimator:** compare against NCS v3.4.1 `ipt_*` / `ras_*` samples and `cs_de`
       on the same captures; settle sign and units (DEF-6).
 - [ ] **Energy per activity** with a power profiler on a TAG: advertising, idle link, CS per

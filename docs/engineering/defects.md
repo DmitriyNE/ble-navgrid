@@ -7,7 +7,7 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 
 | ID | Area | Defect | Impact |
 |---|---|---|---|
-| DEF-1 | firmware | The firmware does not range yet: no connection, security or CS procedure flow. The upstream gaps that blocked it (P-1, P-2, P-6) are fixed in our forks. | No CS on hardware until the bring-up flow lands. |
+| DEF-1 | firmware | The CS bring-up flow (connect, pair, configure, run procedures, log raw steps) has not run on hardware. Parameters follow Nordic's `ras_initiator`; the order of steps and the HCI layouts are checked, but the controller's behaviour is not. | First two-board run may stop at a failing step; the log names it. |
 | DEF-2 | firmware | Nothing has run on a board. Unverified: the DC/DC enable, the crystal load-cap values (ported from Zephyr, FICR-trimmed), and the TAG antenna-switch callback. | First boot may hang on clocks or misbehave on RF. Check the boot log and an RF sanity test first. |
 | DEF-3 | firmware | Antenna 0 is selected outside CS by driving SKY13348 V1 high. NCS leaves both lines low, and the switch truth table has not been checked. | Ordinary BLE traffic could go through the wrong or an isolated path. |
 | DEF-4 | firmware | `SDC_MEM` (112 KiB) and `CS_LINKS` (6) are guesses. | Boot fails with "Memory buffer too small" and the needed size; set `SDC_MEM` to it. |
@@ -18,6 +18,8 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 | DEF-9 | solver | The tracker has only a constant-velocity model; one range/s or less while walking loses track. | Walking needs ~2 ranges/s unless optional dead reckoning (FR-T7b) is added. |
 | DEF-10 | proto | No telemetry envelope (age, hops). Records carry only origin uptime. | The sink cannot timestamp forwarded records yet (FR-S4). |
 | DEF-11 | firmware | The node only advertises a name: no FR-M4 payload, no scanning or central role, no mesh logic. | Skeleton only. |
+| DEF-14 | firmware | The bring-up role and peer are build-time environment variables (`NAVGRID_ROLE`, `NAVGRID_PEER`), and pairing is Just Works with no bonding, so every reconnect pairs again. | Bench only. Provisioning (DEF-5) and fleet-key LTKs (D-7) replace both. |
+| DEF-15 | host | Nothing parses the `CSR`/`CSC` capture lines yet, so raw steps cannot be turned into distances. | Next host task. |
 | DEF-12 | firmware | Building without a board feature prints the intended `compile_error!` plus a follow-on "unresolved import `consts`". | Cosmetic. |
 
 ## Fixed

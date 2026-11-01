@@ -18,7 +18,7 @@ embassy-futures = "0.1.1"
 nrf-sdc = { version = "0.4", default-features = false, features = ["nrf54l15-app-s", "central", "peripheral", "defmt"] }
 nrf-mpsl = { version = "0.4", default-features = false, features = ["critical-section-impl", "defmt"] }
 bt-hci = { version = "0.11", default-features = false, features = ["defmt"] }
-trouble-host = { git = "https://github.com/GreatKet/trouble.git", rev = "fa9886d3f92d0b9a8adf7323a9b10b991a131d2c", features = ["defmt", "channel-sounding"] }
+trouble-host = { git = "https://github.com/GreatKet/trouble.git", rev = "fa9886d3f92d0b9a8adf7323a9b10b991a131d2c", features = ["defmt", "channel-sounding", "security"] }
 
 defmt = "1"
 defmt-rtt = "1"
@@ -26,6 +26,13 @@ panic-probe = { version = "1", features = ["print-defmt"] }
 cortex-m = "0.7.7"
 cortex-m-rt = "0.7.5"
 static_cell = "2"
+
+# Pairing (CS needs an encrypted link): TrouBLE's security manager takes its crypto from
+# embassy-crypto drivers, at the revision TrouBLE itself uses.
+embassy-sync = "0.8"
+embassy-crypto = { git = "https://github.com/embassy-rs/embassy.git", rev = "bd35bd7a7d19147c8bcae9c2eda99b25e597294c" }
+embassy-crypto-rustcrypto = { git = "https://github.com/embassy-rs/embassy.git", rev = "bd35bd7a7d19147c8bcae9c2eda99b25e597294c", features = ["embassy-crypto-aes128-ecb", "embassy-crypto-aes128-cmac", "embassy-crypto-p256-ecdh"] }
+rand_chacha = { version = "0.9", default-features = false }
 
 [features]
 # Exactly one board. `cargo tag` / `cargo dk` (see .cargo/config.toml) pick it for you.

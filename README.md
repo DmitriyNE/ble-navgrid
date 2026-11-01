@@ -44,10 +44,29 @@ cargo dk                   # nRF54L15 DK
 cargo build --release --features board-tag   # build only
 ```
 
-On boot the node sets up DC/DC and the crystal load caps, selects antenna 0, logs its ID, config
-and the controller's CS capabilities, then advertises as `navgrid` (every 1 s by default). Role, diversity,
-advertising and sensor periods come from `NodeConfig` (defaults until provisioning exists). If the SDC memory pool size is wrong,
-the log prints the exact number needed; set `SDC_MEM` in `node/src/main.rs` to it.
+On boot the node sets up DC/DC and the crystal load caps, selects antenna 0, and logs its ID,
+config and the controller's CS capabilities. If the SDC memory pool size is wrong, the log prints
+the exact number needed; set `SDC_MEM` in `node/src/main.rs` to it.
+
+### Two-board Channel Sounding (P0 bring-up)
+
+The role is chosen at build time until provisioning exists:
+
+```sh
+cd firmware
+cargo tag                                                    # board A: reflector; note "navgrid node <id>"
+NAVGRID_ROLE=initiator NAVGRID_PEER=<id of A> cargo tag      # board B: initiator
+```
+
+With two probes attached, pick one per build with `probe-rs list` and probe-rs's probe selector.
+
+- **The initiator** connects at 20 ms, pairs (LE Secure Connections, Just Works), then configures
+  CS and starts procedures: mode 2, all 72 channels, 1×1 antennas, 2M PHY, every 10 connection
+  events.
+- **Both boards** log each CS subevent as one line:
+  `CSR <I|R> <procedure> <freq comp> <ref power> <paths> <steps> [step bytes]`. Continuations are
+  logged as `CSC`. The step bytes keep the HCI layout, so the host can join the two sides by
+  procedure counter.
 
 Firmware dependencies are pinned revisions of our forks of bt-hci, nrf-sdc and TrouBLE, which add
 the Channel Sounding support upstream lacks. See architecture §6 and D-8.

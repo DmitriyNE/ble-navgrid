@@ -1,14 +1,17 @@
 //! navgrid node firmware.
 //!
-//! Bring-up skeleton (phase P0). It sets up the board (DC/DC, crystals, antenna switch), starts
+//! Bring-up firmware (phase P0). It sets up the board (DC/DC, crystals, antenna switch), starts
 //! MPSL and the SoftDevice Controller with every Channel Sounding role and the board's antennas
-//! enabled, logs the controller's CS capabilities, then advertises as a connectable navgrid node
-//! through TrouBLE. Ranging comes next (architecture §6, P-1..P-3).
+//! enabled, and logs the controller's CS capabilities. Then, depending on the build-time role
+//! (see `cs`), it either advertises and reflects, or connects to a reflector, pairs, and runs CS
+//! procedures. Both sides log raw CS step data over RTT.
 
 #![no_std]
 #![no_main]
 
 mod board;
+mod crypto;
+mod cs;
 
 use bt_hci::cmd::SyncCmd;
 use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilities;
@@ -20,7 +23,7 @@ use embassy_nrf::{bind_interrupts, config, cracen, pac};
 use embassy_time::Duration;
 use navgrid_proto::{NodeConfig, NodeId};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
-use nrf_sdc::{self as sdc, mpsl};
+use nrf_sdc::{self as sdc, SoftdeviceController, mpsl};
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 use {defmt_rtt as _, panic_probe as _};
@@ -183,6 +186,10 @@ async fn main(spawner: Spawner) {
         p.PPIB10_CH3,
     );
     let mut rng = cracen::Cracen::new_blocking(p.CRACEN);
+    // The SDC keeps CRACEN; pairing gets a CSPRNG seeded from it first.
+    let mut seed = [0u8; 32];
+    rng.blocking_fill_bytes(&mut seed);
+    crypto::seed(seed);
     let mut sdc_mem = sdc::Mem::<SDC_MEM>::new();
     let sdc = unwrap!(build_sdc(sdc_p, &mut rng, mpsl, &mut sdc_mem, antennas));
 
@@ -197,7 +204,6 @@ async fn main(spawner: Spawner) {
     let stack = trouble_host::new(sdc, &mut resources)
         .set_random_address(Address::random(addr))
         .build();
-    let mut peripheral = stack.peripheral();
     let mut runner = stack.runner();
 
     let mut adv_data = [0; 31];
@@ -216,29 +222,136 @@ async fn main(spawner: Spawner) {
         interval_max: adv_interval,
         ..Default::default()
     };
-    let _ = join(runner.run(), async {
-        loop {
-            let advertiser = unwrap!(
-                peripheral
-                    .advertise(
-                        &adv_params,
-                        Advertisement::ConnectableScannableUndirected {
-                            adv_data: &adv_data[..adv_len],
-                            scan_data: &[]
-                        },
-                    )
-                    .await
-            );
-            info!("advertising");
-            let conn = unwrap!(advertiser.accept().await);
-            info!("connected: handle {}", conn.handle().raw());
-            loop {
-                if let ConnectionEvent::Disconnected { reason } = conn.next().await {
-                    info!("disconnected: {:?}", reason);
-                    break;
+    if cs::is_initiator() {
+        let peer = unwrap!(
+            cs::peer(),
+            "NAVGRID_PEER must be the reflector's node ID (12 hex digits)"
+        );
+        let _ = join(runner.run_with_handler(&cs::Events), initiator(&stack, peer)).await;
+    } else {
+        let _ = join(
+            runner.run_with_handler(&cs::Events),
+            reflector(&stack, &adv_data[..adv_len], &adv_params),
+        )
+        .await;
+    }
+}
+
+type Host<'a, 'd> = Stack<'a, SoftdeviceController<'d>, DefaultPacketPool>;
+
+/// Advertises, accepts a connection, enables the CS reflector role on it, and serves it until it
+/// drops. Repeats forever.
+async fn reflector(stack: &Host<'_, '_>, adv_data: &[u8], params: &AdvertisementParameters) {
+    let mut peripheral = stack.peripheral();
+    loop {
+        let advertiser = unwrap!(
+            peripheral
+                .advertise(
+                    params,
+                    Advertisement::ConnectableScannableUndirected {
+                        adv_data,
+                        scan_data: &[]
+                    },
+                )
+                .await
+        );
+        info!("advertising");
+        let conn = unwrap!(advertiser.accept().await);
+        info!("connected: handle {}", conn.handle().raw());
+        if let Err(e) = cs::reflect(stack, conn.handle()).await {
+            warn!("CS: {}", e);
+        }
+        serve(stack, &conn).await;
+    }
+}
+
+/// Connects to `peer`, pairs, runs the CS initiator sequence, and serves the link until it drops.
+/// Repeats forever.
+async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6]) {
+    let mut central = stack.central();
+    let target = Address::random(peer);
+    // Nordic's sample connects at 20 ms with a 4 s supervision timeout.
+    let config = ConnectConfig {
+        connect_params: RequestedConnParams {
+            min_connection_interval: Duration::from_millis(20),
+            max_connection_interval: Duration::from_millis(20),
+            supervision_timeout: Duration::from_secs(4),
+            ..Default::default()
+        },
+        scan_config: ScanConfig {
+            filter_accept_list: &[target],
+            ..Default::default()
+        },
+    };
+    loop {
+        info!("connecting to {=[u8]:02x}", peer);
+        let conn = match central.connect(&config).await {
+            Ok(conn) => conn,
+            Err(e) => {
+                warn!("connect: {:?}", e);
+                continue;
+            }
+        };
+        info!("connected: handle {}", conn.handle().raw());
+        if let Err(e) = conn.request_security() {
+            warn!("request security: {:?}", e);
+        }
+        if !encrypted(stack, &conn).await {
+            continue;
+        }
+        match cs::initiate(stack, conn.handle()).await {
+            Ok(()) => info!("CS running"),
+            Err(e) => warn!("CS: {}", e),
+        }
+        serve(stack, &conn).await;
+    }
+}
+
+/// Waits until the link is encrypted. Returns `false` if pairing fails or the link drops.
+async fn encrypted(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacketPool>) -> bool {
+    loop {
+        match conn.next().await {
+            ConnectionEvent::PairingComplete { security_level, .. } => {
+                info!("paired: {:?}", security_level);
+                return true;
+            }
+            ConnectionEvent::Encrypted { security_level, .. } => {
+                info!("encrypted: {:?}", security_level);
+                return true;
+            }
+            ConnectionEvent::PairingFailed(e) => {
+                warn!("pairing failed: {:?}", e);
+                conn.disconnect();
+            }
+            ConnectionEvent::Disconnected { reason } => {
+                info!("disconnected: {:?}", reason);
+                return false;
+            }
+            ConnectionEvent::RequestConnectionParams(req) => {
+                if let Err(e) = req.accept(None, stack).await {
+                    warn!("connection parameters: {:?}", e);
                 }
             }
+            _ => {}
         }
-    })
-    .await;
+    }
+}
+
+/// Handles connection events until the link drops.
+async fn serve(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacketPool>) {
+    loop {
+        match conn.next().await {
+            ConnectionEvent::Disconnected { reason } => {
+                info!("disconnected: {:?}", reason);
+                return;
+            }
+            ConnectionEvent::PairingComplete { security_level, .. } => info!("paired: {:?}", security_level),
+            ConnectionEvent::RequestConnectionParams(req) => {
+                if let Err(e) = req.accept(None, stack).await {
+                    warn!("connection parameters: {:?}", e);
+                }
+            }
+            _ => {}
+        }
+    }
 }
