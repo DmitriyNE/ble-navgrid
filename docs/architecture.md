@@ -323,38 +323,45 @@ within radio range:
 ## 11. Absolute referencing (FR-A, `navgrid_solver::frame`)
 
 CS ranges fix the mesh's shape and scale. A self-surveyed solution is still free to rotate,
-mirror and translate. Each source pins down part of that freedom:
+mirror and translate. **Commissioning presets on a few nodes** fix the rest (Q15):
 
 | Unknown | Fixed by | Needed for pointing? |
 |---|---|---|
 | Up direction, vertical mirror | Barometric heights (already in the solver) | yes |
-| Yaw | ≥ 2 pins, **or** heading observations | **yes**: its error adds 1:1 to bearing |
-| Horizontal mirror (handedness) | ≥ 3 non-collinear pins, **or** heading observations in varied directions | **yes** |
-| Origin (x, y, z) | 1 pin or a floor-plan anchor | no; maps and display only |
+| Yaw | ≥ 2 pins, **or** ≥ 1 preset bearing | **yes**: its error adds 1:1 to bearing |
+| Horizontal mirror (handedness) | ≥ 3 non-collinear pins, **or** ≥ 2 preset bearings in different directions | **yes** |
+| Origin (x, y, z) | 1 pin | no; maps and display only |
 
 **`Frame`**: mesh → world. Mirror y, rotate by yaw, translate. Headings are counter-clockwise from
-east; `compass_to_heading` converts clockwise-from-north compass readings.
+east; `compass_to_heading` converts clockwise-from-north bearings.
 
-**Pins (`fit_pins`).** 2D least-squares rotation (Kabsch, no scale), tried plain and mirrored,
-keeping the better fit. It reports the RMS misfit, so a mis-surveyed pin shows. In P1 the nodes
-themselves are hand-surveyed in a north-aligned frame, so the transform is identity. Later the web
-UI places pins on a north-referenced floor plan.
+**Pins (`fit_pins`)** are nodes with known absolute coordinates. The fit is a 2D least-squares
+rotation (Kabsch, no scale), tried plain and mirrored, keeping the better. It reports the RMS
+misfit, so a mis-surveyed pin shows. In P1 the nodes themselves are hand-surveyed in a
+north-aligned frame, so the transform is identity.
 
-**Heading observations (`fit_headings`).** While a HUD wearer walks straight, the mesh-tracked
-walking direction and the HUD's own heading form one observation. Yaw is the weighted circular
-mean of their difference. Handedness is whichever choice makes the differences agree:
-mirroring flips the sign of the mesh heading, which only shows across varied directions. The fit
-reports `concentration` (agreement) and `handedness_margin`.
+**Preset bearings (`fit_bearings`)** give the known world bearing from one node to another, e.g.
+read off a floor plan. The mesh knows that pair's direction in its own frame, so each preset is
+one heading observation. Yaw is the circular mean of the world − mesh differences, weighted by
+the squared baseline. Handedness is whichever choice makes the differences agree; it only shows
+with ≥ 2 directions. `Frame::anchored` adds an origin from one pin.
 
-- **Accuracy:** in the unit test, 40 walks with 15° compass error recover yaw within 5° and the
-  right handedness. A single walking direction gives no handedness margin.
-- **Assumptions:** the HUD faces where the person walks. Accept only straight, steady segments.
-- **Indoor magnetism:** disturbances are local and do not average out if every walk is in the
-  same corridor. Weight observations by place and direction (R-12).
+- **Accuracy:** with 0.1 m mesh position error and 5–9 m baselines, three presets give yaw
+  within 3° (unit test).
+- **Quality checks:** the fit reports `concentration` (agreement) and `handedness_margin`, so
+  presets that contradict each other show.
+- **Precision:** a pair's direction error is roughly the mesh's relative position error divided
+  by the baseline, so presets on long baselines are the accurate ones (R-12).
+
+**Presets live in a host site file** (pins, bearings, magnetic declination). The host fits the
+frame from them.
+
+**Later: learned from headings (`fit_headings`).** The same math takes HUD heading observations
+on straight walks instead of presets, to reference a mesh without commissioning. It also needs
+observations from many places, because indoor magnetic disturbances are local.
 
 **Versioning (FR-A5).** The host owns the current transform and its version. Positions carry the
-version they were solved in. Re-estimation happens when pins change or when heading observations
-drift away from the current yaw.
+version they were solved in. Re-estimation happens when presets change or the mesh re-solves.
 
 ## 12. Decision log
 
@@ -381,5 +388,5 @@ drift away from the current yaw.
 | D-19 | Heading comes from another sensor (the HUD's magnetometer), in the world frame; tags do not estimate it (§10). | **Accepted** (revised v0.5) |
 | D-20 | Final approach on direct person↔asset CS: distance direct, bearing by synthetic aperture over the person's track (§10). | Proposed |
 | D-21 | Engineering records live in `docs/engineering/`: log, known defects, todo, spikes. Design stays in requirements/architecture; evidence goes in spikes. | **Accepted** (repo rule) |
-| D-22 | Absolute referencing: barometry for up; pins and/or heading observations for yaw and handedness; one pin or a floor-plan anchor for origin. The host owns a versioned mesh→world transform (§11). | **Accepted** (requirement); pins in P1, heading-learned in P2 |
+| D-22 | Absolute referencing from **commissioning presets**: barometry for up; pins and/or preset node-pair bearings for yaw and handedness; one pin for origin. The host owns a versioned mesh→world transform, fitted from a site file (§11). Learning from HUD headings is a later option. | **Accepted** (revised: presets, Q15) |
 | D-23 | Monitoring gets a thin web UI later: one static page plus a JSON endpoint on the host tool, sharing `navgrid monitor`'s state (§9). | Proposed (later) |

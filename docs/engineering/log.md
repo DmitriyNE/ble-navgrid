@@ -4,6 +4,17 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-01
 
+**Referencing from commissioning presets (Q15).** For now the mesh is referenced from presets on
+a few nodes: absolute coordinates (pins), or preset bearings between node pairs. Learning from HUD
+headings moved to later.
+
+- Added `frame::fit_bearings`. Each preset is a heading observation (mesh direction of the pair
+  vs world bearing), weighted by squared baseline, which reuses the heading fit.
+- Added `Frame::anchored` (origin from one pin).
+- The heading fits now take iterators, which removes a fixed-size buffer.
+- Tests: two non-parallel bearings give yaw and handedness exactly; one bearing gives yaw only;
+  0.1 m mesh noise on 5–9 m baselines keeps yaw within 3°.
+
 **Decisions, requirements v0.5.**
 
 - **Heading** comes from another sensor (the HUD's magnetometer), not from tags.

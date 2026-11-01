@@ -59,7 +59,7 @@ distance, from across the building down to the last metre.
 |---|---|---|
 | **P0 — bring-up** | Rust firmware on nRF54L15 TAG boards runs CS between two boards, with antenna diversity; raw step data reaches the host. | Our estimator agrees with Nordic `cs_de` (NCS v3.4.1 `ipt_*` / `ras_*` samples) within 5 cm on the same captures. Ranging-rate and multi-link limits measured. Energy per activity measured. CR2032 sag and BME688 pressure noise measured. |
 | **P1 — find my keys, first cut** | One asset tag, one person tag, ≥4 nodes at hand-surveyed, north-aligned positions (pins, FR-A3a). 3D tracker with barometric height and IMU gating. Host view stands in for the HUD: pointer and distance. Direct person↔asset ranging for the final approach. | Position p90 (horizontal and vertical), pointer bearing error, and final-approach distance error measured on a test course. Diversity on vs off, IMU gating on vs off. Antenna-path combiner chosen from real captures. |
-| **P2 — self-survey** | Nodes range each other; positions solved, first centrally on host, then distributed on nodes. Mesh referenced from pins and from heading observations (FR-A3). | Distributed solution within 0.2 m of central reference; node p90 vs ground truth measured; heading-learned yaw within NFR-11 of the pin-derived yaw. |
+| **P2 — self-survey** | Nodes range each other; positions solved, first centrally on host, then distributed on nodes. Mesh referenced from commissioning presets (FR-A3). | Distributed solution within 0.2 m of central reference; node p90 vs ground truth measured; frame yaw within NFR-11. |
 | **P3 — building** | Link scheduling, handover, many tags, routing to sinks, provisioning, OTA, HUD integration. | Capacity targets in NFR-4 met in a multi-room deployment. |
 
 ## 4. Functional requirements
@@ -117,9 +117,10 @@ A self-surveyed mesh knows its shape, not its orientation, handedness or origin.
 
 - **FR-A1** **World frame:** x east, y north, z up, relative to true north. Magnetic declination is a per-site setting, applied to compass headings. A site may also carry a geodetic anchor (latitude, longitude, altitude) for maps.
 - **FR-A2** **Vertical:** z is up and floors are separated, from barometric heights (FR-T2, FR-M3).
-- **FR-A3** **Yaw and handedness** (all that pointing needs) come from either source, or both:
-  - (a) **Pins:** ≥ 2 nodes with known world coordinates give yaw and offset; ≥ 3 non-collinear pins also give handedness. They are tape-measured at commissioning, or placed on a north-referenced floor plan.
-  - (b) **Heading observations:** a device with its own absolute heading (a HUD) walks straight while the mesh tracks it. The host estimates yaw and handedness from many such segments, taken in varied directions and places so that local magnetic disturbances average out.
+- **FR-A3** **Yaw and handedness** (all that pointing needs) come from **commissioning presets** on a few nodes, in either form or mixed:
+  - (a) **Pins:** nodes with known absolute coordinates. ≥ 2 give yaw and offset; ≥ 3 non-collinear also give handedness. They are tape-measured, or read off a north-referenced floor plan.
+  - (b) **Preset bearings:** the known world bearing from one node to another (e.g. "node 2 is at 75° from node 1"). One bearing gives yaw; ≥ 2 in different directions also give handedness. Longer baselines are more accurate.
+  - (c) *Later, optional:* learned from heading observations. A device with its own absolute heading (a HUD) walks straight while the mesh tracks it, and many such segments in varied places give yaw and handedness without presets.
 - **FR-A4** **Origin** (translation) comes from one pin or a floor-plan anchor. It is needed for maps and display, not for pointing.
 - **FR-A5** **Versioned transform:** the mesh→world transform carries a version. Every published position states its frame version; the host converts, and devices that output world coordinates receive the current transform. The transform is re-estimated when pins change or heading observations drift.
 
@@ -190,7 +191,7 @@ at best", so P0 measurements will re-baseline these.
 | R-9 | CR2032 pulse load: a CS procedure keeps the radio on for tens of ms. Coin cells sag under pulses, more so when cold or aged, which risks brown-out mid-procedure. | Measure sag on TAGs in P0; cap procedure length; check bulk capacitance. |
 | R-10 | Barometric height: building HVAC holds zones at different pressures (~8.5 cm of height per Pa), and sensors have offsets. BME688 pressure noise is not yet characterised for this use. | Reference only nearby nodes in the same zone; calibrate per-node offsets against CS geometry; measure noise in P0. |
 | R-11 | The gyro costs far more than the accelerometer. | Tags only need it for optional dead reckoning (FR-T7b); use it only if measurements show a net saving. |
-| R-12 | **Referencing error goes straight into pointing.** Pin errors and indoor magnetic disturbances bias the mesh yaw. Heading observations clustered in a few spots (one corridor near a steel beam) do not average out. | Pins where accuracy matters. Weight and spread heading observations by place and direction. Report concentration and handedness margin, and flag a frame whose estimate drifts. |
+| R-12 | **Referencing error goes straight into pointing.** A mis-surveyed pin or a wrong preset bearing biases the mesh yaw, and a short baseline magnifies mesh position errors into bearing error (0.1 m over 5 m ≈ 1°). | Presets on long baselines. Use more presets than the minimum and report their misfit and agreement, so a bad one shows. |
 | R-13 | **Close-in pointing.** Bearing error ≈ combined position error ÷ distance: 0.5 m at 1 m is ~27°. Mesh-based pointing fails exactly where the user needs it most. | Final approach on direct person↔asset ranging (FR-F4); show distance prominently close in. |
 
 ## 8. Decisions and open questions
@@ -211,6 +212,7 @@ Decided 2026-11-01:
 | Q13 | The HUD | Not relevant for now. The host view stands in. |
 | Q14 | Asset registry location | **Host only** for now; may extend into the mesh later (FR-F1). |
 | — | Monitoring UI | Terminal tool now; a **thin web UI later** (FR-S6). |
+| Q15 | Referencing source | **Commissioning presets:** a few nodes with known absolute coordinates, or preset bearings between node pairs (FR-A3a/b). Learning from HUD headings is a later option. |
 | — | Phases | P0–P3 as in §3. |
 
 Open:
@@ -220,4 +222,3 @@ Open:
 | Q3 | Are the NFR-1/2/4/10 numbers right for the product? | As proposed. |
 | Q5 | Routing transport: opportunistic over ranging contacts, or 802.15.4/Thread? | Opportunistic over BLE ranging contacts (D-6). |
 | Q7 | Who initiates on tag links? | The tag initiates (D-3); the person tag initiates on direct person↔asset links. |
-| Q15 | Which referencing source is acceptable in deployment: pins at commissioning, learned from HUD headings, or both? | Both: hand-surveyed, north-aligned pins in P1; heading-learned yaw as the automatic path and as a cross-check (FR-A3). |

@@ -6,8 +6,13 @@
 //!
 //! A self-surveyed mesh knows its shape but not its orientation, handedness or origin. Barometry
 //! makes its z axis vertical, so what remains is horizontal: a yaw, a possible mirror, and an
-//! offset. Pins fix all three. Heading observations from a device with its own compass (a HUD) fix
-//! yaw and handedness, which is all pointing needs.
+//! offset. Commissioning presets fix them:
+//! - **pins**, nodes with known world coordinates ([`fit_pins`]), fix all three;
+//! - **bearings** between node pairs ([`fit_bearings`]) fix yaw and handedness, which is all
+//!   pointing needs; one pin adds the origin ([`Frame::anchored`]).
+//!
+//! Heading observations from a device with its own compass ([`fit_headings`]) are the same math,
+//! kept for learning the frame without presets later.
 
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
 
@@ -28,6 +33,22 @@ impl Frame {
         mirrored: false,
         offset: [0.0; 3],
     };
+
+    /// The frame with the given orientation that maps `mesh_point` onto `world_point`, e.g. a
+    /// bearing fit plus one pin.
+    pub fn anchored(yaw_rad: f32, mirrored: bool, mesh_point: Vec3, world_point: Vec3) -> Self {
+        let rotated = Self {
+            yaw_rad,
+            mirrored,
+            offset: [0.0; 3],
+        }
+        .to_world(mesh_point);
+        Self {
+            yaw_rad,
+            mirrored,
+            offset: core::array::from_fn(|i| world_point[i] - rotated[i]),
+        }
+    }
 
     pub fn to_world(&self, p: Vec3) -> Vec3 {
         let y = if self.mirrored { -p[1] } else { p[1] };
@@ -155,8 +176,45 @@ pub struct HeadingFit {
 /// of the world − mesh heading differences, for whichever handedness makes them agree better.
 /// Local magnetic disturbances average out only if observations come from many places.
 pub fn fit_headings(obs: &[HeadingObs]) -> Option<HeadingFit> {
-    let plain = circular_mean(obs, false)?;
-    let mirrored = circular_mean(obs, true)?;
+    fit(|| obs.iter().copied())
+}
+
+/// A commissioning preset: the known world bearing from one node to another, e.g. read off a
+/// floor plan.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct BearingPreset {
+    /// Mesh-frame positions of the two nodes.
+    pub from: Vec3,
+    pub to: Vec3,
+    /// Bearing from `from` to `to`, world frame, counter-clockwise from east
+    /// (see [`compass_to_heading`]).
+    pub world_heading_rad: f32,
+}
+
+impl BearingPreset {
+    /// The preset as a heading observation, weighted by the squared horizontal baseline, since a
+    /// pair's direction error shrinks with its length.
+    fn observation(&self) -> HeadingObs {
+        let (dx, dy) = (self.to[0] - self.from[0], self.to[1] - self.from[1]);
+        HeadingObs {
+            mesh_heading_rad: libm::atan2f(dy, dx),
+            world_heading_rad: self.world_heading_rad,
+            weight: dx * dx + dy * dy,
+        }
+    }
+}
+
+/// Yaw and handedness from bearing presets. Each preset is a heading observation: the mesh knows
+/// the pair's direction in its own frame, the preset gives it in the world. Handedness needs ≥ 2
+/// presets in different directions.
+pub fn fit_bearings(presets: &[BearingPreset]) -> Option<HeadingFit> {
+    fit(|| presets.iter().map(BearingPreset::observation))
+}
+
+fn fit<I: Iterator<Item = HeadingObs>>(obs: impl Fn() -> I) -> Option<HeadingFit> {
+    let plain = circular_mean(obs(), false)?;
+    let mirrored = circular_mean(obs(), true)?;
     let (best, other, is_mirrored) = if mirrored.1 > plain.1 {
         (mirrored, plain, true)
     } else {
@@ -171,7 +229,7 @@ pub fn fit_headings(obs: &[HeadingObs]) -> Option<HeadingFit> {
 }
 
 /// `(mean, resultant length)` of `world − mesh` (or `world + mesh` when mirrored).
-fn circular_mean(obs: &[HeadingObs], mirrored: bool) -> Option<(f32, f32)> {
+fn circular_mean(obs: impl Iterator<Item = HeadingObs>, mirrored: bool) -> Option<(f32, f32)> {
     let (mut c, mut s, mut w) = (0.0, 0.0, 0.0);
     for o in obs {
         let mesh = if mirrored {
@@ -305,6 +363,65 @@ mod tests {
         }; 10];
         let fit = fit_headings(&obs).unwrap();
         assert!(fit.handedness_margin < 1e-4, "{fit:?}");
+    }
+
+    #[test]
+    fn bearing_presets_give_yaw_and_handedness() {
+        for mirrored in [false, true] {
+            let truth = Frame {
+                yaw_rad: -25.0 * DEG,
+                mirrored,
+                offset: [3.0, 7.0, 0.0],
+            };
+            let (mesh, world) = pins(&truth);
+            let bearing = |a: usize, b: usize| BearingPreset {
+                from: mesh[a],
+                to: mesh[b],
+                world_heading_rad: libm::atan2f(world[b][1] - world[a][1], world[b][0] - world[a][0]),
+            };
+            let fit = fit_bearings(&[bearing(0, 1), bearing(1, 2)]).unwrap();
+            assert_eq!(fit.mirrored, mirrored, "{fit:?}");
+            assert!(close(fit.yaw_rad, truth.yaw_rad, 1e-3), "{fit:?}");
+            assert!(fit.handedness_margin > 0.5, "{fit:?}");
+
+            // One pin then fixes the origin.
+            let frame = Frame::anchored(fit.yaw_rad, fit.mirrored, mesh[3], world[3]);
+            let p = frame.to_world(mesh[0]);
+            assert!((0..3).all(|i| libm::fabsf(p[i] - world[0][i]) < 1e-3), "{p:?}");
+        }
+    }
+
+    #[test]
+    fn single_bearing_gives_yaw_only() {
+        let preset = BearingPreset {
+            from: [0.0, 0.0, 1.0],
+            to: [0.0, 10.0, 1.0],
+            world_heading_rad: compass_to_heading(90.0 * DEG),
+        };
+        let fit = fit_bearings(&[preset]).unwrap();
+        assert!(fit.handedness_margin < 1e-4, "{fit:?}");
+        assert!(fit_bearings(&[]).is_none());
+    }
+
+    #[test]
+    fn bearing_presets_tolerate_mesh_noise() {
+        let truth = Frame {
+            yaw_rad: 60.0 * DEG,
+            mirrored: false,
+            offset: [0.0; 3],
+        };
+        let (mesh, world) = pins(&truth);
+        let mut rng = SplitMix64::new(4);
+        // Mesh positions off by 0.1 m (1σ); baselines are 5–9 m.
+        let noisy: [Vec3; 4] = mesh.map(|p| [p[0] + 0.1 * rng.normal() as f32, p[1] + 0.1 * rng.normal() as f32, p[2]]);
+        let presets: [BearingPreset; 3] = core::array::from_fn(|i| BearingPreset {
+            from: noisy[i],
+            to: noisy[i + 1],
+            world_heading_rad: libm::atan2f(world[i + 1][1] - world[i][1], world[i + 1][0] - world[i][0]),
+        });
+        let fit = fit_bearings(&presets).unwrap();
+        assert!(!fit.mirrored);
+        assert!(close(fit.yaw_rad, truth.yaw_rad, 3.0 * DEG), "{fit:?}");
     }
 
     #[test]
