@@ -35,6 +35,9 @@ Newest first. Conventions: [README](README.md).
   - Regression test: a request fed through `signal()` reaches the application, via
     `Connection::next()`, carrying its identifier. Breaking the fix on purpose makes it fail.
   - No upstream issue or PR existed.
+- **All three local `main`s now carry the patches** (merged `--no-ff`, not pushed): bt-hci
+  `4886657` (2 ahead of `origin`), nrf-sdc `f705f4c` (3 ahead), TrouBLE `fa9886d` (79 ahead).
+  Our firmware builds against all three for both boards (temporary check, reverted).
 - **TrouBLE local `main` = `fa9886d`:** both branches merged (`--no-ff`), 79 commits ahead of
   GreatKet `origin/main`, not pushed. The merged result passes the build, clippy and test matrix,
   and our firmware builds against it for both boards (temporary check, reverted).
