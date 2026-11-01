@@ -201,6 +201,8 @@ Work needed:
   - **Event hook:** `EventHandler` methods for those events, in the style of the existing
     feature-gated CIS hooks: the remote-capabilities, FAE-table, security, config and
     procedure-enable completions, plus subevent result, subevent result continue and test end.
+  - **Host feature bit:** set *Channel Sounding (Host Support)* (LE feature bit 47) through *LE Set
+    Host Feature*, as Zephyr does when CS is enabled. This was found while writing the patch.
   - **Nothing else:** commands, async commands and encryption already exist. The hook runs in
     the runner task, so the app copies step data out and returns.
 - **P-3** navgrid: inline PCT transfer first, RAS as fallback (D-4).

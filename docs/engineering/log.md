@@ -15,6 +15,15 @@ Newest first. Conventions: [README](README.md).
   is left out for now.
 - **TrouBLE:** local GreatKet `main` merged with embassy-rs `main` (`866ee71`, our pinned
   revision). It was 73 commits behind and on bt-hci 0.10.
+- **TrouBLE (P-2), awaiting review:** branch `feat/channel-sounding`.
+  - `bc4c6d0` fixes an existing upstream bug: the `iso` feature alone didn't compile, because the
+    `LeSetHostFeature` import was gated on `subrating` only. A CI line now covers it.
+  - `0eaa329` adds a `channel-sounding` feature: CS event-mask bits, eight `EventHandler` hooks,
+    and the *Channel Sounding (Host Support)* feature bit (Zephyr sets it; we had missed it).
+  - An end-to-end compile check (our firmware with all three patched repos and a real CS
+    `EventHandler`) passed for both boards, then was reverted.
+  - The fork's own blank-line commit in `peripheral.rs` fails upstream's `cargo fmt --check`. Drop
+    it before an upstream PR.
 - **Integration check:** our firmware builds for both boards against the patched bt-hci and
   nrf-sdc, using the new APIs in place of the raw-FFI stopgaps. That was a temporary change,
   reverted. When switching over, override `bt-hci-transport` along with `bt-hci`, or two copies of
