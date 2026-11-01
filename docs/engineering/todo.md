@@ -19,11 +19,24 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **Standalone J-Link Pro** doesn't connect to the TAG at all; the SWD adapter may be bad.
 - [ ] **After first boot:** check the antenna-switch default and callback, and boot a DK (DEF-2,
       DEF-3).
-- [ ] **Two-TAG CS ranging, first run** (DEF-1): connect and pair work. Next, log the reflector
-      while the initiator runs, to see why the remote-capabilities exchange never completes.
+- [ ] **Lab session with external power** (DEF-18, DEF-19): run both TAGs from 3.3 V (no coin
+      cells). Run the 50 ms initiator build. If subevents still abort, try in this order:
+      - data length update to 251 bytes;
+      - a longer interval (100 ms);
+      - CS event length equal to the subevent length;
+      - sub mode 1 as in Nordic's sample;
+      - a DK pair, to rule out the TAGs.
+
+      Capture both sides.
+- [ ] **nrf-sdc fork:** bind `sdc_hci_cmd_vs_cs_params_set` (CS event length, T_PM, board distance
+      offset) and drop the raw FFI in `cs.rs`.
+- [ ] **bt-hci + TrouBLE** (DEF-20): parse the CS capabilities complete v2 event (`0x38`), and
+      make TrouBLE log rather than panic on an LE event it can't parse. Also propose running the
+      feature exchange on connect, which the SDC needs before CS (log 2026-11-02).
 - [ ] **Move all advertising and scanning to the extended commands** once a node does both roles
       (the SDC rejects mixing the legacy and extended sets; DEF-17).
-- [ ] **Host capture parser** (DEF-15): read both boards' `CSR`/`CSC` lines, join them by procedure
+- [ ] **Host capture parser** (DEF-15): read both boards' `CSR`/`CSC` lines (with done status and
+      abort reasons), join them by procedure
       counter, extract mode-2 PCTs per channel, and feed `navgrid-ranging`. Then try inline PCT
       transfer (`cs_enhancements`) so the initiator alone has both sides (R-8).
 - [ ] **Cross-check estimator:** compare against NCS v3.4.1 `ipt_*` / `ras_*` samples and `cs_de`

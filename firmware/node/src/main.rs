@@ -14,7 +14,7 @@ mod crypto;
 mod cs;
 
 use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilities;
-use defmt::{info, unwrap, warn};
+use defmt::{error, info, unwrap, warn};
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_nrf::mode::Blocking;
@@ -49,7 +49,7 @@ const CS_LINKS: u8 = 6;
 /// SDC memory pool. The TAG figure (2 antennas, 4 paths) is what its SDC reported; one antenna
 /// saves 1 KiB per CS link for each of the 3 extra paths. If this is off, the SDC logs the exact
 /// requirement at boot.
-const SDC_MEM: usize = if board::ANTENNAS > 1 { 93_840 } else { 75_408 };
+const SDC_MEM: usize = if board::ANTENNAS > 1 { 95_448 } else { 77_016 };
 
 #[embassy_executor::task]
 async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
@@ -74,6 +74,13 @@ fn build_sdc<'d, const N: usize>(
         .support_ext_scan()
         .support_ext_central()
         .support_le_2m_phy()
+        // As NCS enables them; power control lets CS run on a different PHY than the ACL.
+        .support_phy_update_central()
+        .support_phy_update_peripheral()
+        .support_dle_central()
+        .support_dle_peripheral()
+        .support_le_power_control_central()
+        .support_le_power_control_peripheral()
         .support_channel_sounding_initiator_role_central()
         .support_channel_sounding_initiator_role_peripheral()
         .support_channel_sounding_reflector_role_central()
@@ -202,6 +209,7 @@ async fn main(spawner: Spawner) {
     crypto::seed(seed);
     let mut sdc_mem = sdc::Mem::<SDC_MEM>::new();
     let sdc = unwrap!(build_sdc(sdc_p, &mut rng, mpsl, &mut sdc_mem, antennas));
+    unwrap!(cs::set_event_length(), "CS event length");
 
     let addr = static_address();
     let mut id = [0u8; 8];
@@ -244,7 +252,14 @@ async fn main(spawner: Spawner) {
             None => reflector(&stack, &adv_data[..adv_len], &adv_params).await,
         }
     };
-    let _ = join(runner.run_with_handler(&cs::Events), role).await;
+    // The runner returns only on an error, e.g. an HCI event bt-hci can't parse; everything stops
+    // then, so say why.
+    let host = async {
+        if let Err(e) = runner.run_with_handler(&cs::Events).await {
+            error!("host stopped: {:?}", e);
+        }
+    };
+    join(host, role).await;
 }
 
 type Host<'a, 'd> = Stack<'a, SoftdeviceController<'d>, DefaultPacketPool>;
@@ -268,6 +283,7 @@ async fn reflector(stack: &Host<'_, '_>, adv_data: &[u8], params: &Advertisement
         info!("advertising");
         let conn = unwrap!(advertiser.accept().await);
         info!("connected: handle {}", conn.handle().raw());
+        cs::exchange_features(stack, conn.handle()).await;
         if let Err(e) = cs::reflect(stack, conn.handle()).await {
             warn!("CS: {}", e);
         }
@@ -280,11 +296,11 @@ async fn reflector(stack: &Host<'_, '_>, adv_data: &[u8], params: &Advertisement
 async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6]) {
     let mut central = stack.central();
     let target = Address::random(peer);
-    // Nordic's sample connects at 20 ms with a 4 s supervision timeout.
+    // A 4 s supervision timeout, as Nordic's sample uses.
     let config = ConnectConfig {
         connect_params: RequestedConnParams {
-            min_connection_interval: Duration::from_millis(20),
-            max_connection_interval: Duration::from_millis(20),
+            min_connection_interval: Duration::from_millis(cs::ACL_INTERVAL_MS),
+            max_connection_interval: Duration::from_millis(cs::ACL_INTERVAL_MS),
             supervision_timeout: Duration::from_secs(4),
             ..Default::default()
         },
@@ -305,6 +321,11 @@ async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6]) {
             }
         };
         info!("connected: handle {}", conn.handle().raw());
+        cs::exchange_features(stack, conn.handle()).await;
+        // Zephyr's central moves the ACL to 2M on connect (BT_AUTO_PHY_UPDATE); CS runs on 2M too.
+        if let Err(e) = conn.set_phy(stack, PhyKind::Le2M).await {
+            warn!("set PHY: {:?}", e);
+        }
         if let Err(e) = conn.request_security() {
             warn!("request security: {:?}", e);
         }

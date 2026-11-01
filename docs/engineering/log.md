@@ -4,6 +4,43 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**CS runs end to end, but every subevent aborts (DEF-18).** Reflector `df96e04a5900` and initiator
+`ce36dfcc4c2d`, each logged in turn while the other ran on its coin cell.
+
+- **Capabilities stall: fixed.**
+  - **Symptom:** `LE CS Read Remote Supported Capabilities` never completed, in either direction,
+    with v1 or v2 unmasked, and with no link-layer timeout.
+  - **Cause:** the SDC stalls when that command has to start the LL feature exchange itself.
+  - **Fix:** run the exchange from the host on connect (`LE Read Remote Features`), as Zephyr does.
+    Capabilities, config, CS security and procedure enable then all succeed.
+- **Every subevent aborts.**
+  - **Diagnostics added:** `CSR`/`CSC` lines now carry the procedure and subevent done status and
+    the abort reasons, and the procedure-enable log shows the negotiated timing.
+  - **Result:** every subevent on both sides ends aborted (`0xF`) with subevent abort reason `0x3`
+    (scheduling conflict or limited resources), and no steps. Negotiated: event interval 2, one
+    subevent per event, subevent length as requested.
+  - **Radio works:** sometimes the initiator reports a real frequency compensation (−6.06 ppm) and
+    a reference power of −30 dBm, so mode-0 exchange happens.
+- **No effect at a 20 ms interval:**
+  - SDC support for PHY update, DLE and LE power control (as NCS enables them; +1,608 bytes, SDC
+    now 95,448);
+  - NCS's 5 ms CS event length (`sdc_hci_cmd_vs_cs_params_set`, through raw FFI for now);
+  - a 2.5 ms ACL event length on the reflector;
+  - 90 ms central ACL event spacing;
+  - an ACL update to 2M (as Zephyr's central does);
+  - 5 ms subevents;
+  - 1/1/1 links instead of 6/8/6.
+- **Kept anyway, matching NCS:** the support flags, the CS event length and the 2M update. The
+  spacing and link-count experiments were reverted.
+- **Nordic's bug:** Nordic acknowledges an SDC bug where all subevents abort for some subevent
+  length and interval combinations (DevZone 129138, no fix date). Their workaround is a longer
+  interval.
+- **Next:** the initiator now asks for 50 ms (one of Nordic's tested intervals) with 16 ms
+  subevents. That build is ready but untested, because the probe failed first (DEF-19).
+- **Related:** unmasking the v2 capabilities event made TrouBLE panic, since bt-hci can't parse
+  subevent `0x38` and TrouBLE unwraps (DEF-20). The host runner's errors are now logged instead of
+  being dropped silently.
+
 **First two-TAG run: connects and pairs, then CS stalls.** The reflector is TAG `df96e04a5900` on
 its coin cell; the initiator is TAG `ce36dfcc4c2d` on the probe.
 

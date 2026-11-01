@@ -3,21 +3,23 @@
 //! One board initiates and one reflects. Both log their raw step data over RTT, so the host can
 //! combine the two sides offline; no RAS or inline PCT transfer is needed yet. The command order
 //! and parameter values follow Nordic's NCS v3.4.1 `ras_initiator` sample: mode 2 with three
-//! mode-0 steps, all 72 channels, a 1×1 antenna configuration, 2M PHY, and a procedure every 10
-//! connection events at a 20 ms interval.
+//! mode-0 steps, all 72 channels, a 1×1 antenna configuration, 2M PHY, 16 ms subevents, and a
+//! procedure every 10 connection events. The connection interval differs (see
+//! [`ACL_INTERVAL_MS`]). Like Zephyr's host, both sides run the feature exchange on connect and
+//! the initiator moves the link to 2M.
 //!
 //! Build-time role (no provisioning yet): `NAVGRID_ROLE=initiator` with `NAVGRID_PEER` set to the
 //! reflector's node ID as it logs it at boot (12 hex digits). Anything else builds a reflector.
 
 use bt_hci::cmd::le::{
     LeCsCreateConfig, LeCsProcedureEnable, LeCsReadRemoteSupportedCapabilities, LeCsSecurityEnableCommand,
-    LeCsSetDefaultSettings, LeCsSetProcedureParams,
+    LeCsSetDefaultSettings, LeCsSetProcedureParams, LeReadRemoteFeatures,
 };
 use bt_hci::event::le::{
     LeCsConfigComplete, LeCsProcedureEnableComplete, LeCsReadRemoteSupportedCapabilitiesComplete,
     LeCsSecurityEnableComplete, LeCsSubeventResult, LeCsSubeventResultContinue,
 };
-use bt_hci::param::{ConnHandle, ExtDuration, LeCsSubeventStepData, PhyKind, Status};
+use bt_hci::param::{ConnHandle, ExtDuration, LeCsSubeventStepData, PackedAbortReasons, PhyKind, Status};
 use defmt::{Format, info, warn};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -34,6 +36,15 @@ const ROLE_REFLECTOR: u8 = 1 << 1;
 /// Let the controller pick the CS_SYNC antenna, repeating the antenna sequence.
 const CS_SYNC_ANTENNA_REPETITIVE: u8 = 0xFE;
 const MAX_TX_POWER_DBM: i8 = 20;
+/// ACL connection interval the initiator asks for. At 20 ms (Nordic's sample) every CS subevent
+/// aborted with a scheduling conflict; Nordic acknowledges an SDC bug of that kind (DEF-18).
+pub const ACL_INTERVAL_MS: u64 = 50;
+/// The same interval in 0.625 ms units, as procedure lengths are given.
+const ACL_INTERVAL_0625: u16 = (ACL_INTERVAL_MS * 1000 / 625) as u16;
+/// A CS procedure every this many connection events.
+const PROCEDURE_INTERVAL: u16 = 10;
+/// NCS's default time set aside per CS event (one subevent per event here).
+const CS_EVENT_LENGTH_US: u32 = 5000;
 /// How long to wait for an asynchronous CS command to complete.
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -98,10 +109,14 @@ impl EventHandler for Events {
 
     fn on_cs_procedure_enable_complete(&self, e: &LeCsProcedureEnableComplete) {
         info!(
-            "CS procedures {}: every {} events, {} subevent(s) per event, tx {} dBm: {}",
+            "CS procedures {}: every {} events (event interval {}), max length {} us, {} subevent(s) of {} us every {} us, tx {} dBm: {}",
             if e.state { "on" } else { "off" },
             e.procedure_interval,
+            e.event_interval,
+            e.max_procedure_len.as_micros(),
             e.subevents_per_event,
+            e.subevent_len.as_micros(),
+            e.subevent_interval.as_micros(),
             e.selected_tx_power,
             e.status
         );
@@ -114,6 +129,8 @@ impl EventHandler for Events {
             e.procedure_counter,
             e.frequency_compensation.as_raw(),
             e.reference_power_level,
+            Done2(e.procedure_done_status as u8, e.subevent_done_status as u8),
+            abort_byte(&e.abort_reason),
             e.num_antenna_paths,
             &e.steps,
         );
@@ -122,15 +139,44 @@ impl EventHandler for Events {
     fn on_cs_subevent_result_continue(&self, e: &LeCsSubeventResultContinue<'_>) {
         // A continuation carries no procedure counter or frequency compensation of its own; the
         // host takes them from the preceding CSR line.
-        log_steps("CSC", 0, 0, 0, e.num_antenna_paths, &e.steps);
+        log_steps(
+            "CSC",
+            0,
+            0,
+            0,
+            Done2(e.procedure_done_status as u8, e.subevent_done_status as u8),
+            abort_byte(&e.abort_reason),
+            e.num_antenna_paths,
+            &e.steps,
+        );
     }
 }
 
+/// Procedure and subevent done status (0 complete, 1 partial, 0xF aborted).
+struct Done2(u8, u8);
+
+/// The abort reasons as the controller packs them: procedure in bits 0–3, subevent in bits 4–7.
+fn abort_byte(reasons: &PackedAbortReasons) -> u8 {
+    ((reasons.subevent_reason() as u8) << 4) | reasons.procedure_reason() as u8
+}
+
 /// Logs one subevent as a single line, for the host to parse:
-/// `<tag> <role> <procedure counter> <frequency compensation> <reference power> <antenna paths>
-/// <steps> <step bytes>`. The step bytes keep the HCI layout (mode, channel, length, data, per
-/// step), so the host parses them exactly as it would a controller event.
-fn log_steps(tag: &str, procedure: u16, freq_comp: u16, ref_power: i8, paths: u8, steps: &LeCsSubeventStepData<'_>) {
+/// `<tag> <role> <procedure counter> <frequency compensation> <reference power> <procedure done>
+/// <subevent done> <abort reasons> <antenna paths> <steps> <step bytes>`. Done statuses and abort
+/// reasons are the HCI values (abort: procedure in the low nibble, subevent in the high one). The
+/// step bytes keep the HCI layout (mode, channel, length, data, per step), so the host parses them
+/// exactly as it would a controller event.
+#[allow(clippy::too_many_arguments)]
+fn log_steps(
+    tag: &str,
+    procedure: u16,
+    freq_comp: u16,
+    ref_power: i8,
+    done: Done2,
+    abort: u8,
+    paths: u8,
+    steps: &LeCsSubeventStepData<'_>,
+) {
     let mut buf = [0u8; 255];
     let mut len = 0;
     for step in steps.iter() {
@@ -144,16 +190,50 @@ fn log_steps(tag: &str, procedure: u16, freq_comp: u16, ref_power: i8, paths: u8
         len = end;
     }
     info!(
-        "{=str} {=str} {=u16} {=u16} {=i8} {=u8} {=usize} {=[u8]:02x}",
+        "{=str} {=str} {=u16} {=u16} {=i8} {=u8:x} {=u8:x} {=u8:02x} {=u8} {=usize} {=[u8]:02x}",
         tag,
         if is_initiator() { "I" } else { "R" },
         procedure,
         freq_comp,
         ref_power,
+        done.0,
+        done.1,
+        abort,
         paths,
         steps.len(),
         &buf[..len]
     );
+}
+
+/// Runs the LL feature exchange from the host, as Zephyr does on every connection. The SDC
+/// (nrfxlib 3.4) never completes LE CS Read Remote Supported Capabilities when that command has to
+/// start the feature exchange itself: neither side gets a completion event and the link idles. The
+/// completion event of this command is masked; only the exchange matters.
+pub async fn exchange_features(stack: &Stack<'_, '_>, handle: ConnHandle) {
+    if let Err(e) = stack.async_command(LeReadRemoteFeatures::new(handle)).await {
+        warn!("read remote features: {:?}", e);
+    }
+}
+
+/// Sets the time the SDC sets aside for each CS event, as NCS does after enabling the controller
+/// (`CONFIG_BT_CTLR_SDC_CS_EVENT_LEN_DEFAULT`). Call once, after the SDC is built and before any
+/// CS configuration.
+pub fn set_event_length() -> Result<(), Status> {
+    use nrf_sdc::raw::{
+        SDC_HCI_VS_CS_PARAM_TYPE_CS_EVENT_LENGTH_SET, sdc_hci_cmd_vs_cs_params_set, sdc_hci_cmd_vs_cs_params_set_t,
+        sdc_hci_cmd_vs_cs_params_set_t__bindgen_ty_1, sdc_hci_vs_cs_event_length_params_t,
+    };
+    let params = sdc_hci_cmd_vs_cs_params_set_t {
+        cs_param_type: SDC_HCI_VS_CS_PARAM_TYPE_CS_EVENT_LENGTH_SET as u8,
+        cs_param_data: sdc_hci_cmd_vs_cs_params_set_t__bindgen_ty_1 {
+            cs_event_length_params: sdc_hci_vs_cs_event_length_params_t {
+                cs_event_length_us: CS_EVENT_LENGTH_US,
+            },
+        },
+    };
+    // SAFETY: a plain synchronous SDC call with a valid, fully initialised parameter struct.
+    let status = Status::from(unsafe { sdc_hci_cmd_vs_cs_params_set(&params) });
+    status.to_result().map_err(|_| status)
 }
 
 /// The reflector's part: allow the reflector role on this link.
@@ -234,16 +314,15 @@ pub async fn initiate(stack: &Stack<'_, '_>, handle: ConnHandle) -> Result<(), C
     })
     .await?;
 
-    // At a 20 ms connection interval (32 × 0.625 ms) and a procedure every 10 events, a procedure
-    // may last up to 9 intervals, as in Nordic's sample.
+    // A procedure every 10 connection events may last up to 9 intervals, as in Nordic's sample.
     stack
         .command(LeCsSetProcedureParams::new(
             handle,
             CONFIG_ID,
-            bt_hci::param::Duration::from_u16(32 * 9),
-            10, // min procedure interval, connection events
-            10, // max procedure interval
-            0,  // procedure count: until disabled
+            bt_hci::param::Duration::from_u16(ACL_INTERVAL_0625 * (PROCEDURE_INTERVAL - 1)),
+            PROCEDURE_INTERVAL, // min, in connection events
+            PROCEDURE_INTERVAL, // max
+            0,                  // procedure count: until disabled
             ExtDuration::from_u32(16_000),
             ExtDuration::from_u32(16_000),
             0, // antenna configuration index 0: 1×1
