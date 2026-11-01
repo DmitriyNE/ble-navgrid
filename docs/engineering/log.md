@@ -8,8 +8,8 @@ Newest first. Conventions: [README](README.md).
 
 - **bt-hci (P-6), reviewed:** branch `fix-cs-step-data-layout`, commit `2d8d65e`. Row-major step
   parsing, validated at parse time, with tests on the real layout.
-- **nrf-sdc (P-1), awaiting review:** branch `cs-hci-commands`, commits `cde4e6d` (13 CS command
-  bindings) and `e48a902` (`cs_count`, `cs_cfg`, `cs_antenna_switch_callback`). Every bt-hci
+- **nrf-sdc (P-1), awaiting review:** branch `cs-hci-commands`, commits `4473bbc` (13 CS command
+  bindings) and `5bc77b2` (`cs_count`, `cs_cfg`, `cs_antenna_switch_callback`). Every bt-hci
   parameter and return type was checked against its C struct with temporary compile-time size
   assertions (16 of 16 match; a deliberately wrong one fails), plus field order by eye. `LeCsTest`
   is left out for now.
