@@ -4,15 +4,15 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 
 ## P0 — bring-up
 
-- [ ] **P-1 nrf-sdc:** bind 14 CS commands (6 sync, 7 async, plus `LeCsTest` by hand); add
-      `cs_count()` / `cs_cfg()` setters and a safe antenna-switch callback setter
-      (architecture §6). Fork, then upstream PR.
+- [ ] **P-1 nrf-sdc:** done on branch `cs-hci-commands`, awaiting review. Optional follow-up:
+      `LeCsTest` binding (variable-length tail, hand-written like `LeSetExtAdvData`).
 - [ ] **P-2 TrouBLE:** a `channel-sounding` feature that enables the CS LE event-mask bits
       (43–50) and adds `EventHandler` hooks for the CS events. Fork, then upstream PR.
-- [ ] **P-6 bt-hci:** row-major CS step parsing, with real-layout test data (DEF-13); rename
-      `reserved` → `cs_enhancements`. Fork via `[patch.crates-io]`, then upstream PR.
+- [ ] **bt-hci follow-up (optional):** rename `reserved` → `cs_enhancements` in create-config and
+      test params (API change, so a separate PR).
 - [ ] **Firmware:** switch to the forks; replace the raw-FFI stopgaps (capabilities read,
-      `sdc_cfg_raw`, antenna callback) with the new APIs.
+      `sdc_cfg_raw`, antenna callback) with the new APIs. Override `bt-hci-transport` together with
+      `bt-hci` in `[patch.crates-io]`. A temporary build of this already passed for both boards.
 - [ ] **First boot on a TAG:** check the boot log (SDC memory, CS capabilities); verify DC/DC,
       crystals and the antenna-switch default (DEF-2, DEF-3, DEF-4).
 - [ ] **Two-TAG CS ranging:** inline PCT transfer first, RAS as fallback (R-8). Stream raw step

@@ -4,6 +4,25 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-01
 
+**Upstream patches, in progress** (local clones in `~/temp/ble-patches`, nothing pushed).
+
+- **bt-hci (P-6), reviewed:** branch `fix-cs-step-data-layout`, commit `2d8d65e`. Row-major step
+  parsing, validated at parse time, with tests on the real layout.
+- **nrf-sdc (P-1), awaiting review:** branch `cs-hci-commands`, commits `cde4e6d` (13 CS command
+  bindings) and `e48a902` (`cs_count`, `cs_cfg`, `cs_antenna_switch_callback`). Every bt-hci
+  parameter and return type was checked against its C struct with temporary compile-time size
+  assertions (16 of 16 match; a deliberately wrong one fails), plus field order by eye. `LeCsTest`
+  is left out for now.
+- **TrouBLE:** local GreatKet `main` merged with embassy-rs `main` (`866ee71`, our pinned
+  revision). It was 73 commits behind and on bt-hci 0.10.
+- **Integration check:** our firmware builds for both boards against the patched bt-hci and
+  nrf-sdc, using the new APIs in place of the raw-FFI stopgaps. That was a temporary change,
+  reverted. When switching over, override `bt-hci-transport` along with `bt-hci`, or two copies of
+  its traits clash.
+- **A false alarm, for the record:** I briefly thought bt-hci's cached-capabilities params lacked
+  `t_ip1/t_ip2`. My grep regex skipped field names containing digits; the compile-time size check
+  settled it.
+
 **Upstream patch list pinned down** (architecture §6).
 
 - **nrf-sdc (P-1):** 14 CS command bindings, with layouts checked field by field against the C
