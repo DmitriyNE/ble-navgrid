@@ -35,6 +35,9 @@ Newest first. Conventions: [README](README.md).
   - Regression test: a request fed through `signal()` reaches the application, via
     `Connection::next()`, carrying its identifier. Breaking the fix on purpose makes it fail.
   - No upstream issue or PR existed.
+- **TrouBLE local `main` = `fa9886d`:** both branches merged (`--no-ff`), 79 commits ahead of
+  GreatKet `origin/main`, not pushed. The merged result passes the build, clippy and test matrix,
+  and our firmware builds against it for both boards (temporary check, reverted).
 - **Integration check:** our firmware builds for both boards against the patched bt-hci and
   nrf-sdc, using the new APIs in place of the raw-FFI stopgaps. That was a temporary change,
   reverted. When switching over, override `bt-hci-transport` along with `bt-hci`, or two copies of
