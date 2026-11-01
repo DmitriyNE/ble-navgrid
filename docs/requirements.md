@@ -1,6 +1,6 @@
 # navgrid — requirements
 
-Status: **draft v0.4** (2026-11-01). §8 records what is decided. Items marked *(proposed)* still
+Status: **draft v0.5** (2026-11-01). §8 records what is decided. Items marked *(proposed)* still
 need sign-off.
 
 ## 1. Concept
@@ -12,9 +12,11 @@ navgrid is an **ambient positioning mesh** of nRF54L15 nodes.
    on-device.
 3. **Tags** on assets and on people range against nearby nodes and are **located against the
    mesh**.
-4. Ranges and positions can optionally be **routed to a central node** (sink → host), but
+4. The mesh frame is **referenced absolutely** (east, north, up), so its positions combine with
+   headings from other sensors (a HUD's magnetometer) and with maps.
+5. Ranges and positions can optionally be **routed to a central node** (sink → host), but
    positioning must not depend on it.
-5. **Mesh state and sideband data** (topology, link health, positions, battery, environmental
+6. **Mesh state and sideband data** (topology, link health, positions, battery, environmental
    readings) reach a small monitoring tool of our own.
 
 Target scale is a **building with many tags**. Early phases are smaller, but no architectural
@@ -27,9 +29,10 @@ distance, from across the building down to the last metre.
 
 1. **The asset tag** on the keys is still most of the time and costs almost nothing. When it moves
    (carried in a pocket) it tracks itself. When it settles, it fixes its position and publishes it.
-2. **The person tag** tracks the wearer's 3D position and heading continuously while they move.
-3. **Far away:** the pointer is the bearing from the person's pose to the asset's last published
-   position.
+2. **The person tag** tracks the wearer's 3D position while they move. Heading comes from the
+   HUD's own sensors (e.g. a magnetometer), in world coordinates.
+3. **Far away:** the pointer is the bearing from the person to the asset's last published
+   position, both in the world frame (FR-A), relative to the HUD's heading.
 4. **Close in** (within radio range): the person tag ranges **directly** to the asset tag. CS
    gives the distance between the two; the bearing is refined from how that distance changes as
    the person moves. The asset can blink its LED.
@@ -42,7 +45,8 @@ distance, from across the building down to the last metre.
 | **Pinned node** | Node with surveyed coordinates. Pins fix the mesh to the building frame. |
 | **Tag** / target | Device located against the mesh; does not contribute to node positions. Two kinds: |
 | **Asset tag** | Tag on a thing (keys, equipment). Mostly still. May be a single-antenna module. |
-| **Person tag** | Tag worn by a person with a HUD. Needs position and **heading**. |
+| **Person tag** | Tag worn by a person with a HUD. Provides position; the HUD provides heading. |
+| **Mesh frame / world frame** | The frame the mesh solves in (its own) vs east-north-up (absolute). FR-A relates the two. |
 | **Sink** | USB-powered gateway attached to the host. Collects telemetry; serves the asset registry. |
 | **Link** | BLE ACL connection between two devices; CS procedures and data both run over it. |
 | **Initiator / reflector** | CS roles on a link. The initiator computes the distance; it needs the reflector's step data. |
@@ -54,8 +58,8 @@ distance, from across the building down to the last metre.
 | Phase | Goal | Exit criterion |
 |---|---|---|
 | **P0 — bring-up** | Rust firmware on nRF54L15 TAG boards runs CS between two boards, with antenna diversity; raw step data reaches the host. | Our estimator agrees with Nordic `cs_de` (NCS v3.4.1 `ipt_*` / `ras_*` samples) within 5 cm on the same captures. Ranging-rate and multi-link limits measured. Energy per activity measured. CR2032 sag and BME688 pressure noise measured. |
-| **P1 — find my keys, first cut** | One asset tag, one person tag, ≥4 nodes at hand-surveyed positions. 3D tracker with barometric height and IMU gating. Host view stands in for the HUD: pointer and distance. Direct person↔asset ranging for the final approach. | Position p90 (horizontal and vertical), pointer bearing error, and final-approach distance error measured on a test course. Diversity on vs off, IMU gating on vs off. Antenna-path combiner chosen from real captures. |
-| **P2 — self-survey** | Nodes range each other; positions solved, first centrally on host, then distributed on nodes. | Distributed solution within 0.2 m of central reference; node p90 vs ground truth measured. |
+| **P1 — find my keys, first cut** | One asset tag, one person tag, ≥4 nodes at hand-surveyed, north-aligned positions (pins, FR-A3a). 3D tracker with barometric height and IMU gating. Host view stands in for the HUD: pointer and distance. Direct person↔asset ranging for the final approach. | Position p90 (horizontal and vertical), pointer bearing error, and final-approach distance error measured on a test course. Diversity on vs off, IMU gating on vs off. Antenna-path combiner chosen from real captures. |
+| **P2 — self-survey** | Nodes range each other; positions solved, first centrally on host, then distributed on nodes. Mesh referenced from pins and from heading observations (FR-A3). | Distributed solution within 0.2 m of central reference; node p90 vs ground truth measured; heading-learned yaw within NFR-11 of the pin-derived yaw. |
 | **P3 — building** | Link scheduling, handover, many tags, routing to sinks, provisioning, OTA, HUD integration. | Capacity targets in NFR-4 met in a multi-room deployment. |
 
 ## 4. Functional requirements
@@ -92,19 +96,32 @@ distance, from across the building down to the last metre.
 - **FR-T4** Nodes, asset tags, person tags and the sink run the same firmware, with the role from configuration. Tags are TAGs or single-antenna nRF54L modules.
 - **FR-T5** An **asset tag publishes its position when it settles** (after the settling burst, FR-T6) toward the sink. Person tags may publish theirs too.
 - **FR-T6** **Motion gating.** A tag ranges at its moving rate only while the IMU reports motion. On stopping it takes a short settling burst, then drops to a slow keep-alive rate. Wake-on-motion uses the ADXL367, so a still tag costs close to nothing.
-- **FR-T7** **IMU fusion**, in tiers. The TAG has no magnetometer, so heading is never measured; it is integrated by the gyro and aligned to the building frame from motion.
+- **FR-T7** **IMU fusion**, in tiers. Tags do not need to produce heading: the HUD provides it (FR-F2).
   - (a) **All tags:** accelerometer still/moving detection drives FR-T6, zero-velocity updates and the filter's motion noise.
-  - (b) **Person tags:** gyro-integrated heading, aligned to the building frame whenever the CS-tracked walking direction is reliable. Step detection (pedestrian dead reckoning) between ranges.
-  - (c) Later, if it pays off: full inertial propagation with a heading state.
+  - (b) *Optional:* gyro and step detection (pedestrian dead reckoning) between ranges, if it lowers the ranging rate needed while walking by enough to pay for the gyro.
+  - (c) Later, if it pays off: full inertial propagation.
 
 ### Find (F)
 
 - **FR-F1** **Asset registry:** the last published position of each asset (with uncertainty and age) is available to the finder. It starts at the host, fed through the sink (FR-S); a mesh-local query comes later if needed.
-- **FR-F2** **Person pose:** the person tag provides 3D position and heading (yaw) in the building frame (FR-T7b). If the HUD has its own IMU, its frame is aligned to ours instead (Q13).
+- **FR-F2** **Person pose:** the person tag provides 3D position; heading comes from another sensor, typically the HUD's magnetometer, in the world frame. Positions are converted to the world frame (FR-A) before the pointer is computed, so heading and bearing share a reference.
 - **FR-F3** **Pointer:** bearing (azimuth and elevation) and distance from the person to the asset, in the person's frame, ready for a HUD to render. The host view renders it until a HUD is integrated.
 - **FR-F4** **Final approach:** within radio range, the person tag ranges directly with the asset tag over CS. Distance comes straight from CS; bearing comes from direct ranges taken along the person's tracked path (synthetic aperture). This replaces mesh-based pointing close in, where position errors would swamp the bearing (R-13).
 - **FR-F5** Asset tags stay connectable at a slow advertising interval, so a nearby person tag can start direct ranging without paging.
 - **FR-F6** *(Optional)* An asset tag blinks its LED on request during the final approach.
+
+### Absolute referencing (A)
+
+A self-surveyed mesh knows its shape, not its orientation, handedness or origin. Barometry fixes
+"up"; the rest must come from outside.
+
+- **FR-A1** **World frame:** x east, y north, z up, relative to true north. Magnetic declination is a per-site setting, applied to compass headings. A site may also carry a geodetic anchor (latitude, longitude, altitude) for maps.
+- **FR-A2** **Vertical:** z is up and floors are separated, from barometric heights (FR-T2, FR-M3).
+- **FR-A3** **Yaw and handedness** (all that pointing needs) come from either source, or both:
+  - (a) **Pins:** ≥ 2 nodes with known world coordinates give yaw and offset; ≥ 3 non-collinear pins also give handedness. They are tape-measured at commissioning, or placed on a north-referenced floor plan.
+  - (b) **Heading observations:** a device with its own absolute heading (a HUD) walks straight while the mesh tracks it. The host estimates yaw and handedness from many such segments, taken in varied directions and places so that local magnetic disturbances average out.
+- **FR-A4** **Origin** (translation) comes from one pin or a floor-plan anchor. It is needed for maps and display, not for pointing.
+- **FR-A5** **Versioned transform:** the mesh→world transform carries a version. Every published position states its frame version; the host converts, and devices that output world coordinates receive the current transform. The transform is re-estimated when pins change or heading observations drift.
 
 ### Data routing (D)
 
@@ -118,6 +135,7 @@ distance, from across the building down to the last metre.
 - **FR-S3** Environmental sideband from the BME688: temperature, humidity and pressure on a configurable period (default 60 s), and gas resistance only when enabled because its heater dominates the cost. Pressure doubles as the barometric reference for FR-T2.
 - **FR-S4** Telemetry is delay-tolerant: it is queued and forwarded on ranging contacts, never on dedicated wake-ups. Records carry their age, so the sink can timestamp them without clock sync (NFR-5).
 - **FR-S5** **Monitoring is our own small engineering tool**, not an external stack. `navgrid monitor` shows live mesh state in the terminal and appends every record to a JSON-lines log. `navgrid decode --json` covers offline captures.
+- **FR-S6** *(Later)* A **thin web UI** served by the host tool: live mesh view on a floor plan, health and sideband, asset registry, and pin placement for absolute referencing (FR-A3a). It reads the same state as `navgrid monitor`.
 
 ### Host (H)
 
@@ -147,7 +165,8 @@ at best", so P0 measurements will re-baseline these.
 | **NFR-7** Security | All devices are ours (nRF54Lxx). All CS links are encrypted (the CS security-start procedure needs an encrypted ACL), with keys derived from a fleet network key, so no per-pair pairing. Phones may come later; they would add standard RAS and LE Secure Connections pairing for that class of device. |
 | **NFR-8** Robustness | Losing nodes degrades accuracy gracefully; the mesh re-solves without operator action. |
 | **NFR-9** Reproducibility | Estimators are deterministic. Recorded captures plus replay run in CI. |
-| **NFR-10** Pointing | Pointer bearing error ≤ 20° p90 when the asset is ≥ 3 m away. Final-approach distance error ≤ 0.3 m p90. |
+| **NFR-10** Pointing | Pointer bearing error ≤ 20° p90 when the asset is ≥ 3 m away, excluding the HUD's own heading error. Final-approach distance error ≤ 0.3 m p90. |
+| **NFR-11** Referencing | Mesh→world yaw error ≤ 5° p90; it adds 1:1 to pointer bearing error. Handedness correct. Origin within 0.5 m where pins exist. |
 
 ## 6. Constraints
 
@@ -170,8 +189,8 @@ at best", so P0 measurements will re-baseline these.
 | R-8 | Inline PCT transfer (D-4) is new (Core 6.3): it is unverified whether it supports multiple antenna paths and whether `bt-hci` 0.11 parses its event data. | Check in P0; fall back to RAS (standard, slower) if either fails. |
 | R-9 | CR2032 pulse load: a CS procedure keeps the radio on for tens of ms. Coin cells sag under pulses, more so when cold or aged, which risks brown-out mid-procedure. | Measure sag on TAGs in P0; cap procedure length; check bulk capacitance. |
 | R-10 | Barometric height: building HVAC holds zones at different pressures (~8.5 cm of height per Pa), and sensors have offsets. BME688 pressure noise is not yet characterised for this use. | Reference only nearby nodes in the same zone; calibrate per-node offsets against CS geometry; measure noise in P0. |
-| R-11 | The gyro costs far more than the accelerometer. The 1-month budget affords it on person tags while they move, not continuously. | Gyro only on person tags and only while moving; measure its draw in P0. |
-| R-12 | **Heading without a magnetometer.** Aligning gyro heading to the walking direction assumes the tag faces where the person walks: true for a head-worn tag walking forward, false when sidestepping or looking around. Gyro yaw drifts while the person stands and turns. | Align only on straight, steady walking; gyro drift over minutes is small; spike: bearing from CS antenna-path phase differences on a 2-antenna person tag. |
+| R-11 | The gyro costs far more than the accelerometer. | Tags only need it for optional dead reckoning (FR-T7b); use it only if measurements show a net saving. |
+| R-12 | **Referencing error goes straight into pointing.** Pin errors and indoor magnetic disturbances bias the mesh yaw. Heading observations clustered in a few spots (one corridor near a steel beam) do not average out. | Pins where accuracy matters. Weight and spread heading observations by place and direction. Report concentration and handedness margin, and flag a frame whose estimate drifts. |
 | R-13 | **Close-in pointing.** Bearing error ≈ combined position error ÷ distance: 0.5 m at 1 m is ~27°. Mesh-based pointing fails exactly where the user needs it most. | Final approach on direct person↔asset ranging (FR-F4); show distance prominently close in. |
 
 ## 8. Decisions and open questions
@@ -187,7 +206,11 @@ Decided 2026-11-01:
 | Q8 | Battery life | **1 month goal, 1 week acceptable** (NFR-6). No squeezing for a year. |
 | Q10 | Monitoring | **Our own small engineering tool** (FR-S5). |
 | Q11 | What tags are attached to | **Assets and people.** Driving use case: find my keys with a HUD pointer (§1, FR-F). |
-| — | IMU | Accelerometer on all tags; gyro heading on person tags (FR-T7). No magnetometer. |
+| — | IMU | Accelerometer on all tags (FR-T7). |
+| — | Heading | Provided by another sensor (e.g. the HUD's magnetometer), not by tags. The mesh must be **absolutely referenced** so the two combine (FR-A). |
+| Q13 | The HUD | Not relevant for now. The host view stands in. |
+| Q14 | Asset registry location | **Host only** for now; may extend into the mesh later (FR-F1). |
+| — | Monitoring UI | Terminal tool now; a **thin web UI later** (FR-S6). |
 | — | Phases | P0–P3 as in §3. |
 
 Open:
@@ -197,5 +220,4 @@ Open:
 | Q3 | Are the NFR-1/2/4/10 numbers right for the product? | As proposed. |
 | Q5 | Routing transport: opportunistic over ranging contacts, or 802.15.4/Thread? | Opportunistic over BLE ranging contacts (D-6). |
 | Q7 | Who initiates on tag links? | The tag initiates (D-3); the person tag initiates on direct person↔asset links. |
-| Q13 | The HUD: which device, does it have its own IMU (and compass), where is the person tag worn (on the HUD/head or on the body), and how does the HUD get the pointer (BLE from the person tag, or via phone/host)? | Person tag worn on the head; host view stands in for the HUD. |
-| Q14 | Where does the asset registry live long-term: host only, or also queryable inside the mesh (for no-sink deployments)? | Host, fed through the sink (FR-F1). |
+| Q15 | Which referencing source is acceptable in deployment: pins at commissioning, learned from HUD headings, or both? | Both: hand-surveyed, north-aligned pins in P1; heading-learned yaw as the automatic path and as a cross-check (FR-A3). |

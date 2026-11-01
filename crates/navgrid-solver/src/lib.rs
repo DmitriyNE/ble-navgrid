@@ -1,8 +1,10 @@
-//! Position solvers: one-shot multilateration (this file) and the target tracking filter
-//! ([`tracker`]). The distributed mesh solver comes later (architecture D-9).
+//! Position solvers: one-shot multilateration (this file), the tag tracking filter ([`tracker`]),
+//! and absolute referencing plus the find pointer ([`frame`]). The distributed mesh solver comes
+//! later (architecture D-9).
 
 #![no_std]
 
+pub mod frame;
 pub mod tracker;
 
 pub type Vec3 = [f32; 3];

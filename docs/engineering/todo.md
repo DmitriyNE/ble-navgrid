@@ -28,23 +28,32 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 
 - [ ] **Tag firmware:** on-device tracker, motion gating with a settling burst, asset
       publish-on-settle.
-- [ ] **Person heading:** BMI270 gyro, aligned to the CS-tracked walking direction (D-19).
+- [ ] **Absolute referencing for P1:** hand-surveyed, north-aligned pins; the host owns the
+      `Frame` and its version; positions carry the frame version (FR-A5).
 - [ ] **Host asset registry and pointer** (FR-F1, FR-F3) in the host view.
 - [ ] **Final approach:** direct person↔asset ranging and synthetic-aperture bearing (D-20).
       Optional: asset LED blink.
-- [ ] **Spike:** bearing from CS antenna-path phase differences on a 2-antenna person tag (R-12).
 - [ ] **Spike:** first-path IFFT / super-resolution estimator vs phase slope.
 - [ ] **Simulator:** full-fix vs single-range tracking side by side; GDOP/battery-aware node
       selection; a find-my-keys scenario with pointer-error statistics.
 - [ ] **Configuration:** `NodeConfig` in flash, and provisioning over serial (DEF-5).
 - [ ] **Telemetry envelope** with age and hop count (DEF-10).
-- [ ] **Answers needed:** Q13 (the HUD) and Q14 (where the registry lives).
+- [ ] **Answer needed:** Q15, which referencing source(s) are acceptable in deployment.
 
 ## P2 / P3
 
 - [ ] **Mesh links:** low-duty persistent connections, ranging bursts, event-driven re-survey
       (D-10).
 - [ ] **Self-survey:** central solver on the host, then the distributed one on nodes.
+- [ ] **Heading-learned referencing:** extract straight, steady walking segments from tracks;
+      pair them with the HUD's heading stream; run `frame::fit_headings` with place/direction
+      weighting (R-12); compare with the pin-derived yaw.
 - [ ] **Routing:** delay-tolerant forwarding toward sinks (D-6).
 - [ ] **Fleet-key LTKs** without pairing (D-7).
 - [ ] **OTA, provisioning tooling, capacity tests.**
+
+## Later
+
+- [ ] **Thin web UI** (FR-S6, D-23): a static page plus a JSON endpoint on the host tool. It
+      shows the floor plan, mesh, health and sideband, and the asset registry, and handles pin
+      placement.

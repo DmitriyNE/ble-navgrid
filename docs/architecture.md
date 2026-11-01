@@ -1,7 +1,9 @@
 # navgrid — architecture
 
-Status: **draft v0.4** (2026-11-01). Companion to [requirements.md](requirements.md). Evidence
+Status: **draft v0.5** (2026-11-01). Companion to [requirements.md](requirements.md). Evidence
 behind the numbers here lives in [engineering/spikes](engineering/spikes/).
+v0.5: heading comes from the HUD, the mesh is absolutely referenced (§11), and a thin web UI is
+planned for later (§9).
 
 ## 1. Overview
 
@@ -152,7 +154,7 @@ Per role, against the one-month budget:
 | Role | Estimate |
 |---|---|
 | **Asset tag** | Still: idle + advertising ≈ 15 µA, which is months. Carried: tracking only while moving. |
-| **Person tag** | Moving: 2 single-range updates/s ≈ 250 µA, plus gyro ≈ 0.5 mA, so ≈ 0.75 mA. That allows ~8 h/day of motion for a month. |
+| **Person tag** | Moving: 2 single-range updates/s ≈ 250 µA, which fits a month of near-continuous motion. Heading is the HUD's job. Optional gyro dead reckoning would add ≈ 0.5 mA, giving ~8 h/day of motion for a month. |
 | **Node** | Idle, advertising and ~6 mesh links ≈ 20 µA, plus ≈ 40 µA while a person walks nearby (round-robin over 6 nodes). Busy corridors drain first, so tags weigh advertised battery (FR-T1). |
 | **Find session** | Direct person↔asset ranging at 4 Hz for a minute ≈ 30 mC on each side. Negligible. |
 
@@ -197,7 +199,8 @@ Reference fixtures (C, not shipped): NCS v3.4.1 `samples/bluetooth/channel_sound
 crates/                     no_std, shared by firmware and host
   navgrid-proto/            wire messages (serde + postcard, COBS framing), NodeConfig
   navgrid-ranging/          CS channel response → distance; channel model for simulation
-  navgrid-solver/           multilateration with height sources; tag tracker; mesh solver later
+  navgrid-solver/           multilateration with height sources; tag tracker; frame + pointer;
+                            mesh solver later
 host/
   navgrid/                  CLI: sim, track, decode [--json]; later monitor, replay, central solver
 firmware/                   separate cargo workspace, thumbv8m.main-none-eabihf
@@ -238,13 +241,14 @@ compares its own pressure with nearby nodes' (FR-M4 adverts), and weather drift 
 HVAC zones and sensor offsets are the risks (R-10): use nearby same-zone nodes only, and calibrate
 per-node offsets against CS geometry.
 
-**IMU.** The TAG has a BMI270 (accelerometer and gyro) and an ADXL367, but no magnetometer.
+**IMU.** The TAG has a BMI270 (accelerometer and gyro) and an ADXL367. Tags do not produce
+heading: the HUD provides it (§10).
 
 | Tier | Who | Sensors | What it does | Status |
 |---|---|---|---|---|
 | a | all tags | ADXL367 (+ BMI270 accel) | Wake-on-motion, still/moving state, motion gating with a settling burst, zero-velocity updates, motion-noise selection | In the tracker and simulator |
-| b | person tags | + gyro, step detection | Heading for the HUD (§10); pedestrian dead reckoning between ranges | P1 |
-| c | — | + gyro, full inertial | Inertial propagation with a heading state | Only if it pays off |
+| b | optional | + gyro, step detection | Pedestrian dead reckoning between ranges, to lower the ranging rate while walking | Only if it saves more than the gyro costs |
+| c | — | + gyro, full inertial | Inertial propagation | Only if it pays off |
 
 Simulation ([spike](engineering/spikes/2026-11-01-tracking-height-imu.md)) shows:
 
@@ -279,6 +283,10 @@ Monitoring is **our own small engineering tool** (D-16), not an external stack.
   reference solver all read the same records.
 - **Today:** `navgrid decode --json` turns a capture into JSON lines. `navgrid monitor` (live
   terminal view plus log) comes with the sink firmware.
+- **Later: a thin web UI** (FR-S6, D-23), served by the same host process from the same state.
+  It shows the mesh on a floor plan, health and sideband, and the asset registry. Pin placement
+  for referencing (§11) happens there too. It is a single static page polling a small JSON
+  endpoint; no frontend build chain.
 
 ## 10. Find my keys
 
@@ -289,33 +297,66 @@ still: advertise 1 s, near-zero cost
 moved: tracker (tier a)
 settled: burst → fix → Position ──(contacts)──▶ sink ──────────────────────▶ asset registry
                                                                              (last fix, σ, age)
-                                        pose: tracker + gyro heading (tier b)        │
-                                        pointer = bearing(pose → asset) ◀───────────┘ (Q13)
-                                        └─▶ HUD (host view until integrated)
+                                        position: tracker → world frame (§11)        │
+                                        heading: HUD's own sensor (world frame)      │
+                                        pointer = bearing(person → asset) ◀─────────┘
+                                        └─▶ HUD (host view stands in for now)
 within radio range:
   reflector ◀────── direct CS ─────── initiator: distance + synthetic-aperture bearing
   LED blink on request
 ```
 
 - **Asset registry** (D-18). The host keeps the last settled fix of every asset tag (position, σ,
-  age) from `Position` records. A mesh-local query is a later option (Q14).
-- **Person heading** (D-19). The gyro integrates yaw; the absolute offset is corrected whenever
-  the person walks straight and steadily, by comparing the tracker's velocity direction with the
-  gyro yaw. At 1 m/s with ~0.1 m/s velocity error that is ~6° per alignment. Between alignments,
-  gyro drift over minutes is small. A spike will test whether CS phase differences between the
-  person tag's two antennas give bearing to nodes directly (R-12).
-- **Pointer** (FR-F3): bearing and elevation from the person's pose to the asset, plus distance.
-  Error ≈ heading error + (person σ ⊕ asset σ) / distance, which is why it degrades close in
-  (R-13).
+  age) from `Position` records. Host only for now; a mesh-local query may come later (Q14).
+- **Heading** (D-19) comes from another sensor, typically the HUD's magnetometer, already in the
+  world frame. Our side guarantees that positions are in the same frame (§11).
+- **Pointer** (FR-F3, `frame::pointer`): bearing relative to the HUD's heading, elevation, and
+  distance, all in the world frame. Error ≈ HUD heading error + mesh yaw error (§11) +
+  (person σ ⊕ asset σ) / distance, which is why it degrades close in (R-13).
 - **Final approach** (D-20). When the asset is within radio range, the person tag ranges to it
   directly (person initiates; the asset is connectable per FR-F5). CS gives distance to
   decimetres. Bearing comes from the direct ranges collected along the person's tracked path:
   `multilaterate` with the person's past positions as anchors (synthetic aperture). This needs
   ~1 m of movement. The HUD shows distance first and bearing once it converges.
-- **HUD interface** is open (Q13): what device, whether it has its own IMU, where the person tag
-  is worn, and how the pointer reaches it. Until then the host view renders the pointer.
+- **HUD interface** is not relevant yet (Q13). The host view renders the pointer.
 
-## 11. Decision log
+## 11. Absolute referencing (FR-A, `navgrid_solver::frame`)
+
+CS ranges fix the mesh's shape and scale. A self-surveyed solution is still free to rotate,
+mirror and translate. Each source pins down part of that freedom:
+
+| Unknown | Fixed by | Needed for pointing? |
+|---|---|---|
+| Up direction, vertical mirror | Barometric heights (already in the solver) | yes |
+| Yaw | ≥ 2 pins, **or** heading observations | **yes**: its error adds 1:1 to bearing |
+| Horizontal mirror (handedness) | ≥ 3 non-collinear pins, **or** heading observations in varied directions | **yes** |
+| Origin (x, y, z) | 1 pin or a floor-plan anchor | no; maps and display only |
+
+**`Frame`**: mesh → world. Mirror y, rotate by yaw, translate. Headings are counter-clockwise from
+east; `compass_to_heading` converts clockwise-from-north compass readings.
+
+**Pins (`fit_pins`).** 2D least-squares rotation (Kabsch, no scale), tried plain and mirrored,
+keeping the better fit. It reports the RMS misfit, so a mis-surveyed pin shows. In P1 the nodes
+themselves are hand-surveyed in a north-aligned frame, so the transform is identity. Later the web
+UI places pins on a north-referenced floor plan.
+
+**Heading observations (`fit_headings`).** While a HUD wearer walks straight, the mesh-tracked
+walking direction and the HUD's own heading form one observation. Yaw is the weighted circular
+mean of their difference. Handedness is whichever choice makes the differences agree:
+mirroring flips the sign of the mesh heading, which only shows across varied directions. The fit
+reports `concentration` (agreement) and `handedness_margin`.
+
+- **Accuracy:** in the unit test, 40 walks with 15° compass error recover yaw within 5° and the
+  right handedness. A single walking direction gives no handedness margin.
+- **Assumptions:** the HUD faces where the person walks. Accept only straight, steady segments.
+- **Indoor magnetism:** disturbances are local and do not average out if every walk is in the
+  same corridor. Weight observations by place and direction (R-12).
+
+**Versioning (FR-A5).** The host owns the current transform and its version. Positions carry the
+version they were solved in. Re-estimation happens when pins change or when heading observations
+drift away from the current yaw.
+
+## 12. Decision log
 
 | ID | Decision | Status |
 |---|---|---|
@@ -333,10 +374,12 @@ within radio range:
 | D-12 | **3D with height sources** (CS geometry, differential barometry, carry-height prior) via `Height::Observed`; 2D is `Height::Fixed`. | **Accepted** |
 | D-13 | Board selected at build time (`board-dk` / `board-tag` features, `cargo tag` / `cargo dk`). Role and diversity come from runtime `NodeConfig`. | Proposed |
 | D-14 | Tag tracker: constant-velocity Kalman filter with one-measurement-at-a-time updates (range, height, zero-velocity), outlier gate with recovery, motion-onset re-opening (§8). | Proposed |
-| D-15 | IMU tiers (§8): accelerometer gating on all tags; gyro heading on person tags; full inertial only if it pays off. | **Accepted** (revised v0.4: people need heading) |
+| D-15 | IMU tiers (§8): accelerometer gating on all tags; gyro dead reckoning and full inertial only if they pay off. | **Accepted** (revised v0.5: tags do not produce heading) |
 | D-16 | Monitoring is our own small tool: telemetry rides ranging contacts to a USB-powered sink; `navgrid monitor` shows mesh state and logs JSON lines (§9). | **Accepted** |
 | D-17 | CR2032 no-waste rules (requirements NFR-6), against a 1-month goal / 1-week floor. | **Accepted** |
 | D-18 | Asset tags publish a fix when they settle; the host keeps the asset registry (§10). | Proposed |
-| D-19 | Person heading from gyro integration, aligned to the CS-tracked walking direction; a spike tests antenna-path phase bearing (§10). | Proposed |
+| D-19 | Heading comes from another sensor (the HUD's magnetometer), in the world frame; tags do not estimate it (§10). | **Accepted** (revised v0.5) |
 | D-20 | Final approach on direct person↔asset CS: distance direct, bearing by synthetic aperture over the person's track (§10). | Proposed |
 | D-21 | Engineering records live in `docs/engineering/`: log, known defects, todo, spikes. Design stays in requirements/architecture; evidence goes in spikes. | **Accepted** (repo rule) |
+| D-22 | Absolute referencing: barometry for up; pins and/or heading observations for yaw and handedness; one pin or a floor-plan anchor for origin. The host owns a versioned mesh→world transform (§11). | **Accepted** (requirement); pins in P1, heading-learned in P2 |
+| D-23 | Monitoring gets a thin web UI later: one static page plus a JSON endpoint on the host tool, sharing `navgrid monitor`'s state (§9). | Proposed (later) |

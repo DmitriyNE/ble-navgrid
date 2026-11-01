@@ -4,6 +4,24 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-01
 
+**Decisions, requirements v0.5.**
+
+- **Heading** comes from another sensor (the HUD's magnetometer), not from tags.
+- **New requirement: absolute mesh referencing** (FR-A), so mesh positions and external headings
+  share a world frame.
+- **Q13** (HUD details) is not relevant for now. **Q14:** the asset registry is host-only for now.
+- **Monitoring** gets a thin web UI later (FR-S6).
+
+**`navgrid_solver::frame`.**
+
+- Mesh→world transform; pin fit (2D Kabsch, tries both handednesses, reports misfit).
+- Heading-observation fit: circular mean of world − mesh heading, with handedness chosen by
+  agreement and a margin reported.
+- The HUD pointer.
+- Unit tests: 40 straight walks with 15° compass error recover yaw within 5° and the right
+  handedness. A single walking direction yields zero handedness margin, as it should. A
+  self-surveyed mesh cannot tell its mirror image without varied directions or 3 pins.
+
 **Repo rules and initial commit.** Commit messages are terse, 1–2 sentences, with no trailers or
 prefixes (see `CLAUDE.md`). Engineering records live here. The scaffold went in as the initial
 commit on `main`.
