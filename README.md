@@ -30,6 +30,7 @@ cargo run -p navgrid -- sim --height fixed                    # 2D
 cargo run -p navgrid -- sim --trials 500 --multipath 3 --antenna-paths 4   # compare path combiners
 cargo run --release -p navgrid -- track                       # walking target: ranging rate vs accuracy, IMU gating on/off
 cargo run -p navgrid -- decode capture.bin [--json]           # decode COBS/postcard frames
+cargo run -p navgrid -- cs initiator.log reflector.log [--json]  # raw CS captures → distance per procedure
 ```
 
 ## Firmware

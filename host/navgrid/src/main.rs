@@ -1,3 +1,4 @@
+mod capture;
 mod fix;
 mod scenario;
 mod track;
@@ -22,6 +23,8 @@ enum Cmd {
     /// A simulated walking target followed one range at a time; ranging rate vs accuracy, with
     /// and without IMU motion gating.
     Track(track::TrackArgs),
+    /// Distances from raw CS captures: the `CSR`/`CSC` lines both boards log over RTT.
+    Cs(capture::CsArgs),
     /// Decode COBS/postcard frames from a capture file or stdin.
     Decode {
         /// Input file; stdin if omitted.
@@ -36,6 +39,7 @@ fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Sim(args) => fix::run(&args),
         Cmd::Track(args) => track::run(&args),
+        Cmd::Cs(args) => capture::run(&args),
         Cmd::Decode { path, json } => decode(path, json),
     }
 }

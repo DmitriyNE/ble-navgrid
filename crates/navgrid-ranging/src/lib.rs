@@ -10,6 +10,7 @@
 #![no_std]
 
 pub mod sim;
+pub mod steps;
 
 use core::f32::consts::{PI, TAU};
 use core::ops::{Add, AddAssign, Mul};

@@ -35,10 +35,9 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       feature exchange on connect, which the SDC needs before CS (log 2026-11-02).
 - [ ] **Move all advertising and scanning to the extended commands** once a node does both roles
       (the SDC rejects mixing the legacy and extended sets; DEF-17).
-- [ ] **Host capture parser** (DEF-15): read both boards' `CSR`/`CSC` lines (with done status and
-      abort reasons), join them by procedure
-      counter, extract mode-2 PCTs per channel, and feed `navgrid-ranging`. Then try inline PCT
-      transfer (`cs_enhancements`) so the initiator alone has both sides (R-8).
+- [ ] **Antenna permutation tables** (DEF-21): map multi-path tones to antenna paths in
+      `navgrid-ranging::steps`, from the Core spec tables, so diversity captures work.
+- [ ] **Inline PCT transfer** (`cs_enhancements`) so the initiator alone has both sides (R-8).
 - [ ] **Cross-check estimator:** compare against NCS v3.4.1 `ipt_*` / `ras_*` samples and `cs_de`
       on the same captures; settle sign and units (DEF-6).
 - [ ] **Energy per activity** with a power profiler on a TAG: advertising, idle link, CS per

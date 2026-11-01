@@ -4,6 +4,26 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Host capture parser (DEF-15).** `navgrid cs <files>` turns raw CS captures into one distance per
+procedure.
+
+- **Input:** it reads the `CSR`/`CSC` lines from probe-rs output (colour codes and other lines are
+  ignored) and joins initiator and reflector by procedure counter. Mode-2 tones on each channel are
+  paired in order, then go through phase slope per antenna path, path combining, and RTT from
+  mode-1/3 steps.
+- **Output:** text or JSON, with abort reasons in words and the initiator's frequency compensation,
+  plus a summary (median and p10–p90 distance, aborted subevents per side).
+- **Decoder:** step decoding lives in `navgrid-ranging::steps` (`no_std`, reusable on the device).
+  It covers framing, all four modes for both roles, PCT and frequency formats, and tone quality.
+- **Simulator:** `sim::for_each_tone` exposes each side's PCTs. `sim::response` now uses it and
+  gives identical output.
+- **Checked:**
+  - a simulated 4.2 m link, encoded exactly as the firmware logs it and split over `CSR`/`CSC`
+    subevents, comes back within 10 cm on all 72 channels;
+  - today's real captures parse and show the 0x3 aborts and the −6.06 ppm offset.
+- **Limits (DEF-21):** one antenna path only (permutation tables missing), and one connection per
+  capture.
+
 **CS runs end to end, but every subevent aborts (DEF-18).** Reflector `df96e04a5900` and initiator
 `ce36dfcc4c2d`, each logged in turn while the other ran on its coin cell.
 

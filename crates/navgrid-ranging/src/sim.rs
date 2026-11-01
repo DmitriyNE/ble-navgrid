@@ -47,8 +47,22 @@ pub struct Path {
 /// opposite LO phase offsets that are random per procedure. Each side also gets independent
 /// Gaussian phase noise per tone. The product cancels the LO offsets, as on hardware.
 pub fn response(paths: &[Path], phase_noise_rad: f64, rng: &mut SplitMix64) -> ChannelResponse {
-    let lo_offset = TAU * rng.uniform();
     let mut resp = ChannelResponse::new();
+    for_each_tone(paths, phase_noise_rad, rng, |channel, initiator, reflector| {
+        resp.insert_pct(channel, initiator, reflector);
+    });
+    resp
+}
+
+/// The per-side tones behind [`response`]: calls `tone(channel, initiator, reflector)` with each
+/// side's phase correction term, in channel order, at unit amplitude for a unit-amplitude path.
+pub fn for_each_tone(
+    paths: &[Path],
+    phase_noise_rad: f64,
+    rng: &mut SplitMix64,
+    mut tone: impl FnMut(u8, Complex, Complex),
+) {
+    let lo_offset = TAU * rng.uniform();
     for channel in 0..NUM_CHANNELS as u8 {
         let Some(f) = channel_frequency_hz(channel) else {
             continue;
@@ -65,7 +79,6 @@ pub fn response(paths: &[Path], phase_noise_rad: f64, rng: &mut SplitMix64) -> C
         };
         let initiator = side(lo_offset, rng);
         let reflector = side(-lo_offset, rng);
-        resp.insert_pct(channel, initiator, reflector);
+        tone(channel, initiator, reflector);
     }
-    resp
 }
