@@ -7,7 +7,7 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 
 | ID | Area | Defect | Impact |
 |---|---|---|---|
-| DEF-1 | firmware | The CS bring-up flow (connect, pair, configure, run procedures, log raw steps) has not run on hardware. Parameters follow Nordic's `ras_initiator`; the order of steps and the HCI layouts are checked, but the controller's behaviour is not. | First two-board run may stop at a failing step; the log names it. |
+| DEF-1 | firmware | The CS bring-up flow is only partly proven on hardware. Two TAGs connect (extended create connection) and pair, but the initiator's `LE CS Read Remote Supported Capabilities` gets no completion event within 5 s, so config, security and procedures haven't run. The reflector's side hasn't been logged yet. | No CS data yet. |
 | DEF-2 | firmware | The node boots on a TAG (crystals start, DC/DC on), but the DK boot, the exact crystal load-cap values (ported from Zephyr, FICR-trimmed) and the TAG antenna-switch callback are unverified. | Frequency offset or RF misbehaviour would show only in an RF test or a CS run. |
 | DEF-3 | firmware | Antenna 0 is selected outside CS by driving SKY13348 V1 high. NCS leaves both lines low, and the switch truth table has not been checked. | Ordinary BLE traffic could go through the wrong or an isolated path. |
 | DEF-4 | firmware | `CS_LINKS` (6) is a guess. `SDC_MEM` is measured on a TAG (93,192 bytes); the one-antenna figure (74,760) is derived, not measured. | A wrong size fails boot with "Memory buffer too small" and the needed size, or warns "too big". |
@@ -27,4 +27,5 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 | ID | Defect | Fix |
 |---|---|---|
 | DEF-13 | bt-hci 0.11 parsed CS step data column-major; controllers send it row-major. | Fork `DmitriyNE/bt-hci` `2d8d65e`, used by the firmware since the switch to the forks. |
+| DEF-17 | On the nRF54L15, the SDC hit internal assert `50:701` when a legacy `LE Create Connection` found its peer. The assert's meaning is unknown (Nordic internal); OpenBikeComputer #736 saw the same. | The initiator uses `connect_ext` with `support_ext_scan` / `support_ext_central`. |
 | DEF-16 | probe-rs 0.32 double-buffered flashing of a TAG (DK onboard J-Link) replaced one word near the start of most pages with its successor; the corrupted images faulted at random places. | Runner passes `--disable-double-buffering` (and `--verify`). Not yet reported upstream. |

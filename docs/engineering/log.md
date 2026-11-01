@@ -4,6 +4,30 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**First two-TAG run: connects and pairs, then CS stalls.** The reflector is TAG `df96e04a5900` on
+its coin cell; the initiator is TAG `ce36dfcc4c2d` on the probe.
+
+- **Legacy connect asserts (DEF-17).**
+  - **Symptom:** `LE Create Connection` made the initiator's SDC hit internal assert `50:701`
+    about 0.3–0.5 s in, when the peer's advertisement was heard.
+  - **Same report elsewhere:** OpenBikeComputer issue #736 hit the identical assert on an
+    nRF54L15 DK and fixed it with the extended command set.
+  - **Fix:** `connect_ext` (LE Extended Create Connection) plus `support_ext_scan` and
+    `support_ext_central`. The SDC now needs 93,840 bytes (+648).
+- **Ruled out:**
+  - **GRTC channel overlap:** embassy's time driver uses CC[11] while nrf-mpsl claims channels
+    7–11. Sampling the registers every 50 ms showed MPSL using 8 and 10 (interrupts, domain 3)
+    and 9 (PPI), and never 7 or 11.
+  - **Interrupt priority:** moving the time and GPIOTE interrupts off priority 0 didn't change
+    the assert. They stay at 2 anyway, because mpsl.h reserves 0 for MPSL.
+- **Result:** connected at 0.46 s and encrypted (Just Works) at 1.1 s.
+- **Stall:** `LE CS Read Remote Supported Capabilities` was accepted, but no completion event,
+  nor any other LE event, arrived within 5 s. The link then stayed up for the rest of the 60 s
+  capture.
+  - **Ruled out on the initiator:** event mask bit 43 is set, the binding matches the C struct,
+    and a parse failure would have panicked.
+  - **Next:** the reflector's side, which no capture has seen yet.
+
 **First boot on a TAG.** The node boots to advertising on an nRF54L15 TAG (through the DK's
 `DEBUG OUT`) and reports its CS capabilities: 1 config, 2 antennas, 4 paths, both roles, mode 3,
 2M CS_SYNC PHY. Four fixes were needed.

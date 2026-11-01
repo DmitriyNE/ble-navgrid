@@ -49,7 +49,7 @@ const CS_LINKS: u8 = 6;
 /// SDC memory pool. The TAG figure (2 antennas, 4 paths) is what its SDC reported; one antenna
 /// saves 1 KiB per CS link for each of the 3 extra paths. If this is off, the SDC logs the exact
 /// requirement at boot.
-const SDC_MEM: usize = if board::ANTENNAS > 1 { 93_192 } else { 74_760 };
+const SDC_MEM: usize = if board::ANTENNAS > 1 { 93_840 } else { 75_408 };
 
 #[embassy_executor::task]
 async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
@@ -71,6 +71,8 @@ fn build_sdc<'d, const N: usize>(
         .support_peripheral()
         .support_central()
         .support_scan()
+        .support_ext_scan()
+        .support_ext_central()
         .support_le_2m_phy()
         .support_channel_sounding_initiator_role_central()
         .support_channel_sounding_initiator_role_peripheral()
@@ -136,6 +138,9 @@ async fn main(spawner: Spawner) {
     config.clock_speed = config::ClockSpeed::CK128;
     config.hfclk_source = config::HfclkSource::ExternalXtal;
     config.lfclk_source = config::LfclkSource::ExternalXtal;
+    // Priority 0 belongs to MPSL's radio scheduling (mpsl.h: MPSL_HIGH_IRQ_PRIORITY).
+    config.time_interrupt_priority = embassy_nrf::interrupt::Priority::P2;
+    config.gpiote_interrupt_priority = embassy_nrf::interrupt::Priority::P2;
     let p = embassy_nrf::init(config);
 
     // Until provisioning (FR-O1) stores one in flash.
@@ -290,7 +295,9 @@ async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6]) {
     };
     loop {
         info!("connecting to {=[u8]:02x}", peer);
-        let conn = match central.connect(&config).await {
+        // Extended Create Connection: the legacy command trips SDC assert 50:701 on the nRF54L15 as
+        // soon as the peer's advertisement is heard (DEF-17).
+        let conn = match central.connect_ext(&config).await {
             Ok(conn) => conn,
             Err(e) => {
                 warn!("connect: {:?}", e);

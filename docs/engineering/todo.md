@@ -19,8 +19,10 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **Standalone J-Link Pro** doesn't connect to the TAG at all; the SWD adapter may be bad.
 - [ ] **After first boot:** check the antenna-switch default and callback, and boot a DK (DEF-2,
       DEF-3).
-- [ ] **Two-TAG CS ranging, first run:** flash a reflector and an initiator (README), and capture
-      both RTT logs. The firmware side is done and untested (DEF-1).
+- [ ] **Two-TAG CS ranging, first run** (DEF-1): connect and pair work. Next, log the reflector
+      while the initiator runs, to see why the remote-capabilities exchange never completes.
+- [ ] **Move all advertising and scanning to the extended commands** once a node does both roles
+      (the SDC rejects mixing the legacy and extended sets; DEF-17).
 - [ ] **Host capture parser** (DEF-15): read both boards' `CSR`/`CSC` lines, join them by procedure
       counter, extract mode-2 PCTs per channel, and feed `navgrid-ranging`. Then try inline PCT
       transfer (`cs_enhancements`) so the initiator alone has both sides (R-8).
