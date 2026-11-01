@@ -27,5 +27,5 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 | ID | Defect | Fix |
 |---|---|---|
 | DEF-13 | bt-hci 0.11 parsed CS step data column-major; controllers send it row-major. | Fork `DmitriyNE/bt-hci` `2d8d65e`, used by the firmware since the switch to the forks. |
-| DEF-17 | On the nRF54L15, the SDC hit internal assert `50:701` when a legacy `LE Create Connection` found its peer. The assert's meaning is unknown (Nordic internal); OpenBikeComputer #736 saw the same. | The initiator uses `connect_ext` with `support_ext_scan` / `support_ext_central`. |
 | DEF-16 | probe-rs 0.32 double-buffered flashing of a TAG (DK onboard J-Link) replaced one word near the start of most pages with its successor; the corrupted images faulted at random places. | Runner passes `--disable-double-buffering` (and `--verify`). Not yet reported upstream. |
+| DEF-17 | On the nRF54L15, the SDC hit internal assert `50:701` when a legacy `LE Create Connection` found its peer. The assert's meaning is unknown (Nordic internal); OpenBikeComputer #736 saw the same. | The initiator uses `connect_ext` with `support_ext_scan` / `support_ext_central`. |
