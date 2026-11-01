@@ -1,0 +1,17 @@
+[package]
+name = "navgrid-solver"
+description = "Position solvers: multilateration now, cooperative mesh localization later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+libm.workspace = true
+defmt = { workspace = true, optional = true }
+
+[features]
+defmt = ["dep:defmt"]
+
+[dev-dependencies]
+navgrid-ranging.workspace = true

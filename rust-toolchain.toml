@@ -1,0 +1,5 @@
+# Matches TrouBLE upstream so firmware deps build with the same compiler.
+[toolchain]
+channel = "1.97"
+components = ["rust-src", "rustfmt", "clippy", "llvm-tools"]
+targets = ["thumbv8m.main-none-eabihf"]

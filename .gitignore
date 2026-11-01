@@ -1,0 +1,3 @@
+target/
+*.navcap
+.DS_Store

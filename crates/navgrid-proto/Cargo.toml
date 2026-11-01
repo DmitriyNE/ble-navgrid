@@ -1,0 +1,15 @@
+[package]
+name = "navgrid-proto"
+description = "Wire messages shared by navgrid firmware and host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+postcard.workspace = true
+defmt = { workspace = true, optional = true }
+
+[features]
+defmt = ["dep:defmt"]

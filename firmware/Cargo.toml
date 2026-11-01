@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["node"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[profile.dev]
+opt-level = "s"
+debug = 2
+
+[profile.release]
+debug = 2
+lto = "fat"
+codegen-units = 1
+
+# D-8: Channel Sounding needs bt-hci 0.11, which only the git heads of TrouBLE and nrf-sdc use.
+# These are the revisions TrouBLE's examples/nrf54 builds against (TrouBLE 866ee71, 2026-10-28).
+# Swap nrf-sdc / trouble-host for our forks once the CS patches (architecture §6, P-1/P-2) exist.
+[patch.crates-io]
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+embassy-nrf = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "a22ca716c807496f98ae8d95cba5622b9fdd8a00" }
+nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "a22ca716c807496f98ae8d95cba5622b9fdd8a00" }

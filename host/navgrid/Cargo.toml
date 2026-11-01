@@ -1,0 +1,15 @@
+[package]
+name = "navgrid"
+description = "Host tools: simulation, frame decoding; later ingest, replay, central solver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+navgrid-proto.workspace = true
+navgrid-ranging.workspace = true
+navgrid-solver.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
