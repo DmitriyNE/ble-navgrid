@@ -4,6 +4,15 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-01
 
+**Upstream patch list pinned down** (architecture §6).
+
+- **nrf-sdc (P-1):** 14 CS command bindings, with layouts checked field by field against the C
+  structs, plus CS config setters and an antenna callback setter. Events need nothing.
+- **TrouBLE (P-2):** CS bits are missing from the LE event mask, and CS events have no hook.
+- **New: bt-hci bug (P-6, DEF-13).** The CS step-data parser is column-major, but the SDC sends
+  steps row-major. Zephyr's host feeds raw HCI step bytes to a per-step parser against the same
+  SDC, and bt-hci's test uses hand-written column-major bytes. To confirm with a raw dump in P0.
+
 **Referencing from commissioning presets (Q15).** For now the mesh is referenced from presets on
 a few nodes: absolute coordinates (pins), or preset bearings between node pairs. Learning from HUD
 headings moved to later.

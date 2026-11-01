@@ -168,8 +168,8 @@ Investigation and sources: [spike](engineering/spikes/2026-11-01-rust-cs-stack.m
 | Layer | Crate / revision | Channel Sounding status |
 |---|---|---|
 | Controller | Nordic SDC (nrfxlib from NCS v3.4.0, Core 6.3) via `nrf-sdc` git | `Builder::support_channel_sounding_*` enables the roles. All 16 `sdc_hci_cmd_le_cs_*` C functions are in the bindings. **They are not yet wired to `bt-hci` commands**, and there is no builder setter for `SDC_CFG_TYPE_CS_COUNT` / `CS_CFG`. |
-| HCI types | `bt-hci` 0.11.0 (2026-10-08) | All LE CS commands (opcodes 0x89–0x96) and events, including a step-data parser. `LeCsCreateConfigParams::reserved` sits where Core 6.3 has `cs_enhancements`, which is how to switch on inline PCT transfer. |
-| Host | `TrouBLE` git | `Stack::command()` sends any HCI command. **CS LE events are logged as "Unknown LE event" and dropped.** No Ranging Service (RAS). |
+| HCI types | `bt-hci` 0.11.0 (2026-10-08) | All LE CS commands (opcodes 0x89–0x96), events and LE event-mask bits 43–50. `LeCsCreateConfigParams::reserved` sits where Core 6.3 has `cs_enhancements`, which is how to switch on inline PCT transfer. **Bug: `LeCsSubeventStepData` parses steps column-major (all modes, then all channels, then all lengths, then all data), but the SDC sends them row-major, one step at a time.** Zephyr's host feeds the raw HCI step bytes to a per-step parser, and NCS's CS samples run on the same SDC. bt-hci's test uses hand-written column-major bytes. Any subevent with more than one step decodes wrong (P-6). |
+| Host | `TrouBLE` git | `Stack::command()` (sync) and `Stack::async_command()` send any HCI command. **The LE event mask enables no CS events, and CS LE events that do arrive are logged as "Unknown LE event" and dropped.** Encryption is there (`request_security`, feature `security`), and `add_bond_information` can inject fleet-derived LTKs (D-7). No RAS. |
 | Estimation | — | Nothing in Rust; Nordic's `cs_de` is C. We write `navgrid-ranging`. |
 | Antennas | SDC `sdc_cs_antenna_switch_callback_set` + `SDC_CFG_TYPE_CS_CFG` | Both reachable through `nrf_sdc::raw`. The node firmware sets the antenna count and path limit, and registers a GPIO callback for the TAG's SKY13348 switch. |
 | HAL | `embassy-nrf` (pinned) | **No nRF54L option for DC/DC or crystal load capacitors.** The firmware writes the registers itself (`board.rs`, ported from Zephyr's nRF54L SoC init, using FICR trims). |
@@ -179,13 +179,45 @@ has no CS. That forces git dependencies (D-8).
 
 Work needed:
 
-- **P-1** `nrf-sdc`: bind the CS commands (one `sdc_cmd!` line each), add `cs_count()` /
-  `cs_cfg()` setters and a safe antenna-switch callback setter. Mechanical; upstream PR.
-- **P-2** `TrouBLE`: pass CS LE events to an `EventHandler` hook. Small; upstream PR.
-- **P-3** navgrid: RAS client/server on TrouBLE GATT, and/or inline PCT transfer (D-4).
+- **P-1 `nrf-sdc`** (mechanical, roughly 40 lines; gate like the existing CS builder flags):
+  - **Bind the CS commands** in the LE command module. The byte layouts were checked field by
+    field against the C structs; the 3-byte subevent lengths match as `ExtDuration`.
+    - Sync with a return value: `LeCsReadLocalSupportedCapabilities`,
+      `LeCsWriteCachedRemoteSupportedCapabilities`, `LeCsSetDefaultSettings`,
+      `LeCsWriteCachedRemoteFaeTable`, `LeCsSetProcedureParams`.
+    - Sync without one: `LeCsSetChannelClassification`.
+    - Async (completion arrives as an LE event): `LeCsReadRemoteSupportedCapabilities`,
+      `LeCsSecurityEnableCommand`, `LeCsReadRemoteFaeTable`, `LeCsCreateConfig`,
+      `LeCsRemoveConfig`, `LeCsProcedureEnable`, `LeCsTestEnd`.
+    - `LeCsTest` has a variable-length tail and needs a hand-written impl like `LeSetExtAdvData`.
+      It is optional, but CS test mode is handy for RF bench checks without a connection.
+  - **Builder setters:** `cs_count(n)` (`SDC_CFG_TYPE_CS_COUNT`) and
+    `cs_cfg(max_antenna_paths, num_antennas)` (`SDC_CFG_TYPE_CS_CFG`).
+  - **A safe antenna-switch callback setter** wrapping `sdc_cs_antenna_switch_callback_set`.
+  - **No event work:** the SDC hands raw HCI events up and bt-hci parses them generically.
+- **P-2 `TrouBLE`** (small):
+  - **Event mask:** a `channel-sounding` cargo feature that adds the LE event-mask bits for the CS
+    events (43–50).
+  - **Event hook:** `EventHandler` methods for those events, in the style of the existing
+    feature-gated CIS hooks: the remote-capabilities, FAE-table, security, config and
+    procedure-enable completions, plus subevent result, subevent result continue and test end.
+  - **Nothing else:** commands, async commands and encryption already exist. The hook runs in
+    the runner task, so the app copies step data out and returns.
+- **P-3** navgrid: inline PCT transfer first, RAS as fallback (D-4).
 - **P-4** navgrid: distance estimation (`navgrid-ranging`).
 - **P-5** `embassy-nrf`: nRF54L DC/DC and crystal load-capacitor config. Upstream PR; until then
   `board.rs` does it.
+- **P-6 `bt-hci`:**
+  - **Fix the step parser:** parse CS step data row-major (mode, channel, length, data per step)
+    for subevent result and subevent result continue, and replace the test data with the real
+    layout.
+  - **Rename `reserved` → `cs_enhancements`** in create-config and test params (Core 6.3).
+    Cosmetic.
+  - Confirm on hardware in P0 by dumping one raw subevent.
+
+**How the patches ship:** fork all three and point the firmware at the forks. `bt-hci` goes in
+through `[patch.crates-io]`, because TrouBLE and nrf-sdc both take it from crates.io. Then open
+upstream PRs.
 
 Until P-1 lands, firmware can call `nrf_sdc::raw::sdc_hci_cmd_le_cs_*` directly. The node skeleton
 does this to read local CS capabilities at boot.

@@ -19,6 +19,7 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 | DEF-10 | proto | No telemetry envelope (age, hops). Records carry only origin uptime. | The sink cannot timestamp forwarded records yet (FR-S4). |
 | DEF-11 | firmware | The node only advertises a name: no FR-M4 payload, no scanning or central role, no mesh logic. | Skeleton only. |
 | DEF-12 | firmware | Building without a board feature prints the intended `compile_error!` plus a follow-on "unresolved import `consts`". | Cosmetic. |
+| DEF-13 | upstream (bt-hci 0.11) | `LeCsSubeventStepData` parses CS steps column-major; the SDC sends them row-major (evidence in architecture §6). | Any CS subevent with more than one step decodes wrong. Fix is P-6; until then, parse step bytes ourselves. |
 
 ## Fixed
 
