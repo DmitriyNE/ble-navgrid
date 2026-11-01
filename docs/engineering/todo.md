@@ -13,9 +13,10 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       `LeCsTest` binding (variable-length tail, hand-written like `LeSetExtAdvData`).
 - [ ] **bt-hci follow-up (optional):** rename `reserved` → `cs_enhancements` in create-config and
       test params (API change, so a separate PR).
-- [ ] **TAG programming link** (DEF-16): find why first writes fail verification. Try 3.3 V from
-      the DK instead of the coin cell, a reseated or proper SWD adapter, and the standalone J-Link
-      Pro (which doesn't connect to the TAG yet either).
+- [ ] **Report to probe-rs** (DEF-16): double-buffered flashing of an nRF54L15 through a J-Link
+      OB replaces one word near each page start with its successor. Evidence in the 2026-11-02
+      log; check whether it also happens on the DK's own chip.
+- [ ] **Standalone J-Link Pro** doesn't connect to the TAG at all; the SWD adapter may be bad.
 - [ ] **After first boot:** check the antenna-switch default and callback, and boot a DK (DEF-2,
       DEF-3).
 - [ ] **Two-TAG CS ranging, first run:** flash a reflector and an initiator (README), and capture

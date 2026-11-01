@@ -20,7 +20,6 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 | DEF-11 | firmware | The node only advertises a name: no FR-M4 payload, no scanning or central role, no mesh logic. | Skeleton only. |
 | DEF-14 | firmware | The bring-up role and peer are build-time environment variables (`NAVGRID_ROLE`, `NAVGRID_PEER`), and pairing is Just Works with no bonding, so every reconnect pairs again. | Bench only. Provisioning (DEF-5) and fleet-key LTKs (D-7) replace both. |
 | DEF-15 | host | Nothing parses the `CSR`/`CSC` capture lines yet, so raw steps cannot be turned into distances. | Next host task. |
-| DEF-16 | tooling | Programming a TAG through the DK's `DEBUG OUT` is unreliable: the first write of a new image fails verification, and SWD protocol and USB transport errors follow. Unverified images ran corrupted code (undefined instruction, unaligned access, wild jump, BusFault, all at different places). Cause unknown: TAG supply during RRAM writes, the trimmed SWD adapter, or the probe link. | The runner now verifies; flash again until it passes. Slows every iteration. |
 | DEF-12 | firmware | Building without a board feature prints the intended `compile_error!` plus a follow-on "unresolved import `consts`". | Cosmetic. |
 
 ## Fixed
@@ -28,3 +27,4 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 | ID | Defect | Fix |
 |---|---|---|
 | DEF-13 | bt-hci 0.11 parsed CS step data column-major; controllers send it row-major. | Fork `DmitriyNE/bt-hci` `2d8d65e`, used by the firmware since the switch to the forks. |
+| DEF-16 | probe-rs 0.32 double-buffered flashing of a TAG (DK onboard J-Link) replaced one word near the start of most pages with its successor; the corrupted images faulted at random places. | Runner passes `--disable-double-buffering` (and `--verify`). Not yet reported upstream. |

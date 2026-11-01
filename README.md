@@ -58,8 +58,8 @@ size is wrong, the log prints the exact number needed; set `SDC_MEM` in `node/sr
   `probe-rs list`.
 - **Autodetect:** `probe-rs info` fails to autodetect the chip (its memory APs have no ROM
   table), but `--chip nRF54L15`, which the runner passes, works.
-- **Verify:** the runner verifies every flash. If verification fails, flash again; an unverified
-  image runs corrupted code and faults at random places (DEF-16).
+- **Flashing:** the runner disables probe-rs's double buffering, which corrupts a word in most
+  pages on the TAG (DEF-16), and verifies every flash.
 
 ### Two-board Channel Sounding (P0 bring-up)
 

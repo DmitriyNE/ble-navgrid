@@ -29,7 +29,7 @@ Newest first. Conventions: [README](README.md).
   TrouBLE's init, which is what sets the CS host-support feature bit. It now goes through
   `stack.command`, which waits for init.
 
-**TAG programming is unreliable (DEF-16).**
+**probe-rs double buffering corrupts TAG flashes (DEF-16).**
 
 - **Symptom:** every first run of a newly flashed image faulted, each time somewhere different:
   - an undefined instruction in the FICR trim loop;
@@ -38,11 +38,25 @@ Newest first. Conventions: [README](README.md).
   - a BusFault inside the SDC.
 
   Reruns of the same image booted cleanly, 7 of 7.
-- **Why:** with `--verify`, the first write of a new image fails verification, and SWD protocol
-  and USB transport errors follow. The faults were the CPU running a partly programmed image.
-- **Runner:** it now passes `--verify`.
-- **Cause:** still open. Candidates are the supply during RRAM writes, the trimmed SWD adapter,
-  or the probe link.
+- **Verify fails:** with `--verify`, the first write of a new image failed verification, so the
+  faults were the CPU running a mis-programmed image. SWD protocol and USB transport errors came
+  up during these sessions too.
+- **What goes wrong:**
+  - **Method:** download the reflector and initiator builds alternately (every flash then rewrites
+    most pages), read the flash back, and diff it per 4 KiB page.
+  - **Damage:** with double buffering, 51–53 of 79 pages were wrong. Each bad page had exactly one
+    word, at offset 0x4–0xF, replaced by its successor: one word is lost and the next lands twice.
+    That looks like a retried auto-increment SWD write landing one address early, while the CPU's
+    RRAM writes stall the bus (double buffering uploads the next page while the CPU programs the
+    current one).
+  - **Fix:** with `--disable-double-buffering`, 3 of 3 read-backs were exact. Download time is
+    unchanged (21–22 s).
+- **Runner:** `--disable-double-buffering --verify`. Since then, flashing alternate images
+  through `cargo tag` verified and booted 3 of 3, and no SWD errors have recurred. Verify adds
+  ~15 s per flash.
+- **Setup:** probe-rs 0.32.0 (the latest release), the DK's onboard J-Link, TAG on its coin cell.
+  The flash algorithm itself checks out: per page it enables writes, waits for READY, copies,
+  commits the write buffer and waits again.
 
 ## 2026-11-01
 

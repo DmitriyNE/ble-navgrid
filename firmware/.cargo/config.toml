@@ -1,6 +1,7 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-# --verify: the TAG has been seen to mis-program silently over the DK's DEBUG OUT link.
-runner = "probe-rs run --chip nRF54L15 --verify"
+# Double buffering corrupts one word near the start of most pages on the TAG (DEF-16); --verify
+# catches anything else.
+runner = "probe-rs run --chip nRF54L15 --disable-double-buffering --verify"
 
 [build]
 target = "thumbv8m.main-none-eabihf"
