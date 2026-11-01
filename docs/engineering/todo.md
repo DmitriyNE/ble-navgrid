@@ -7,6 +7,9 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **P-1 nrf-sdc:** done on branch `cs-hci-commands`, awaiting review. Optional follow-up:
       `LeCsTest` binding (variable-length tail, hand-written like `LeSetExtAdvData`).
 - [ ] **P-2 TrouBLE:** done on branch `feat/channel-sounding`, awaiting review.
+- [ ] **TrouBLE conn-param-update identifier fix:** done on branch
+      `fix/conn-param-update-res-identifier`, awaiting review. The firmware needs it together with
+      the CS branch: merge both into GreatKet `main` (or an integration branch) before switching.
 - [ ] **bt-hci follow-up (optional):** rename `reserved` → `cs_enhancements` in create-config and
       test params (API change, so a separate PR).
 - [ ] **Firmware:** switch to the forks; replace the raw-FFI stopgaps (capabilities read,

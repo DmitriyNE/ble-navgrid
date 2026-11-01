@@ -24,6 +24,17 @@ Newest first. Conventions: [README](README.md).
     `EventHandler`) passed for both boards, then was reverted.
   - The fork's own blank-line commit in `peripheral.rs` fails upstream's `cargo fmt --check`. Drop
     it before an upstream PR.
+- **TrouBLE: connection parameter update response identifier**, awaiting review. Branch
+  `fix/conn-param-update-res-identifier`, commit `83b66a2`, separate from CS so each can go
+  upstream alone.
+  - The bug still applied on current upstream (`866ee71`), not only on 0.8.0: answering a peer's
+    L2CAP Connection Parameter Update Request used a fresh signalling identifier instead of the
+    request's, so the peer discarded it and dropped the link after 30 s.
+  - `ConnectionParamsRequest` now carries the request's identifier (constructor is `pub(crate)`,
+    so the public API is unchanged), and all four accept/reject send paths echo it.
+  - Regression test: a request fed through `signal()` reaches the application, via
+    `Connection::next()`, carrying its identifier. Breaking the fix on purpose makes it fail.
+  - No upstream issue or PR existed.
 - **Integration check:** our firmware builds for both boards against the patched bt-hci and
   nrf-sdc, using the new APIs in place of the raw-FFI stopgaps. That was a temporary change,
   reverted. When switching over, override `bt-hci-transport` along with `bt-hci`, or two copies of
