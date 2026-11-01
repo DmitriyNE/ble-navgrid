@@ -16,7 +16,7 @@ mod consts {
     pub const LFXO_LOAD_FF: u32 = 17_000;
     pub const HFXO_LOAD_FF: u32 = 15_000;
     pub const ANTENNAS: u8 = 1;
-    pub const ANTENNA_SWITCH: Option<unsafe extern "C" fn(u8)> = None;
+    pub const ANTENNA_SWITCH: Option<extern "C" fn(u8)> = None;
 }
 
 #[cfg(feature = "board-tag")]
@@ -25,7 +25,7 @@ mod consts {
     pub const LFXO_LOAD_FF: u32 = 9_000;
     pub const HFXO_LOAD_FF: u32 = 8_000;
     pub const ANTENNAS: u8 = 2;
-    pub const ANTENNA_SWITCH: Option<unsafe extern "C" fn(u8)> = Some(super::antenna::switch);
+    pub const ANTENNA_SWITCH: Option<extern "C" fn(u8)> = Some(super::antenna::switch);
 }
 
 pub use consts::*;

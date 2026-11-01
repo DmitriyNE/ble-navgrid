@@ -49,8 +49,8 @@ and the controller's CS capabilities, then advertises as `navgrid` (every 1 s by
 advertising and sensor periods come from `NodeConfig` (defaults until provisioning exists). If the SDC memory pool size is wrong,
 the log prints the exact number needed; set `SDC_MEM` in `node/src/main.rs` to it.
 
-Firmware dependencies are pinned git revisions, because Channel Sounding needs `bt-hci` 0.11 and
-the crates.io releases of TrouBLE / nrf-sdc are older. See architecture §6 and D-8.
+Firmware dependencies are pinned revisions of our forks of bt-hci, nrf-sdc and TrouBLE, which add
+the Channel Sounding support upstream lacks. See architecture §6 and D-8.
 
 ## Status
 

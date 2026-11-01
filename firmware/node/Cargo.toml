@@ -18,7 +18,7 @@ embassy-futures = "0.1.1"
 nrf-sdc = { version = "0.4", default-features = false, features = ["nrf54l15-app-s", "central", "peripheral", "defmt"] }
 nrf-mpsl = { version = "0.4", default-features = false, features = ["critical-section-impl", "defmt"] }
 bt-hci = { version = "0.11", default-features = false, features = ["defmt"] }
-trouble-host = { git = "https://github.com/embassy-rs/trouble.git", rev = "866ee711c14f9d4011ca7079c5c4af0f64a1f1bb", features = ["defmt"] }
+trouble-host = { git = "https://github.com/GreatKet/trouble.git", rev = "fa9886d3f92d0b9a8adf7323a9b10b991a131d2c", features = ["defmt", "channel-sounding"] }
 
 defmt = "1"
 defmt-rtt = "1"

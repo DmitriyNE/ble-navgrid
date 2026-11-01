@@ -17,9 +17,10 @@ debug = 2
 lto = "fat"
 codegen-units = 1
 
-# D-8: Channel Sounding needs bt-hci 0.11, which only the git heads of TrouBLE and nrf-sdc use.
-# These are the revisions TrouBLE's examples/nrf54 builds against (TrouBLE 866ee71, 2026-10-28).
-# Swap nrf-sdc / trouble-host for our forks once the CS patches (architecture §6, P-1/P-2) exist.
+# D-8: Channel Sounding needs bt-hci 0.11 plus our CS patches (architecture §6), so bt-hci and
+# nrf-sdc come from our forks and trouble-host from GreatKet (node/Cargo.toml). Embassy stays at the
+# revision TrouBLE's examples/nrf54 builds against. bt-hci-transport must come from the same
+# checkout as bt-hci, or the build sees two copies of its traits.
 [patch.crates-io]
 embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
 embassy-nrf = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
@@ -28,5 +29,7 @@ embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "3c
 embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
 embassy-time-driver = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
 embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "a22ca716c807496f98ae8d95cba5622b9fdd8a00" }
-nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "a22ca716c807496f98ae8d95cba5622b9fdd8a00" }
+nrf-sdc = { git = "https://github.com/DmitriyNE/nrf-sdc.git", rev = "f705f4c9058b1c8091500bd2e017b6bd2ff6b25e" }
+nrf-mpsl = { git = "https://github.com/DmitriyNE/nrf-sdc.git", rev = "f705f4c9058b1c8091500bd2e017b6bd2ff6b25e" }
+bt-hci = { git = "https://github.com/DmitriyNE/bt-hci.git", rev = "4886657c01f38fc49d6100b4e01430e2f991d55d" }
+bt-hci-transport = { git = "https://github.com/DmitriyNE/bt-hci.git", rev = "4886657c01f38fc49d6100b4e01430e2f991d55d" }

@@ -10,8 +10,8 @@
 
 mod board;
 
-use bt_hci::FromHciBytes;
-use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilitiesReturn;
+use bt_hci::cmd::SyncCmd;
+use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilities;
 use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
@@ -20,7 +20,7 @@ use embassy_nrf::{bind_interrupts, config, cracen, pac};
 use embassy_time::Duration;
 use navgrid_proto::{NodeConfig, NodeId};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
-use nrf_sdc::{self as sdc, mpsl, raw};
+use nrf_sdc::{self as sdc, mpsl};
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
 use {defmt_rtt as _, panic_probe as _};
@@ -52,14 +52,6 @@ async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
     mpsl.run().await
 }
 
-/// Raw `sdc_cfg_set` for settings the nrf-sdc builder does not expose yet (P-1). Valid between
-/// `Builder::new()` (which runs `sdc_init`) and `build()` (which runs `sdc_enable`).
-fn sdc_cfg_raw(cfg_type: u32, value: raw::sdc_cfg_t) -> Result<(), sdc::Error> {
-    // SAFETY: called on the builder's thread before the SDC is enabled; `value` outlives the call.
-    let ret = unsafe { raw::sdc_cfg_set(raw::SDC_DEFAULT_RESOURCE_CFG_TAG as u8, cfg_type as u8, &value) };
-    sdc::RetVal::from(ret).to_result().map(drop)
-}
-
 fn build_sdc<'d, const N: usize>(
     p: sdc::Peripherals<'d>,
     rng: &'d mut cracen::Cracen<'static, Blocking>,
@@ -67,28 +59,15 @@ fn build_sdc<'d, const N: usize>(
     mem: &'d mut sdc::Mem<N>,
     antennas: u8,
 ) -> Result<sdc::SoftdeviceController<'d>, sdc::Error> {
-    let builder = sdc::Builder::new()?;
-    sdc_cfg_raw(
-        raw::SDC_CFG_TYPE_CS_COUNT,
-        raw::sdc_cfg_t {
-            cs_count: raw::sdc_cfg_role_count_t { count: CS_LINKS },
-        },
-    )?;
     // With diversity, a link has up to local × remote antennas paths (4 between two TAGs).
     // Without it, one path, whatever the peer has (NodeConfig::diversity).
-    sdc_cfg_raw(
-        raw::SDC_CFG_TYPE_CS_CFG,
-        raw::sdc_cfg_t {
-            cs_cfg: raw::sdc_cfg_cs_cfg_t {
-                max_antenna_paths_supported: if antennas > 1 { 4 } else { 1 },
-                num_antennas_supported: antennas,
-            },
-        },
-    )?;
-    if antennas > 1 {
-        // SAFETY: the callback is a plain `extern "C" fn` that only writes GPIO registers.
-        unsafe { raw::sdc_cs_antenna_switch_callback_set(board::ANTENNA_SWITCH) };
-    }
+    let builder = sdc::Builder::new()?
+        .cs_count(CS_LINKS)?
+        .cs_cfg(if antennas > 1 { 4 } else { 1 }, antennas)?;
+    let builder = match board::ANTENNA_SWITCH {
+        Some(switch) if antennas > 1 => builder.cs_antenna_switch_callback(switch),
+        _ => builder,
+    };
     builder
         .support_adv()
         .support_ext_adv()
@@ -122,21 +101,13 @@ fn static_address() -> [u8; 6] {
     addr
 }
 
-/// Reads CS capabilities through the raw SDC call. `nrf-sdc` does not bind the CS commands to
-/// `bt-hci` yet (P-1), so this bypasses it; it runs before TrouBLE takes the controller.
-fn log_cs_capabilities() {
-    let mut ret: raw::sdc_hci_cmd_le_cs_read_local_supported_capabilities_return_t = unsafe { core::mem::zeroed() };
-    // SAFETY: the SDC is enabled, and nothing else issues HCI commands until the host starts.
-    let status = unsafe { raw::sdc_hci_cmd_le_cs_read_local_supported_capabilities(&mut ret) };
-    if status != 0 {
-        warn!("CS capabilities: HCI status {=u8:#04x}", status);
-        return;
-    }
-    // SAFETY: the return struct is packed and laid out exactly as the HCI return parameters.
-    let bytes = unsafe { core::slice::from_raw_parts((&raw const ret).cast::<u8>(), size_of_val(&ret)) };
-    let Ok(caps) = LeCsReadLocalSupportedCapabilitiesReturn::from_hci_bytes_complete(bytes) else {
-        warn!("CS capabilities: unexpected layout ({} bytes)", bytes.len());
-        return;
+async fn log_cs_capabilities(sdc: &sdc::SoftdeviceController<'_>) {
+    let caps = match LeCsReadLocalSupportedCapabilities::new().exec(sdc).await {
+        Ok(caps) => caps,
+        Err(e) => {
+            warn!("CS capabilities: {:?}", e);
+            return;
+        }
     };
     info!(
         "CS: configs={} antennas={} paths={} roles={=u8:#04x} modes={=u8:#04x} rtt={=u8:#04x} sync_phys={=u8:#04x}",
@@ -220,7 +191,7 @@ async fn main(spawner: Spawner) {
     id[..6].copy_from_slice(&addr);
     let node = NodeId(u64::from_le_bytes(id));
     info!("navgrid node {=u64:012x} on {}, {}", node.0, board::NAME, node_cfg);
-    log_cs_capabilities();
+    log_cs_capabilities(&sdc).await;
 
     let mut resources: HostResources<DefaultPacketPool, MAX_LINKS, L2CAP_CHANNELS> = HostResources::new();
     let stack = trouble_host::new(sdc, &mut resources)

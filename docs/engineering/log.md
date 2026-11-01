@@ -4,6 +4,12 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-01
 
+**Firmware on the patched forks.** All three forks are pushed and public, and match the local
+`main`s. The firmware now pins `DmitriyNE/bt-hci` `4886657` (plus `bt-hci-transport` from the same
+checkout), `DmitriyNE/nrf-sdc` `f705f4c` and `GreatKet/trouble` `fa9886d` (with `channel-sounding`).
+The raw-FFI stopgaps are gone: CS config goes through the builder, and the capabilities read
+through `LeCsReadLocalSupportedCapabilities`. Clippy is clean on both boards.
+
 **Upstream patches, in progress** (local clones in `~/temp/ble-patches`, nothing pushed).
 
 - **bt-hci (P-6), reviewed:** branch `fix-cs-step-data-layout`, commit `2d8d65e`. Row-major step

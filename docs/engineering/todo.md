@@ -4,15 +4,13 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 
 ## P0 — bring-up
 
-- [ ] **Push the patched forks:** bt-hci `main` and nrf-sdc `main` (`DmitriyNE`), TrouBLE `main`
-      (GreatKet). All are merged locally.
+- [ ] **Upstream PRs** from the forks: bt-hci step parsing, nrf-sdc CS bindings, TrouBLE CS
+      feature, `iso` import fix and connection-parameter-update identifier fix (drop the blank-line
+      commit first).
 - [ ] **nrf-sdc optional follow-up:**
       `LeCsTest` binding (variable-length tail, hand-written like `LeSetExtAdvData`).
 - [ ] **bt-hci follow-up (optional):** rename `reserved` → `cs_enhancements` in create-config and
       test params (API change, so a separate PR).
-- [ ] **Firmware:** switch to the forks; replace the raw-FFI stopgaps (capabilities read,
-      `sdc_cfg_raw`, antenna callback) with the new APIs. Override `bt-hci-transport` together with
-      `bt-hci` in `[patch.crates-io]`. A temporary build of this already passed for both boards.
 - [ ] **First boot on a TAG:** check the boot log (SDC memory, CS capabilities); verify DC/DC,
       crystals and the antenna-switch default (DEF-2, DEF-3, DEF-4).
 - [ ] **Two-TAG CS ranging:** inline PCT transfer first, RAS as fallback (R-8). Stream raw step

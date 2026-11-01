@@ -167,15 +167,16 @@ Investigation and sources: [spike](engineering/spikes/2026-11-01-rust-cs-stack.m
 
 | Layer | Crate / revision | Channel Sounding status |
 |---|---|---|
-| Controller | Nordic SDC (nrfxlib from NCS v3.4.0, Core 6.3) via `nrf-sdc` git | `Builder::support_channel_sounding_*` enables the roles. All 16 `sdc_hci_cmd_le_cs_*` C functions are in the bindings. **They are not yet wired to `bt-hci` commands**, and there is no builder setter for `SDC_CFG_TYPE_CS_COUNT` / `CS_CFG`. |
-| HCI types | `bt-hci` 0.11.0 (2026-10-08) | All LE CS commands (opcodes 0x89–0x96), events and LE event-mask bits 43–50. `LeCsCreateConfigParams::reserved` sits where Core 6.3 has `cs_enhancements`, which is how to switch on inline PCT transfer. **Bug: `LeCsSubeventStepData` parses steps column-major (all modes, then all channels, then all lengths, then all data), but the SDC sends them row-major, one step at a time.** Zephyr's host feeds the raw HCI step bytes to a per-step parser, and NCS's CS samples run on the same SDC. bt-hci's test uses hand-written column-major bytes. Any subevent with more than one step decodes wrong (P-6). |
-| Host | `TrouBLE` git | `Stack::command()` (sync) and `Stack::async_command()` send any HCI command. **The LE event mask enables no CS events, and CS LE events that do arrive are logged as "Unknown LE event" and dropped.** Encryption is there (`request_security`, feature `security`), and `add_bond_information` can inject fleet-derived LTKs (D-7). No RAS. |
+| Controller | Nordic SDC (nrfxlib from NCS v3.4.0, Core 6.3) via `nrf-sdc`, fork `DmitriyNE/nrf-sdc` | Upstream lacked CS command bindings and CS config setters. **Fixed in the fork (P-1):** 13 CS commands bound, layouts checked at compile time; `cs_count`, `cs_cfg`, `cs_antenna_switch_callback`. |
+| HCI types | `bt-hci` 0.11, fork `DmitriyNE/bt-hci` | All LE CS commands (opcodes 0x89–0x96), events and LE event-mask bits 43–50. `LeCsCreateConfigParams::reserved` sits where Core 6.3 has `cs_enhancements`, which is how to switch on inline PCT transfer. Upstream parsed CS step data column-major while the SDC sends it row-major; **fixed in the fork (P-6).** |
+| Host | `TrouBLE`, fork `GreatKet/trouble` | `Stack::command()` and `Stack::async_command()` send any HCI command. Upstream enabled no CS events and dropped any that arrived. **Fixed in the fork (P-2):** a `channel-sounding` feature with CS event-mask bits, `EventHandler` hooks and the CS host feature bit. The fork also fixes the connection-parameter-update response identifier. No RAS. |
 | Estimation | — | Nothing in Rust; Nordic's `cs_de` is C. We write `navgrid-ranging`. |
 | Antennas | SDC `sdc_cs_antenna_switch_callback_set` + `SDC_CFG_TYPE_CS_CFG` | Both reachable through `nrf_sdc::raw`. The node firmware sets the antenna count and path limit, and registers a GPIO callback for the TAG's SKY13348 switch. |
 | HAL | `embassy-nrf` (pinned) | **No nRF54L option for DC/DC or crystal load capacitors.** The firmware writes the registers itself (`board.rs`, ported from Zephyr's nRF54L SoC init, using FICR trims). |
 
 The crates.io releases (`trouble-host` 0.8, `nrf-sdc` 0.4) still depend on `bt-hci` 0.10, which
-has no CS. That forces git dependencies (D-8).
+has no CS. The firmware therefore uses our forks at pinned revisions (D-8); upstream PRs are still
+to be opened.
 
 Work needed:
 
@@ -408,7 +409,7 @@ version they were solved in. Re-estimation happens when presets change or the me
 | D-5 | Wire format: postcard + COBS; types in `navgrid-proto`. | Proposed |
 | D-6 | Telemetry is delay-tolerant: queued data rides ranging contacts toward sinks over L2CAP CoC. No always-on routing tree and no second radio protocol. | Proposed |
 | D-7 | Every link uses LTKs derived from the fleet network key and starts encryption directly, with no pairing. Phones, if they come, use LE Secure Connections. | Proposed (verify against SDC/TrouBLE) |
-| D-8 | Firmware pins the TrouBLE / `nrf-sdc` / Embassy git revisions from TrouBLE's nRF54 example, and moves to our forks once P-1/P-2 exist. | **Accepted** (forced by `bt-hci` 0.11) |
+| D-8 | Firmware uses pinned revisions of our forks: `DmitriyNE/bt-hci`, `DmitriyNE/nrf-sdc` and `GreatKet/trouble`, with Embassy at the revision TrouBLE's nRF54 example uses. Upstream PRs follow. | **Accepted** |
 | D-9 | Solvers: tags use a Gauss-Newton fix to start, then the tracker (D-14). Mesh uses distributed weighted least squares with neighbor covariances, bootstrapped by a central solve on the host. | Proposed |
 | D-10 | Battery link policy (§3): low-duty persistent mesh links that burst to range, event-driven re-survey, wake-on-motion tags, configurable advertising. | Proposed (P0 measures alternatives) |
 | D-11 | Antenna diversity: all paths the link allows; per-device opt-out via `NodeConfig::diversity`; per-path estimates combined residual-weighted by default (§4). | **Accepted** (user requirement); combiner open until P1 |

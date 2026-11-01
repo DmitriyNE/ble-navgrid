@@ -7,7 +7,7 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 
 | ID | Area | Defect | Impact |
 |---|---|---|---|
-| DEF-1 | firmware | The firmware cannot range yet. CS HCI commands are not bound in nrf-sdc (P-1), and TrouBLE drops CS events (P-2). Local CS capabilities are read through raw FFI at boot as a stopgap. | No CS on hardware until P-1/P-2. |
+| DEF-1 | firmware | The firmware does not range yet: no connection, security or CS procedure flow. The upstream gaps that blocked it (P-1, P-2, P-6) are fixed in our forks. | No CS on hardware until the bring-up flow lands. |
 | DEF-2 | firmware | Nothing has run on a board. Unverified: the DC/DC enable, the crystal load-cap values (ported from Zephyr, FICR-trimmed), and the TAG antenna-switch callback. | First boot may hang on clocks or misbehave on RF. Check the boot log and an RF sanity test first. |
 | DEF-3 | firmware | Antenna 0 is selected outside CS by driving SKY13348 V1 high. NCS leaves both lines low, and the switch truth table has not been checked. | Ordinary BLE traffic could go through the wrong or an isolated path. |
 | DEF-4 | firmware | `SDC_MEM` (112 KiB) and `CS_LINKS` (6) are guesses. | Boot fails with "Memory buffer too small" and the needed size; set `SDC_MEM` to it. |
@@ -19,8 +19,9 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 | DEF-10 | proto | No telemetry envelope (age, hops). Records carry only origin uptime. | The sink cannot timestamp forwarded records yet (FR-S4). |
 | DEF-11 | firmware | The node only advertises a name: no FR-M4 payload, no scanning or central role, no mesh logic. | Skeleton only. |
 | DEF-12 | firmware | Building without a board feature prints the intended `compile_error!` plus a follow-on "unresolved import `consts`". | Cosmetic. |
-| DEF-13 | upstream (bt-hci 0.11) | `LeCsSubeventStepData` parses CS steps column-major; the SDC sends them row-major (evidence in architecture §6). | Any CS subevent with more than one step decodes wrong. Fix is P-6; until then, parse step bytes ourselves. |
 
 ## Fixed
 
-None yet.
+| ID | Defect | Fix |
+|---|---|---|
+| DEF-13 | bt-hci 0.11 parsed CS step data column-major; controllers send it row-major. | Fork `DmitriyNE/bt-hci` `2d8d65e`, used by the firmware since the switch to the forks. |
