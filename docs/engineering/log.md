@@ -4,6 +4,20 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**The uplink no longer costs ranging (DEF-26 fixed).** The initiator schedules its two central
+links apart, following the SDC docs' advice for CS with several central links:
+
+- **ACL event length 2.5 ms** (SDC default 7.5 ms), so the CS subevent ends about 26 ms into each
+  30 ms CS-link interval.
+- **Sink link at 120 ms**, a multiple of 30 ms, so its offset from the CS link stays fixed.
+- **Spacing per connection:** the central ACL spacing is set just before each connection. A sink
+  link that comes second goes 26 ms after the CS link; a CS link that comes second goes 2.5 ms
+  after the sink link.
+- **Result:** 11.1 ranges/s on-device and at the host, no empty procedures, both with the sink
+  first and after the uplink reconnected under a running CS link.
+- **The reconnect:** it came from DEF-19. The reflector's probe on the sink DK dropped, and the
+  DK's debugger re-enumerated.
+
 **Calibration infrastructure, nothing calibrated yet.** Calibration lives on the host:
 
 - **Model:** a JSON file holds one constant offset per (initiator, reflector, antenna paths,

@@ -14,6 +14,8 @@ mod crypto;
 mod cs;
 mod report;
 
+use core::cell::Cell;
+
 use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilities;
 use defmt::{error, info, unwrap, warn};
 use embassy_executor::Spawner;
@@ -317,21 +319,79 @@ async fn reflector(stack: &Host<'_, '_>, adv_data: &[u8], params: &Advertisement
 /// Ranges with `peer` forever and, with `NAVGRID_SINK` set, keeps a telemetry uplink to the sink
 /// alongside. The two share the central role, taking it only while connecting.
 async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6], antennas: u8, node: NodeId) {
+    // Short ACL events leave room in each 30 ms CS-link interval for the sink link's event after
+    // the CS subevent (see `Links`). Applies to connections made from now on.
+    if let Err(e) = stack
+        .command(sdc::vendor::NordicEventLengthSet::new(ACL_EVENT_LENGTH_US))
+        .await
+    {
+        warn!("ACL event length: {:?}", e);
+    }
     let central = Mutex::<CriticalSectionRawMutex, _>::new(stack.central());
+    let links = Links::default();
     let report = async {
         let Some(sink) = report::sink() else {
             return;
         };
         loop {
-            let uplink = uplink(stack, &mut *central.lock().await, sink).await;
+            let uplink = {
+                let mut central = central.lock().await;
+                links.space_before(stack, Link::Sink).await;
+                uplink(stack, &mut central, sink).await
+            };
             if let Some((_conn, mut channel)) = uplink {
+                links.sink.set(true);
                 report::set_link(node, node_id(peer));
                 report::run(stack, &mut channel).await;
+                links.sink.set(false);
             }
             Timer::after(Duration::from_secs(5)).await;
         }
     };
-    join(ranging(stack, &central, peer, antennas), report).await;
+    join(ranging(stack, &central, &links, peer, antennas), report).await;
+}
+
+/// ACL event length on the initiator: room for a packet pair each way, and short enough that the
+/// CS subevent ends with time to spare in a 30 ms interval.
+const ACL_EVENT_LENGTH_US: u32 = 2_500;
+/// From a CS-link anchor to the end of its longest CS subevent: the ACL event, the CS offset past
+/// it with 0.5 ms of set-up, 22 ms of subevent, and 1 ms of margin.
+const CS_FOOTPRINT_US: u32 = 26_000;
+/// The sink link's interval: a multiple of the CS link's 30 ms keeps its events at a fixed offset
+/// from the CS link's, so they never drift onto a CS subevent.
+const SINK_INTERVAL_MS: u64 = 120;
+
+#[derive(Clone, Copy)]
+enum Link {
+    Cs,
+    Sink,
+}
+
+/// Which of the initiator's two central links are up. The SDC places a new central link the
+/// configured spacing after the running one, so the spacing is set just before each connection:
+/// the sink link goes after the CS link's footprint, the CS link right after the sink link's short
+/// event, whichever is second (DEF-26). Fixed offsets need the common 30 ms factor.
+#[derive(Default)]
+struct Links {
+    cs: Cell<bool>,
+    sink: Cell<bool>,
+}
+
+impl Links {
+    async fn space_before(&self, stack: &Host<'_, '_>, new: Link) {
+        let spacing = match new {
+            Link::Sink if self.cs.get() => CS_FOOTPRINT_US,
+            Link::Cs if self.sink.get() => ACL_EVENT_LENGTH_US,
+            // First link: nothing to space from.
+            _ => return,
+        };
+        if let Err(e) = stack
+            .command(sdc::vendor::NordicCentralAclEventSpacingSet::new(spacing))
+            .await
+        {
+            warn!("central ACL event spacing: {:?}", e);
+        }
+    }
 }
 
 /// The node ID of a device address: the address in the low six bytes.
@@ -342,9 +402,7 @@ fn node_id(addr: [u8; 6]) -> NodeId {
 }
 
 /// Connects to the sink and opens the telemetry channel. Gives up after 10 s, so a missing sink
-/// doesn't hold up ranging. The sink link's events collide with CS subevents, which then come back
-/// empty: about a third of procedures at 100 ms (DEF-26). At 500 ms the link dropped after its 4 s
-/// supervision timeout every time, so it stays at 100 ms until the two links are scheduled apart.
+/// doesn't hold up ranging. The caller spaces it from the CS link first (see `Links`).
 async fn uplink<'a>(
     stack: &'a Host<'_, '_>,
     central: &mut Central<'a, SoftdeviceController<'_>, DefaultPacketPool>,
@@ -353,8 +411,8 @@ async fn uplink<'a>(
     let target = Address::random(sink);
     let config = ConnectConfig {
         connect_params: RequestedConnParams {
-            min_connection_interval: Duration::from_millis(100),
-            max_connection_interval: Duration::from_millis(100),
+            min_connection_interval: Duration::from_millis(SINK_INTERVAL_MS),
+            max_connection_interval: Duration::from_millis(SINK_INTERVAL_MS),
             supervision_timeout: Duration::from_secs(4),
             ..Default::default()
         },
@@ -392,6 +450,7 @@ async fn uplink<'a>(
 async fn ranging(
     stack: &Host<'_, '_>,
     central: &Mutex<CriticalSectionRawMutex, Central<'_, SoftdeviceController<'_>, DefaultPacketPool>>,
+    links: &Links,
     peer: [u8; 6],
     antennas: u8,
 ) {
@@ -413,13 +472,19 @@ async fn ranging(
         info!("connecting to {=[u8]:02x}", peer);
         // Extended Create Connection: the legacy command trips SDC assert 50:701 on the nRF54L15 as
         // soon as the peer's advertisement is heard (DEF-17).
-        let conn = match central.lock().await.connect_ext(&config).await {
+        let connected = {
+            let mut central = central.lock().await;
+            links.space_before(stack, Link::Cs).await;
+            central.connect_ext(&config).await
+        };
+        let conn = match connected {
             Ok(conn) => conn,
             Err(e) => {
                 warn!("connect: {:?}", e);
                 continue;
             }
         };
+        links.cs.set(true);
         info!("connected: handle {}", conn.handle().raw());
         cs::exchange_features(stack, conn.handle()).await;
         // Zephyr's central moves the ACL to 2M on connect (BT_AUTO_PHY_UPDATE); CS runs on 2M too.
@@ -434,6 +499,7 @@ async fn ranging(
             warn!("request security: {:?}", e);
         }
         if !encrypted(stack, &conn).await {
+            links.cs.set(false);
             continue;
         }
         match cs::initiate(stack, conn.handle(), antennas).await {
@@ -441,6 +507,7 @@ async fn ranging(
             Err(e) => warn!("CS: {}", e),
         }
         serve(stack, &conn).await;
+        links.cs.set(false);
     }
 }
 
