@@ -4,6 +4,13 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**DEF-26 fixed again.** Spacing a sink link that connects second never kept its events off the
+CS subevents. At 26 ms or 27.5 ms after the CS link's anchor, every fourth procedure stayed empty
+(8.3/s). Only the sink link first, with the CS link 2.5 ms after it, holds. So when the sink link
+connects under a CS link, the initiator now reconnects the CS link after it, losing about 1.5 s of
+ranging. Four resets: 11.1/s with no empty procedures. Three of them re-placed the CS link; in the
+fourth the sink link came first.
+
 **The bootloader works** ([spike](spikes/2026-11-03-bootloader.md)).
 
 - **Bootloader:** embassy-boot on the TAG, 5.4 KB in its own workspace, with the image moved to

@@ -31,11 +31,13 @@ use bt_hci::param::LeConnRole;
 use defmt::{error, info, unwrap, warn};
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
+use embassy_futures::select::{Either, select};
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::rramc::Nvmc;
 use embassy_nrf::{bind_interrupts, config, cracen, pac};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::mutex::Mutex;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer, with_timeout};
 use navgrid_proto::{Firmware, NodeConfig, NodeId, ProvisioningError, Role};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
@@ -471,9 +473,9 @@ async fn listen(central: &mut Central<'_, SoftdeviceController<'_>, DefaultPacke
 /// ACL event length on the initiator: room for a packet pair each way, and short enough that the
 /// CS subevent ends with time to spare in a 30 ms interval.
 const ACL_EVENT_LENGTH_US: u32 = 2_500;
-/// From a CS-link anchor to the end of its longest CS subevent: the ACL event, the CS offset past
-/// it with 0.5 ms of set-up, 22 ms of subevent, and 1 ms of margin.
-const CS_FOOTPRINT_US: u32 = 26_000;
+/// Where a sink link that connects second goes, after the CS link's anchor: as late as its short
+/// event allows. It only stays there until the CS link reconnects after it (`Links`).
+const CS_FOOTPRINT_US: u32 = 30_000 - ACL_EVENT_LENGTH_US;
 /// The sink link's interval: a multiple of the CS link's 30 ms keeps its events at a fixed offset
 /// from the CS link's, so they never drift onto a CS subevent.
 const SINK_INTERVAL_MS: u64 = 120;
@@ -485,13 +487,17 @@ enum Link {
 }
 
 /// Which of the initiator's two central links are up. The SDC places a new central link the
-/// configured spacing after the running one, so the spacing is set just before each connection:
-/// the sink link goes after the CS link's footprint, the CS link right after the sink link's short
-/// event, whichever is second (DEF-26). Fixed offsets need the common 30 ms factor.
+/// configured spacing after the running one, so the spacing is set just before each connection
+/// (DEF-26). Fixed offsets need the common 30 ms factor.
+///
+/// Only one order keeps the sink link's events off the CS subevents: the sink link first and the
+/// CS link 2.5 ms after it. Spacing a sink link that comes second can't, so when the sink link
+/// connects under a CS link, the CS link reconnects after it (`respace`).
 #[derive(Default)]
 struct Links {
     cs: Cell<bool>,
     sink: Cell<bool>,
+    respace: Signal<NoopRawMutex, ()>,
 }
 
 impl Links {
@@ -559,8 +565,12 @@ async fn uplink<'a>(
             return None;
         }
     };
-    // Up from now: a CS link connecting next must be spaced from it (see `Links`).
+    // Up from now: a CS link connecting next must be spaced from it, and one already up has to
+    // reconnect after it (see `Links`).
     links.sink.set(true);
+    if links.cs.get() {
+        links.respace.signal(());
+    }
     if !secure(&conn).await || !encrypted(stack, &conn, fleet).await {
         return None;
     }
@@ -618,6 +628,7 @@ async fn ranging(
                 continue;
             }
         };
+        links.respace.reset();
         links.cs.set(true);
         info!("connected: handle {}", conn.handle().raw());
         cs::exchange_features(stack, conn.handle()).await;
@@ -638,7 +649,12 @@ async fn ranging(
             Ok(()) => info!("CS running"),
             Err(e) => warn!("CS: {}", e),
         }
-        serve(stack, &conn, fleet).await;
+        // Also catches a sink link that connected while this one was being set up.
+        if let Either::Second(()) = select(serve(stack, &conn, fleet), links.respace.wait()).await {
+            info!("CS link: reconnecting after the sink link (DEF-26)");
+            conn.disconnect();
+            serve(stack, &conn, fleet).await;
+        }
         links.cs.set(false);
     }
 }

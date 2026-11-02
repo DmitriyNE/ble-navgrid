@@ -107,11 +107,9 @@ Version tracking is done (log 2026-11-03). Next, before stage 3:
 The embassy-boot spike is done ([spike](spikes/2026-11-03-bootloader.md)): the bootloader and the
 image at `0xB000` are in place on the TAGs.
 
-1. [ ] **DEF-26, reopened:** the CS link first and the sink link second still collide, every
-       fourth procedure. Find the right spacing, or always bring the sink link up first.
-2. [ ] **Signing:** `navgrid sign` (an Ed25519 key in the fleet directory, kept apart from
+1. [ ] **Signing:** `navgrid sign` (an Ed25519 key in the fleet directory, kept apart from
        `fleet.key`), and the public key built into the bootloader.
-3. [ ] **Single-hop update:**
+2. [ ] **Single-hop update:**
        - a bulk L2CAP channel (`0x0083`) into the update slot, with per-page CRCs and resume. The
          RRAM writes have to keep clear of CS (DEF-38): measure first, then MPSL timeslots if
          needed. A smaller slot, or buffered writes, shortens the 25 s swap;
