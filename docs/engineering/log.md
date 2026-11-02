@@ -4,6 +4,26 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Operations items 1–3: fleet numbers, LED and button, battery.**
+
+- **Registry:**
+  - `navgrid fleet init` sets up the fleet directory: the key, `devices.json` and `labels/`;
+  - `navgrid provision` reads the device's ID through the probe and keeps or assigns its fleet
+    number (provisioning page format 2, format 1 still read);
+  - it then writes an SVG label with a QR code; `navgrid fleet list` shows the fleet.
+  - The bench TAGs are N001 (initiator) and N002 (reflector).
+- **TAG LED and button:**
+  - boot colour, the short-press status display (connectivity, then battery, as colour plus
+    pattern), a long-press acknowledgement, and a factory reset when held at power-up;
+  - on the bench the display matched: N001 showed `Sink(1)` and N002 `Mesh`, both with a good
+    battery.
+- **Battery:** the SAADC reads VDD, as the lowest of 16 samples a minute (3.32–3.34 V from the
+  DK). It goes into the beacon (format 2: fleet number and flags) and into Health reports, once
+  a minute over the uplink. `navgrid monitor` shows `N001 … health: battery 3339 mV good`, and a
+  days-to-low trend after an hour.
+- **Not on air yet:** a node stops advertising while it is linked, so beacons and the attention
+  flag are off air then (DEF-35). The battery thresholds are untested on a coin cell (DEF-36).
+
 **Operations designed (FR-O4–O7, architecture §13).** Decided:
 
 - **Enrolment** at a bench through the probe (D-29).

@@ -23,6 +23,7 @@ heapless = { version = "0.9.3", features = ["serde"] }
 defmt = "1"
 
 anyhow = "1"
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 serde_json = "1"
 serialport = "4"
+qrcode = { version = "0.14", default-features = false }

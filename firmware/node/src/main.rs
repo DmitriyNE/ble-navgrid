@@ -5,17 +5,23 @@
 //! Controller with every Channel Sounding role and the board's antennas enabled, and logs the
 //! controller's CS capabilities. Then, as provisioned, it advertises and reflects, connects to a
 //! reflector and runs CS procedures, or serves as the sink. Links between provisioned devices
-//! encrypt under the fleet key without pairing (`keys`).
+//! encrypt under the fleet key without pairing (`keys`). The TAG's LED and button show status on
+//! demand (`ui`), and every node measures its battery (`battery`).
 
 #![no_std]
 #![no_main]
 
+mod battery;
+mod beacon;
 mod board;
 mod crypto;
 mod cs;
 mod keys;
 mod report;
+mod status;
 mod store;
+#[cfg(feature = "board-tag")]
+mod ui;
 
 use core::cell::Cell;
 
@@ -30,7 +36,7 @@ use embassy_nrf::{bind_interrupts, config, cracen, pac};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer, with_timeout};
-use navgrid_proto::{BEACON_COMPANY, Beacon, BeaconPosition, NodeConfig, NodeId, ProvisioningError, Role};
+use navgrid_proto::{NodeConfig, NodeId, ProvisioningError, Role};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, SoftdeviceController, mpsl};
 use static_cell::StaticCell;
@@ -120,14 +126,26 @@ fn build_sdc<'d, const N: usize>(
         .build(p, rng, mpsl, mem)
 }
 
-/// Static random address derived from FICR. It is the node's identity both on air and as [`NodeId`].
-fn static_address() -> [u8; 6] {
+/// The node's identity, both on air (a static random address) and as its [`NodeId`], from FICR.
+fn node_id_from_ficr() -> NodeId {
     let ficr = pac::FICR;
-    let raw = (u64::from(ficr.deviceaddr(1).read()) << 32) | u64::from(ficr.deviceaddr(0).read());
-    let mut addr = [0u8; 6];
-    addr.copy_from_slice(&raw.to_le_bytes()[..6]);
-    addr[5] |= 0xc0; // static random addresses have both MSBs set
-    addr
+    NodeId::from_ficr([ficr.deviceaddr(0).read(), ficr.deviceaddr(1).read()])
+}
+
+/// Firmware version for Health reports: major, minor and patch in the low three bytes.
+const FIRMWARE: u32 = (parse_u8(env!("CARGO_PKG_VERSION_MAJOR")) << 16)
+    | (parse_u8(env!("CARGO_PKG_VERSION_MINOR")) << 8)
+    | parse_u8(env!("CARGO_PKG_VERSION_PATCH"));
+
+const fn parse_u8(s: &str) -> u32 {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut v = 0;
+    while i < b.len() {
+        v = v * 10 + (b[i] - b'0') as u32;
+        i += 1;
+    }
+    v
 }
 
 /// Runs once the host is up: the controller disallows CS commands until the host has announced
@@ -164,23 +182,42 @@ async fn main(spawner: Spawner) {
     config.gpiote_interrupt_priority = embassy_nrf::interrupt::Priority::P2;
     let p = embassy_nrf::init(config);
 
-    // Before MPSL starts, so the write never lands in radio activity.
-    let epoch = match store::next_epoch(&mut Nvmc::new(p.RRAMC)) {
+    // RRAM writes happen here, before MPSL starts, so none lands in radio activity.
+    let mut rram = Nvmc::new(p.RRAMC);
+    #[cfg(feature = "board-tag")]
+    let (mut led, mut button) = (ui::Led::new(p.P2_08, p.P2_10, p.P2_09), ui::button(p.P0_00));
+    #[cfg(feature = "board-tag")]
+    ui::factory_reset_if_held(&mut button, &mut led, &mut rram).await;
+    let epoch = match store::next_epoch(&mut rram) {
         Ok(epoch) => epoch,
         Err(e) => {
             warn!("boot epoch: {:?}", e);
             0
         }
     };
-    let provisioning = match store::provisioning() {
-        Ok(p) => Some(p),
-        Err(ProvisioningError::Blank) => None,
+    let (provisioning, corrupt) = match store::provisioning() {
+        Ok(p) => (Some(p), false),
+        Err(ProvisioningError::Blank) => (None, false),
         Err(e) => {
             warn!("provisioning page: {:?}; running unprovisioned", e);
-            None
+            (None, true)
         }
     };
     let node_cfg = provisioning.map_or_else(NodeConfig::default, |p| p.config);
+    let number = provisioning.and_then(|p| p.number);
+    status::set_identity(provisioning.is_some(), node_cfg.role == Role::Sink);
+    #[cfg(feature = "board-tag")]
+    {
+        let boot = match (provisioning.is_some(), corrupt) {
+            (true, _) => ui::Colour::Green,
+            (false, true) => ui::Colour::Red,
+            (false, false) => ui::Colour::Blue,
+        };
+        spawner.spawn(unwrap!(ui::run(led, button, boot)));
+    }
+    #[cfg(not(feature = "board-tag"))]
+    let _ = corrupt;
+    spawner.spawn(unwrap!(battery::run(p.SAADC)));
     let antennas = if node_cfg.diversity { board::ANTENNAS } else { 1 };
     #[cfg(feature = "board-tag")]
     board::antenna::init(p.P1_09, p.P1_10);
@@ -241,17 +278,25 @@ async fn main(spawner: Spawner) {
     unwrap!(cs::set_event_length(), "CS event length");
     unwrap!(cs::set_tone_length(), "CS tone length");
 
-    let addr = static_address();
-    let mut id = [0u8; 8];
-    id[..6].copy_from_slice(&addr);
-    let node = NodeId(u64::from_le_bytes(id));
-    info!(
-        "navgrid node {=u64:012x} on {}, boot {=u32}, {}",
-        node.0,
-        board::NAME,
-        epoch,
-        node_cfg
-    );
+    let node = node_id_from_ficr();
+    let addr = node.address();
+    match number {
+        Some(n) => info!(
+            "navgrid node N{=u16:03} {=u64:012x} on {}, boot {=u32}, {}",
+            n,
+            node.0,
+            board::NAME,
+            epoch,
+            node_cfg
+        ),
+        None => info!(
+            "navgrid node {=u64:012x} on {}, boot {=u32}, {}",
+            node.0,
+            board::NAME,
+            epoch,
+            node_cfg
+        ),
+    }
     let peer = provisioning.and_then(|p| p.peer);
     let sink = provisioning.and_then(|p| p.sink);
     match provisioning {
@@ -269,23 +314,7 @@ async fn main(spawner: Spawner) {
     let mut runner = stack.runner();
 
     // FR-M4: the beacon in the advertisement, the name in the scan response.
-    let beacon = beacon(&node_cfg).encode();
-    let mut adv_data = [0; 31];
-    let adv_len = unwrap!(AdStructure::encode_slice(
-        &[
-            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::ManufacturerSpecificData {
-                company_identifier: BEACON_COMPANY,
-                payload: &beacon,
-            },
-        ],
-        &mut adv_data[..],
-    ));
-    let mut scan_data = [0; 31];
-    let scan_len = unwrap!(AdStructure::encode_slice(
-        &[AdStructure::CompleteLocalName(b"navgrid")],
-        &mut scan_data[..]
-    ));
+    let beacons = beacon::Beacons::new(node_cfg, number, MAX_LINKS as u8);
 
     // CR2032: advertise slowly; NodeConfig trades target acquisition time for idle current.
     let adv_interval = Duration::from_millis(u64::from(node_cfg.adv_interval_ms));
@@ -311,21 +340,21 @@ async fn main(spawner: Spawner) {
                 interval_max: Duration::from_millis(100),
                 ..Default::default()
             };
-            report::serve_sink(
-                &stack,
-                &fleet,
-                uart,
-                node,
-                &adv_data[..adv_len],
-                &scan_data[..scan_len],
-                &sink_params,
-            )
-            .await;
+            report::serve_sink(&stack, &fleet, uart, node, &beacons, &sink_params).await;
         }
-        let ads = (&adv_data[..adv_len], &scan_data[..scan_len]);
         match peer {
-            Some(peer) => initiator(&stack, &fleet, address(peer), sink.map(address), antennas, node).await,
-            None => reflector(&stack, &fleet, ads, &adv_params).await,
+            Some(peer) => {
+                let ranging = initiator(
+                    &stack,
+                    &fleet,
+                    peer.address(),
+                    sink.map(NodeId::address),
+                    antennas,
+                    node,
+                );
+                join(ranging, report::health(mpsl, node, FIRMWARE)).await;
+            }
+            None => reflector(&stack, &fleet, &beacons, &adv_params).await,
         }
     };
     // The runner returns only on an error, e.g. an HCI event bt-hci can't parse; everything stops
@@ -340,44 +369,18 @@ async fn main(spawner: Spawner) {
 
 type Host<'a, 'd> = Stack<'a, SoftdeviceController<'d>, DefaultPacketPool>;
 
-/// What a node advertises (FR-M4). Until the mesh state runs on devices, only a sink knows its
-/// hop count, and battery and pressure aren't measured yet.
-fn beacon(cfg: &NodeConfig) -> Beacon {
-    let dm = |mm: i32| (mm / 100).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-    Beacon {
-        role: cfg.role,
-        hops: if cfg.role == Role::Sink { 0 } else { u8::MAX },
-        free_links: MAX_LINKS as u8,
-        battery_mv: None,
-        pressure_dpa: None,
-        position: cfg.pinned.map(|p| BeaconPosition {
-            point_dm: [dm(p.x), dm(p.y), dm(p.z)],
-            sigma_dm: 1,
-            frame: 0,
-        }),
-    }
-}
-
 /// Advertises, accepts a connection, enables the CS reflector role on it, and serves it until it
 /// drops. Repeats forever.
 async fn reflector(
     stack: &Host<'_, '_>,
     fleet: &keys::Fleet,
-    (adv_data, scan_data): (&[u8], &[u8]),
+    beacons: &beacon::Beacons,
     params: &AdvertisementParameters,
 ) {
     let mut peripheral = stack.peripheral();
     loop {
-        let advertiser = unwrap!(
-            peripheral
-                .advertise(
-                    params,
-                    Advertisement::ConnectableScannableUndirected { adv_data, scan_data },
-                )
-                .await
-        );
         info!("advertising");
-        let conn = unwrap!(advertiser.accept().await);
+        let conn = beacons.advertise(&mut peripheral, params).await;
         info!("connected: handle {}", conn.handle().raw());
         fleet.trust(stack, &conn);
         cs::exchange_features(stack, conn.handle()).await;
@@ -416,6 +419,7 @@ async fn initiator(
         };
         loop {
             if let Some((_conn, mut channel)) = uplink(stack, fleet, &central, &links, sink).await {
+                let _link = status::Link::up(true);
                 report::set_link(node, node_id(peer));
                 report::run(stack, &mut channel).await;
             }
@@ -487,13 +491,6 @@ fn node_id(addr: [u8; 6]) -> NodeId {
     let mut id = [0u8; 8];
     id[..6].copy_from_slice(&addr);
     NodeId(u64::from_le_bytes(id))
-}
-
-/// The device address of a node ID.
-fn address(id: NodeId) -> [u8; 6] {
-    let mut addr = [0u8; 6];
-    addr.copy_from_slice(&id.0.to_le_bytes()[..6]);
-    addr
 }
 
 /// Connects to the sink, spaced from the CS link (see `Links`), encrypts the link and opens the
@@ -611,6 +608,7 @@ async fn ranging(
             links.cs.set(false);
             continue;
         }
+        let _link = status::Link::up(false);
         match cs::initiate(stack, conn.handle(), antennas).await {
             Ok(()) => info!("CS running"),
             Err(e) => warn!("CS: {}", e),
@@ -634,6 +632,14 @@ fn outsider(event: &ConnectionEvent, conn: &Connection<'_, DefaultPacketPool>, f
             ConnectionEvent::PairingComplete { .. } => conn.role() == LeConnRole::Peripheral,
             _ => false,
         }
+}
+
+/// Logs a disconnection; a MIC failure means the peer encrypted under another fleet key.
+fn disconnected(reason: bt_hci::param::Status) {
+    info!("disconnected: {:?}", reason);
+    if reason == bt_hci::param::Status::CONN_TERMINATED_DUE_TO_MIC_FAILURE {
+        status::foreign();
+    }
 }
 
 fn log_encrypted(security_level: SecurityLevel, fleet: &keys::Fleet) {
@@ -681,6 +687,7 @@ async fn wait_encrypted(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacke
         let event = conn.next().await;
         if outsider(&event, conn, fleet) {
             warn!("peer outside the fleet: dropping it");
+            status::foreign();
             conn.disconnect();
             continue;
         }
@@ -694,7 +701,7 @@ async fn wait_encrypted(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacke
                 conn.disconnect();
             }
             ConnectionEvent::Disconnected { reason } => {
-                info!("disconnected: {:?}", reason);
+                disconnected(reason);
                 return false;
             }
             ConnectionEvent::RequestConnectionParams(req) => {
@@ -721,19 +728,28 @@ async fn wait_encrypted(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacke
 /// Handles connection events until the link drops, and drops a peer outside the fleet
 /// ([`outsider`]).
 async fn serve(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacketPool>, fleet: &keys::Fleet) {
+    let mut link = None;
     loop {
         let event = conn.next().await;
         if outsider(&event, conn, fleet) {
             warn!("peer outside the fleet: dropping it");
+            status::foreign();
             conn.disconnect();
             continue;
         }
         match event {
             ConnectionEvent::Disconnected { reason } => {
-                info!("disconnected: {:?}", reason);
+                disconnected(reason);
                 return;
             }
-            ConnectionEvent::Encrypted { security_level, .. } => log_encrypted(security_level, fleet),
+            // A peripheral's link counts once encrypted; a central counts its own after
+            // `encrypted`.
+            ConnectionEvent::Encrypted { security_level, .. } => {
+                log_encrypted(security_level, fleet);
+                if conn.role() == LeConnRole::Peripheral && link.is_none() {
+                    link = Some(status::Link::up(false));
+                }
+            }
             ConnectionEvent::RequestConnectionParams(req) => {
                 if let Err(e) = req.accept(None, stack).await {
                     warn!("connection parameters: {:?}", e);

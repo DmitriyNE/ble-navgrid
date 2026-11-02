@@ -104,19 +104,17 @@ Protocol follow-ups, in the simulator first:
 
 Each item works through the host and the mesh first; the field tool shortens it.
 
-1. [ ] **Fleet numbers and the registry:**
-       - the fleet number in the provisioning page, the node record and the beacon (format 2,
-         with a flags byte for attention and install mode);
-       - `navgrid provision` assigns the next number from `devices.json` and prints a label
-         (number and QR code of the ID);
-       - a `--fleet DIR` directory for `fleet.key`, `devices.json` and placements.
-2. [ ] **LED and button on the TAG:**
-       - LED colour codes and patterns;
-       - the button on GPIOTE with wake, debounce, short and long press, and hold at power-up for
-         factory reset;
-       - the boot colour.
-3. [ ] **Battery:** SAADC VDD readings into Health records and the beacon; the host's low-battery
-       flag and days-left estimate.
+Items 1–3 are done (log 2026-11-02):
+- fleet numbers, the registry and labels;
+- the TAG's LED and button;
+- battery readings.
+
+Left over from them:
+- enrol the sink DK, so it has a number;
+- check that a phone scans the label QR;
+- try the factory reset on a TAG;
+- bring in install mode on the long press (item 7).
+
 4. [ ] **Identify and button events through the mesh:** the blink command (with stage 4's desired
        state), an event record for button presses, and `navgrid identify`.
 5. [ ] **Registry operations:** `navgrid place`, `replace` and `retire` (with the mesh's retire

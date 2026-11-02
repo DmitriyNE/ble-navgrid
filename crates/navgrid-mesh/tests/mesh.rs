@@ -9,6 +9,7 @@ const MINUTE: u64 = 60_000;
 fn info() -> NodeInfo {
     NodeInfo {
         role: Role::Node,
+        number: None,
         firmware: 1,
         config: 0,
         hops: 0,

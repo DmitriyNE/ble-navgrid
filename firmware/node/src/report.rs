@@ -1,5 +1,6 @@
 //! Telemetry toward a sink (D-6), first cut. The initiator keeps a second link, to one sink, and
-//! sends each on-device range over an L2CAP channel as a `navgrid-proto` frame. The sink (a DK)
+//! sends each on-device range, and its health once a minute, over an L2CAP channel as
+//! `navgrid-proto` frames. The sink (a DK)
 //! writes every frame it receives to its UART, which the DK's debugger exposes as VCOM1, for
 //! `navgrid monitor`. The sink comes from the initiator's provisioning.
 
@@ -11,16 +12,21 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_time::Instant;
-use navgrid_proto::{MAX_FRAME_LEN, Message, NodeId, Range, RangeMethod};
+use embassy_time::{Duration, Instant, Timer};
+use navgrid_proto::{Health, MAX_FRAME_LEN, Message, NodeId, Range, RangeMethod};
 use navgrid_ranging::{PhaseSlope, range_quality, range_sigma_m};
 use nrf_sdc::SoftdeviceController;
+use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use trouble_host::prelude::*;
+
+use crate::status;
 
 type Stack<'a, 'd> = trouble_host::Stack<'a, SoftdeviceController<'d>, DefaultPacketPool>;
 
-/// Ranges waiting for the uplink. Full means the sink can't keep up; new ranges are dropped.
-static RANGES: Channel<CriticalSectionRawMutex, Range, 16> = Channel::new();
+/// Messages waiting for the uplink. Full means the sink can't keep up; new ones are dropped.
+static OUTBOX: Channel<CriticalSectionRawMutex, Message, 16> = Channel::new();
+
+const HEALTH_PERIOD: Duration = Duration::from_secs(60);
 
 /// The CS link the ranges belong to, once the uplink is up: (initiator, reflector).
 static LINK: Mutex<CriticalSectionRawMutex, Cell<Option<(NodeId, NodeId)>>> = Mutex::new(Cell::new(None));
@@ -46,18 +52,38 @@ pub fn push(est: &PhaseSlope, paths: usize) {
         steps: est.pairs,
         antenna_paths: paths as u8,
     };
-    let _ = RANGES.try_send(range);
+    let _ = OUTBOX.try_send(Message::Range(range));
 }
 
-/// Sends queued ranges over `channel` until it fails.
+/// Queues this node's health once a minute while the uplink is up (FR-S2).
+pub async fn health(mpsl: &MultiprotocolServiceLayer<'_>, node: NodeId, firmware: u32) -> ! {
+    loop {
+        Timer::after(HEALTH_PERIOD).await;
+        if LINK.lock(Cell::get).is_none() {
+            continue;
+        }
+        let t = mpsl.get_temperature();
+        let health = Health {
+            node,
+            uptime_s: Instant::now().as_secs() as u32,
+            battery_mv: status::battery_mv().unwrap_or(0),
+            temperature_cdeg: (t.raw() * 25) as i16,
+            firmware,
+            queued: OUTBOX.len() as u16,
+        };
+        let _ = OUTBOX.try_send(Message::Health(health));
+    }
+}
+
+/// Sends queued messages over `channel` until it fails.
 pub async fn run(stack: &Stack<'_, '_>, channel: &mut L2capChannel<'_, DefaultPacketPool>) {
     let mut buf = [0u8; MAX_FRAME_LEN];
     loop {
-        let range = RANGES.receive().await;
-        let frame = match navgrid_proto::encode(&Message::Range(range), &mut buf) {
+        let msg = OUTBOX.receive().await;
+        let frame = match navgrid_proto::encode(&msg, &mut buf) {
             Ok(frame) => frame,
             Err(_) => {
-                warn!("uplink: range does not fit a frame");
+                warn!("uplink: message does not fit a frame");
                 continue;
             }
         };
@@ -77,8 +103,7 @@ pub async fn serve_sink(
     fleet: &crate::keys::Fleet,
     mut uart: embassy_nrf::uarte::UarteTx<'_>,
     node: NodeId,
-    adv_data: &[u8],
-    scan_data: &[u8],
+    beacons: &crate::beacon::Beacons,
     params: &AdvertisementParameters,
 ) -> ! {
     let mut buf = [0u8; MAX_FRAME_LEN];
@@ -96,22 +121,15 @@ pub async fn serve_sink(
     let config = L2capChannelConfig::default();
     let mut peripheral = stack.peripheral();
     loop {
-        let advertiser = defmt::unwrap!(
-            peripheral
-                .advertise(
-                    params,
-                    Advertisement::ConnectableScannableUndirected { adv_data, scan_data },
-                )
-                .await
-        );
         defmt::info!("sink: advertising");
-        let conn = defmt::unwrap!(advertiser.accept().await);
+        let conn = beacons.advertise(&mut peripheral, params).await;
         defmt::info!("sink: connected: handle {}", conn.handle().raw());
         fleet.trust(stack, &conn);
         // Only fleet members get the channel.
         if !crate::encrypted(stack, &conn, fleet).await {
             continue;
         }
+        let _link = status::Link::up(false);
         // A link can drop before or during the channel; never wait on a dead one.
         let disconnected = async {
             loop {

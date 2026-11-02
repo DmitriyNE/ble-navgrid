@@ -16,3 +16,4 @@ clap.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 serialport.workspace = true
+qrcode.workspace = true

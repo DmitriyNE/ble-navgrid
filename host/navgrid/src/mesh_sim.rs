@@ -287,6 +287,7 @@ impl<'a> Sim<'a> {
                 }
                 let info = NodeInfo {
                     role: if sink { Role::Sink } else { Role::Node },
+                    number: Some(i as u16 + 1),
                     firmware: 1,
                     config: 0,
                     hops: 0,

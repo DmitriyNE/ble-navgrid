@@ -23,6 +23,22 @@ pub const TELEMETRY_SPSM: u16 = 0x0081;
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NodeId(pub u64);
 
+impl NodeId {
+    /// A device's ID from its FICR `DEVICEADDR` words: the 48-bit address made a static random
+    /// one (top two bits set), as the firmware uses it on air.
+    pub fn from_ficr(deviceaddr: [u32; 2]) -> Self {
+        let raw = (u64::from(deviceaddr[1]) << 32) | u64::from(deviceaddr[0]);
+        Self((raw & 0xffff_ffff_ffff) | (0xc0 << 40))
+    }
+
+    /// The device address, least significant byte first.
+    pub fn address(self) -> [u8; 6] {
+        let mut addr = [0u8; 6];
+        addr.copy_from_slice(&self.0.to_le_bytes()[..6]);
+        addr
+    }
+}
+
 /// The controller (the host) as the origin of mesh records. No device has this ID: static random
 /// addresses have their top two bits set.
 pub const CONTROLLER: NodeId = NodeId(0);
@@ -95,6 +111,17 @@ pub struct Provisioning {
     pub peer: Option<NodeId>,
     /// Bring-up: the sink it reports its ranges to over a dedicated link (DEF-1).
     pub sink: Option<NodeId>,
+    /// The fleet number on its label (`N042`), assigned at enrolment (D-31).
+    pub number: Option<u16>,
+}
+
+/// Format 1 of the page, before fleet numbers.
+#[derive(Deserialize)]
+struct ProvisioningV1 {
+    config: NodeConfig,
+    fleet_key: [u8; 16],
+    peer: Option<NodeId>,
+    sink: Option<NodeId>,
 }
 
 /// Where the [`Provisioning`] page lives in RRAM: the second-to-last 4 KiB, which the firmware's
@@ -102,7 +129,7 @@ pub struct Provisioning {
 pub const PROVISIONING_ADDRESS: u32 = 0x0017_B000;
 /// The provisioning page's header: magic, format, payload length, CRC-32 of the payload.
 const PROVISIONING_MAGIC: [u8; 4] = *b"ngpv";
-const PROVISIONING_FORMAT: u8 = 1;
+const PROVISIONING_FORMAT: u8 = 2;
 const PROVISIONING_HEADER: usize = 12;
 /// Upper bound for an encoded provisioning page.
 pub const MAX_PROVISIONING_LEN: usize = 128;
@@ -114,7 +141,7 @@ pub enum ProvisioningError {
     Blank,
     /// Something else is there, or it is cut short.
     Corrupt,
-    /// Written by a newer `navgrid provision`.
+    /// Written by a newer `navgrid provision`, or not at all.
     Format(u8),
 }
 
@@ -142,8 +169,9 @@ pub fn decode_provisioning(page: &[u8]) -> Result<Provisioning, ProvisioningErro
     if header[..4] != PROVISIONING_MAGIC {
         return Err(ProvisioningError::Corrupt);
     }
-    if header[4] != PROVISIONING_FORMAT {
-        return Err(ProvisioningError::Format(header[4]));
+    let format = header[4];
+    if format == 0 || format > PROVISIONING_FORMAT {
+        return Err(ProvisioningError::Format(format));
     }
     let len = usize::from(u16::from_le_bytes([header[6], header[7]]));
     let crc = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
@@ -152,6 +180,16 @@ pub fn decode_provisioning(page: &[u8]) -> Result<Provisioning, ProvisioningErro
         .ok_or(ProvisioningError::Corrupt)?;
     if crc32(payload) != crc {
         return Err(ProvisioningError::Corrupt);
+    }
+    if format == 1 {
+        let v1: ProvisioningV1 = postcard::from_bytes(payload).map_err(|_| ProvisioningError::Corrupt)?;
+        return Ok(Provisioning {
+            config: v1.config,
+            fleet_key: v1.fleet_key,
+            peer: v1.peer,
+            sink: v1.sink,
+            number: None,
+        });
     }
     postcard::from_bytes(payload).map_err(|_| ProvisioningError::Corrupt)
 }
@@ -176,25 +214,38 @@ pub fn crc32(data: &[u8]) -> u32 {
 /// SIG reserves for tests, until we have our own.
 pub const BEACON_COMPANY: u16 = 0xffff;
 /// A beacon's length after the company identifier.
-pub const BEACON_LEN: usize = 17;
-const BEACON_FORMAT: u8 = 1;
+pub const BEACON_LEN: usize = 20;
+const BEACON_FORMAT: u8 = 2;
+
+/// Battery thresholds under radio load, for the LED status display and the host's low-battery
+/// flag. Provisional until the CR2032 sag measurements (P0): at rest a CR2032 holds about 3.0 V
+/// almost to the end.
+pub const BATTERY_GOOD_MV: u16 = 2800;
+pub const BATTERY_LOW_MV: u16 = 2600;
+pub const BATTERY_CRITICAL_MV: u16 = 2400;
 
 /// What a node advertises (FR-M4), so that a tag can choose nodes and get a height reference
-/// without a directory.
+/// without a directory, and the field tool can list it (FR-O6).
 ///
-/// Layout after the company identifier, little-endian: format (1), role, hops, free links,
-/// battery (20 mV steps above 2.0 V), pressure (0.1 Pa, 3 bytes), position x, y, z (decimetres,
-/// 2 bytes each), position σ (decimetres), frame version (2 bytes). All-ones fields are unknown.
+/// Layout after the company identifier, little-endian: format (2), role, flags (bit 0 attention,
+/// bit 1 install mode), hops, free links, battery (20 mV steps above 2.0 V), pressure (0.1 Pa,
+/// 3 bytes), fleet number (2 bytes), position x, y, z (decimetres, 2 bytes each), position σ
+/// (decimetres), frame version (2 bytes). All-ones fields are unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Beacon {
     pub role: Role,
+    /// Its button was pressed in the last 30 s (FR-O5).
+    pub attention: bool,
+    /// It is in install mode (architecture §13).
+    pub install: bool,
     /// Hops to the nearest sink; 255 with no path.
     pub hops: u8,
     /// Links it can still take (admission control, NFR-4).
     pub free_links: u8,
     pub battery_mv: Option<u16>,
     pub pressure_dpa: Option<u32>,
+    pub number: Option<u16>,
     pub position: Option<BeaconPosition>,
 }
 
@@ -214,20 +265,24 @@ impl Beacon {
         let mut b = [0xffu8; BEACON_LEN];
         b[0] = BEACON_FORMAT;
         b[1] = self.role as u8;
-        b[2] = self.hops;
-        b[3] = self.free_links;
+        b[2] = u8::from(self.attention) | (u8::from(self.install) << 1);
+        b[3] = self.hops;
+        b[4] = self.free_links;
         if let Some(mv) = self.battery_mv {
-            b[4] = (mv.saturating_sub(2000) / 20).min(254) as u8;
+            b[5] = (mv.saturating_sub(2000) / 20).min(254) as u8;
         }
         if let Some(p) = self.pressure_dpa {
-            b[5..8].copy_from_slice(&p.min(0xff_fffe).to_le_bytes()[..3]);
+            b[6..9].copy_from_slice(&p.min(0xff_fffe).to_le_bytes()[..3]);
+        }
+        if let Some(n) = self.number {
+            b[9..11].copy_from_slice(&n.min(0xfffe).to_le_bytes());
         }
         if let Some(pos) = self.position {
             for (i, v) in pos.point_dm.iter().enumerate() {
-                b[8 + 2 * i..10 + 2 * i].copy_from_slice(&v.to_le_bytes());
+                b[11 + 2 * i..13 + 2 * i].copy_from_slice(&v.to_le_bytes());
             }
-            b[14] = pos.sigma_dm.min(254);
-            b[15..17].copy_from_slice(&pos.frame.to_le_bytes());
+            b[17] = pos.sigma_dm.min(254);
+            b[18..20].copy_from_slice(&pos.frame.to_le_bytes());
         }
         b
     }
@@ -245,17 +300,21 @@ impl Beacon {
             _ => return None,
         };
         let i16_at = |i: usize| i16::from_le_bytes([b[i], b[i + 1]]);
-        let pressure = u32::from_le_bytes([b[5], b[6], b[7], 0]);
+        let pressure = u32::from_le_bytes([b[6], b[7], b[8], 0]);
+        let number = u16::from_le_bytes([b[9], b[10]]);
         Some(Self {
             role,
-            hops: b[2],
-            free_links: b[3],
-            battery_mv: (b[4] != 0xff).then(|| 2000 + 20 * u16::from(b[4])),
+            attention: b[2] & 1 != 0,
+            install: b[2] & 2 != 0,
+            hops: b[3],
+            free_links: b[4],
+            battery_mv: (b[5] != 0xff).then(|| 2000 + 20 * u16::from(b[5])),
             pressure_dpa: (pressure != 0xff_ffff).then_some(pressure),
-            position: (b[14] != 0xff).then(|| BeaconPosition {
-                point_dm: [i16_at(8), i16_at(10), i16_at(12)],
-                sigma_dm: b[14],
-                frame: u16::from_le_bytes([b[15], b[16]]),
+            number: (number != 0xffff).then_some(number),
+            position: (b[17] != 0xff).then(|| BeaconPosition {
+                point_dm: [i16_at(11), i16_at(13), i16_at(15)],
+                sigma_dm: b[17],
+                frame: u16::from_le_bytes([b[18], b[19]]),
             }),
         })
     }
@@ -461,6 +520,7 @@ mod tests {
             fleet_key: [0xa5; 16],
             peer: Some(NodeId(0xc0ff_ee12_3456)),
             sink: None,
+            number: Some(42),
         };
         let mut buf = [0u8; MAX_PROVISIONING_LEN];
         let page = encode_provisioning(&p, &mut buf).unwrap().to_vec();
@@ -474,12 +534,46 @@ mod tests {
         assert_eq!(decode_provisioning(&flipped), Err(ProvisioningError::Corrupt));
         assert_eq!(decode_provisioning(&[0xff; 64]), Err(ProvisioningError::Blank));
         let mut newer = page.clone();
-        newer[4] = 2;
-        assert_eq!(decode_provisioning(&newer), Err(ProvisioningError::Format(2)));
+        newer[4] = 3;
+        assert_eq!(decode_provisioning(&newer), Err(ProvisioningError::Format(3)));
         assert_eq!(
             decode_provisioning(&page[..page.len() - 1]),
             Err(ProvisioningError::Corrupt)
         );
+    }
+
+    #[test]
+    fn reads_format_1_pages() {
+        #[derive(Serialize)]
+        struct V1 {
+            config: NodeConfig,
+            fleet_key: [u8; 16],
+            peer: Option<NodeId>,
+            sink: Option<NodeId>,
+        }
+        let v1 = V1 {
+            config: NodeConfig::default(),
+            fleet_key: [7; 16],
+            peer: None,
+            sink: Some(NodeId(0xc000_0000_0001)),
+        };
+        let mut page = [0u8; MAX_PROVISIONING_LEN];
+        let len = postcard::to_slice(&v1, &mut page[PROVISIONING_HEADER..]).unwrap().len();
+        let crc = crc32(&page[PROVISIONING_HEADER..PROVISIONING_HEADER + len]);
+        page[..4].copy_from_slice(&PROVISIONING_MAGIC);
+        page[4] = 1;
+        page[6..8].copy_from_slice(&(len as u16).to_le_bytes());
+        page[8..12].copy_from_slice(&crc.to_le_bytes());
+        let p = decode_provisioning(&page).unwrap();
+        assert_eq!((p.sink, p.number), (v1.sink, None));
+    }
+
+    #[test]
+    fn node_id_from_ficr_matches_the_logged_id() {
+        // The bench initiator TAG: FICR reads dfcc4c2d d1aece36; it logs ce36dfcc4c2d.
+        let id = NodeId::from_ficr([0xdfcc_4c2d, 0xd1ae_ce36]);
+        assert_eq!(id, NodeId(0xce36_dfcc_4c2d));
+        assert_eq!(id.address(), [0x2d, 0x4c, 0xcc, 0xdf, 0x36, 0xce]);
     }
 
     #[test]
@@ -491,6 +585,9 @@ mod tests {
     fn beacon_roundtrips_with_unknowns() {
         let full = Beacon {
             role: Role::Node,
+            attention: true,
+            install: false,
+            number: Some(42),
             hops: 3,
             free_links: 9,
             battery_mv: Some(2980),
@@ -504,6 +601,9 @@ mod tests {
         assert_eq!(Beacon::decode(&full.encode()), Some(full));
         let bare = Beacon {
             role: Role::Sink,
+            attention: false,
+            install: true,
+            number: None,
             hops: 0,
             free_links: 14,
             battery_mv: None,
@@ -511,7 +611,7 @@ mod tests {
             position: None,
         };
         assert_eq!(Beacon::decode(&bare.encode()), Some(bare));
-        assert_eq!(Beacon::decode(&[2; BEACON_LEN]), None);
+        assert_eq!(Beacon::decode(&[9; BEACON_LEN]), None);
     }
 
     #[test]

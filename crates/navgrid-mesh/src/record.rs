@@ -216,6 +216,8 @@ impl Body {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NodeInfo {
     pub role: Role,
+    /// Its fleet number (`N042`, D-31), so the host's registry can be rebuilt from the mesh.
+    pub number: Option<u16>,
     pub firmware: u32,
     /// Hash of the node's `NodeConfig`, so the controller sees what it runs.
     pub config: u32,

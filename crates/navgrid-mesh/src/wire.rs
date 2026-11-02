@@ -146,6 +146,7 @@ mod tests {
             },
             Sync::Record(record(Body::Node(NodeInfo {
                 role: Role::Person,
+                number: Some(u16::MAX),
                 firmware: u32::MAX,
                 config: u32::MAX,
                 hops: u8::MAX,

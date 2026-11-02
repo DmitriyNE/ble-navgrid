@@ -79,9 +79,10 @@ Every device runs the same image; its role comes from its provisioning page, whi
 firmware leaves alone. Provision once per device, through its probe (`probe-rs list`):
 
 ```sh
-cargo run -p navgrid -- fleet-key ~/.config/navgrid/fleet.key        # once per fleet; keep it out of git
-cargo run -p navgrid -- provision --probe <A> --fleet-key ~/.config/navgrid/fleet.key   # board A: reflector
-cargo run -p navgrid -- provision --probe <B> --fleet-key ~/.config/navgrid/fleet.key --peer <id of A>
+cargo run -p navgrid -- fleet init                         # once: key, registry (~/.config/navgrid, or --fleet DIR)
+cargo run -p navgrid -- provision --probe <A>              # board A: reflector; gets N001 and a label
+cargo run -p navgrid -- provision --probe <B> --peer <id of A>
+cargo run -p navgrid -- fleet list
 cd firmware && cargo tag                                    # each board; note "navgrid node <id>"
 ```
 

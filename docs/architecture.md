@@ -603,12 +603,12 @@ replica keeps a class whole or not at all.
 
 - **The fleet directory** on the host holds:
   - `fleet.key`, the secret: never in git;
-  - `devices.json`: node ID, fleet number, board, firmware, enrolment date, status;
+  - `devices.json`: fleet number, node ID, role, enrolment date, status;
   - placements per site: name, room, pin, notes; the site file of §11 holds the pins.
 - **Fleet numbers** (D-31): `navgrid provision` assigns the next number (`N001`, `N002`, …),
-  stores it in the provisioning page, and prints a label: the number in large type and a QR code
-  of the full ID. The device reports its number in its node record and beacon, so the registry
-  can be rebuilt from the devices.
+  stores it in the provisioning page, and writes a 50 × 25 mm SVG label to `labels/`: the number
+  in large type and a QR code of `NAVGRID:N042:<ID>`. The device reports its number in its node
+  record and beacon, so the registry can be rebuilt from the devices.
 - **The monitor** joins mesh state with the registry: `N042 kitchen-NE: battery 2.41 V
   (≈ 9 days), last heard 40 s ago, 3 hops`. Battery comes from Health records; the host keeps the
   trend and estimates days left, and flags low cells.
