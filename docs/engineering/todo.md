@@ -23,8 +23,8 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       2×2 ranges on four paths), and boot a DK (DEF-2, DEF-3).
 - [ ] **Distance calibration** (DEF-6): measure several separations accurately, fit the
       constant offset (about 2.4 m on the TAG pair, spike 2026-11-02), and apply it, through the
-      SDC board distance offset or in the estimator. Calibrate IPT and two-sided ranging apart;
-      IPT read about 0.5 m higher.
+      SDC board distance offset or in the estimator. Key offsets by mode (IPT read about 0.5 m
+      above two-sided) and by timing configuration (medians moved 0.6 m between configurations).
 - [ ] **Legacy connect** (DEF-17): retry `LE Create Connection` now that the cache is on.
 - [ ] **Sub mode 1 and faster procedures:** with sub mode 1, 20 ms and a procedure every 5
       events, two in three procedures aborted (unspecified, or no CS_SYNC). Find out why before
@@ -40,9 +40,8 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       (the SDC rejects mixing the legacy and extended sets; DEF-17).
 - [ ] **Diversity evaluation** (DEF-25): per-path ranges at several placements against measured
       distances. Find out why path 3 is bad, and pick the path combiner on accuracy.
-- [ ] **IPT ranging rate:** Nordic's IPT sample ranges every 30 ms (15 ms ACL, a procedure every
-      2 events, 11 ms subevents); ours every 500 ms. Tune it, and make the raw step logs
-      optional.
+- [ ] **One-path rate:** after the capability exchange, move one-path links to a 15 ms
+      connection (33 Hz instead of 16.7; spike 2026-11-02-cs-ranging-rate).
 - [ ] **Cross-check estimator:** compare against NCS v3.4.1 `ipt_*` / `ras_*` samples and `cs_de`
       on the same captures; settle sign and units (DEF-6).
 - [ ] **Energy per activity** with a power profiler on a TAG: advertising, idle link, CS per

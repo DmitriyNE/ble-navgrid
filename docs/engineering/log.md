@@ -4,6 +4,15 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Faster ranging: 11 estimates/s on four paths.** Details:
+[spike](spikes/2026-11-02-cs-ranging-rate.md).
+
+- **Timing:** a 30 ms connection, with procedure timing by path count (four paths: two 22 ms
+  subevents every 3 events). Four paths now give 11.1 estimates/s and one path 16.7/s, both with
+  about 0.15 m p10–p90 spread; before, it was 2/s.
+- **Logging:** raw step logs are now opt-in (`NAVGRID_LOG_STEPS` at build time), because they
+  outrun 100 kHz SWD at these rates.
+
 **IPT on, 2×2 antenna diversity.** Details: [IPT](spikes/2026-11-02-cs-inline-pct-transfer.md),
 [diversity](spikes/2026-11-02-cs-antenna-diversity.md).
 

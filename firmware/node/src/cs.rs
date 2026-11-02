@@ -1,12 +1,12 @@
 //! Channel Sounding bring-up (phase P0).
 //!
-//! One board initiates and one reflects. Both log their raw step data over RTT, so the host can
-//! combine the two sides offline; no RAS or inline PCT transfer is needed yet. The command order
-//! and parameter values follow Nordic's NCS v3.4.1 `ras_initiator` sample: mode 2 with three
-//! mode-0 steps, all 72 channels, a 1×1 antenna configuration, 2M PHY, 16 ms subevents, and a
-//! procedure every 10 connection events. The connection interval differs (see
-//! [`ACL_INTERVAL_MS`]). Like Zephyr's host, both sides run the feature exchange on connect and
-//! the initiator moves the link to 2M.
+//! One board initiates and one reflects. With inline PCT transfer the initiator ranges on its own
+//! and logs a distance per procedure; with `NAVGRID_LOG_STEPS` set at build time both sides also
+//! log their raw step data over RTT, for the host to combine offline. The command order follows
+//! Nordic's NCS v3.4.1 samples, and the timing their IPT sample's: mode 2 with three mode-0 steps,
+//! all 72 channels, 2M PHY, a 15 ms connection and 11 ms subevents. The procedure interval grows
+//! with the antenna path count (see [`procedure_timing`]). Like Zephyr's host, both sides run the
+//! feature exchange on connect and the initiator moves the link to 2M.
 //!
 //! Build-time role (no provisioning yet): `NAVGRID_ROLE=initiator` with `NAVGRID_PEER` set to the
 //! reflector's node ID as it logs it at boot (12 hex digits). Anything else builds a reflector.
@@ -42,18 +42,18 @@ const ROLE_REFLECTOR: u8 = 1 << 1;
 /// Let the controller pick the CS_SYNC antenna, repeating the antenna sequence.
 const CS_SYNC_ANTENNA_REPETITIVE: u8 = 0xFE;
 const MAX_TX_POWER_DBM: i8 = 20;
-/// ACL connection interval the initiator asks for. At 20 ms (Nordic's sample) every CS subevent
-/// aborted with a scheduling conflict; Nordic acknowledges an SDC bug of that kind (DEF-18).
-pub const ACL_INTERVAL_MS: u64 = 50;
+/// ACL connection interval the initiator asks for. 30 ms fits a 22 ms subevent, so four antenna
+/// paths take two subevents per procedure rather than four (more subevents widened the spread).
+pub const ACL_INTERVAL_MS: u64 = 30;
 /// The same interval in 0.625 ms units, as procedure lengths are given.
 const ACL_INTERVAL_0625: u16 = (ACL_INTERVAL_MS * 1000 / 625) as u16;
-/// A CS procedure every this many connection events.
-const PROCEDURE_INTERVAL: u16 = 10;
 /// Time the SDC sets aside per CS event. With one subevent per event the SDC docs make it equal to
-/// the subevent length; NCS's default is 5 ms.
-const CS_EVENT_LENGTH_US: u32 = SUBEVENT_LENGTH_US;
-/// Length of each CS subevent, as in Nordic's sample.
-const SUBEVENT_LENGTH_US: u32 = 16_000;
+/// the subevent length, so this is the longest one [`procedure_timing`] asks for; NCS's default is
+/// 5 ms.
+const CS_EVENT_LENGTH_US: u32 = 22_000;
+/// Raw step data over RTT, for `navgrid cs`. At the procedure rate below it outruns a 100 kHz SWD
+/// link, so it is opt-in: build with `NAVGRID_LOG_STEPS` set.
+const LOG_STEPS: bool = option_env!("NAVGRID_LOG_STEPS").is_some();
 /// How long to wait for an asynchronous CS command to complete.
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Inline PCT transfer (IPT, `CS_Enhancements_1` bit 0): the reflector returns each tone with the
@@ -94,6 +94,19 @@ static DONE: Channel<CriticalSectionRawMutex, Done, 4> = Channel::new();
 /// The peer's antenna count from its CS capabilities.
 static PEER_ANTENNAS: AtomicU8 = AtomicU8::new(1);
 
+/// Procedure interval and maximum procedure length (connection events) and subevent length (µs)
+/// for an antenna path count. The SDC places CS events two connection events apart, so a
+/// procedure takes at least two. All 72 channels fit one 11 ms subevent with one path, one 22 ms
+/// subevent with two, and two with four. Measured at 30 ms: 16.7 procedures/s with one path,
+/// 11.1 with four (spike 2026-11-02-cs-ranging-rate).
+fn procedure_timing(paths: u8) -> (u16, u16, u32) {
+    match paths {
+        1 => (2, 1, 11_000),
+        2 => (2, 1, 22_000),
+        _ => (3, 2, 22_000),
+    }
+}
+
 /// Tone antenna configuration index (LE CS Set Procedure Parameters) and preferred peer antenna
 /// mask for the local and peer antenna counts, using up to two antennas each. Indices: 0 A1:B1,
 /// 1 A2:B1, 4 A1:B2, 7 A2:B2 (A initiator, B reflector); antenna paths = A × B.
@@ -103,6 +116,15 @@ fn tone_antenna_config(local: u8, peer: u8) -> (u8, u8) {
         (true, false) => (1, 0b01),
         (false, true) => (4, 0b11),
         (false, false) => (0, 0b01),
+    }
+}
+
+/// Antenna paths of the tone antenna configurations [`tone_antenna_config`] picks.
+fn antenna_paths(config: u8) -> u8 {
+    match config {
+        7 => 4,
+        1 | 4 => 2,
+        _ => 1,
     }
 }
 
@@ -172,16 +194,18 @@ impl EventHandler for Events {
     }
 
     fn on_cs_subevent_result(&self, e: &LeCsSubeventResult<'_>) {
-        log_steps(
-            "CSR",
-            e.procedure_counter,
-            e.frequency_compensation.as_raw(),
-            e.reference_power_level,
-            Done2(e.procedure_done_status as u8, e.subevent_done_status as u8),
-            abort_byte(&e.abort_reason),
-            e.num_antenna_paths,
-            &e.steps,
-        );
+        if LOG_STEPS {
+            log_steps(
+                "CSR",
+                e.procedure_counter,
+                e.frequency_compensation.as_raw(),
+                e.reference_power_level,
+                Done2(e.procedure_done_status as u8, e.subevent_done_status as u8),
+                abort_byte(&e.abort_reason),
+                e.num_antenna_paths,
+                &e.steps,
+            );
+        }
         range(
             Some(e.procedure_counter),
             e.procedure_done_status as u8,
@@ -193,16 +217,18 @@ impl EventHandler for Events {
     fn on_cs_subevent_result_continue(&self, e: &LeCsSubeventResultContinue<'_>) {
         // A continuation carries no procedure counter or frequency compensation of its own; the
         // host takes them from the preceding CSR line.
-        log_steps(
-            "CSC",
-            0,
-            0,
-            0,
-            Done2(e.procedure_done_status as u8, e.subevent_done_status as u8),
-            abort_byte(&e.abort_reason),
-            e.num_antenna_paths,
-            &e.steps,
-        );
+        if LOG_STEPS {
+            log_steps(
+                "CSC",
+                0,
+                0,
+                0,
+                Done2(e.procedure_done_status as u8, e.subevent_done_status as u8),
+                abort_byte(&e.abort_reason),
+                e.num_antenna_paths,
+                &e.steps,
+            );
+        }
         range(None, e.procedure_done_status as u8, e.num_antenna_paths, &e.steps);
     }
 }
@@ -483,21 +509,22 @@ pub async fn initiate(stack: &Stack<'_, '_>, handle: ConnHandle, antennas: u8) -
 
     let peer = PEER_ANTENNAS.load(Ordering::Relaxed);
     let (antenna_config, peer_antennas) = tone_antenna_config(antennas, peer);
+    let paths = antenna_paths(antenna_config);
+    let (interval, length, subevent_us) = procedure_timing(paths);
     info!(
-        "CS antennas: {=u8} local, {=u8} peer, tone antenna config {=u8}",
-        antennas, peer, antenna_config
+        "CS antennas: {=u8} local, {=u8} peer, tone antenna config {=u8} ({=u8} paths)",
+        antennas, peer, antenna_config, paths
     );
-    // A procedure every 10 connection events may last up to 9 intervals, as in Nordic's sample.
     stack
         .command(LeCsSetProcedureParams::new(
             handle,
             CONFIG_ID,
-            bt_hci::param::Duration::from_u16(ACL_INTERVAL_0625 * (PROCEDURE_INTERVAL - 1)),
-            PROCEDURE_INTERVAL, // min, in connection events
-            PROCEDURE_INTERVAL, // max
-            0,                  // procedure count: until disabled
-            ExtDuration::from_u32(SUBEVENT_LENGTH_US),
-            ExtDuration::from_u32(SUBEVENT_LENGTH_US),
+            bt_hci::param::Duration::from_u16(ACL_INTERVAL_0625 * length),
+            interval, // min, in connection events
+            interval, // max
+            0,        // procedure count: until disabled
+            ExtDuration::from_u32(subevent_us),
+            ExtDuration::from_u32(subevent_us),
             antenna_config,
             PhyKind::Le2M,
             i8::MIN, // tx power delta: no recommendation

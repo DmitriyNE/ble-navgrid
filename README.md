@@ -81,11 +81,12 @@ NAVGRID_ROLE=initiator NAVGRID_PEER=<id of A> cargo tag      # board B: initiato
 
 With two probes attached, pick one per build with `probe-rs list` and probe-rs's probe selector.
 
-- **The initiator** connects at 50 ms, runs the feature exchange (the SDC needs it before CS),
-  moves the link to 2M with 251-byte packets, pairs (LE Secure Connections, Just Works), then configures CS and starts
-  procedures: mode 2, all 72 channels, 2M PHY, 16 ms subevents, every 10 connection events. Two
-  TAGs use both antennas each (2×2, four antenna paths); otherwise 1×1.
-- **Both boards** log each CS subevent as one line:
+- **The initiator** connects at 30 ms, runs the feature exchange (the SDC needs it before CS),
+  moves the link to 2M with 251-byte packets, pairs (LE Secure Connections, Just Works), then
+  configures CS and starts procedures: mode 2, all 72 channels, 2M PHY, inline PCT transfer. Two
+  TAGs use both antennas each (2×2, four antenna paths: about 11 procedures/s); otherwise 1×1
+  (about 17/s).
+- **Built with `NAVGRID_LOG_STEPS` set**, both boards log each CS subevent as one line:
   `CSR <I|R> <procedure> <freq comp> <ref power> <proc done> <subevent done> <abort> <paths>
   <steps> [step bytes]`. Continuations are logged as `CSC`. The step bytes keep the HCI layout,
   so the host can join the two sides by procedure counter.
