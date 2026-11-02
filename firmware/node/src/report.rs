@@ -1,10 +1,7 @@
 //! Telemetry toward a sink (D-6), first cut. The initiator keeps a second link, to one sink, and
 //! sends each on-device range over an L2CAP channel as a `navgrid-proto` frame. The sink (a DK)
 //! writes every frame it receives to its UART, which the DK's debugger exposes as VCOM1, for
-//! `navgrid monitor`.
-//!
-//! Build-time sink address (no provisioning yet): `NAVGRID_SINK` set to the sink's node ID as it
-//! logs it at boot (12 hex digits).
+//! `navgrid monitor`. The sink comes from the initiator's provisioning.
 
 use core::cell::Cell;
 
@@ -27,11 +24,6 @@ static RANGES: Channel<CriticalSectionRawMutex, Range, 16> = Channel::new();
 
 /// The CS link the ranges belong to, once the uplink is up: (initiator, reflector).
 static LINK: Mutex<CriticalSectionRawMutex, Cell<Option<(NodeId, NodeId)>>> = Mutex::new(Cell::new(None));
-
-/// The sink's address, from `NAVGRID_SINK` at build time.
-pub fn sink() -> Option<[u8; 6]> {
-    crate::cs::address(option_env!("NAVGRID_SINK")?)
-}
 
 /// Starts reporting ranges of the CS link between `initiator` and `reflector`.
 pub fn set_link(initiator: NodeId, reflector: NodeId) {
@@ -77,14 +69,16 @@ pub async fn run(stack: &Stack<'_, '_>, channel: &mut L2capChannel<'_, DefaultPa
     }
 }
 
-/// The sink: writes a `Hello` frame, then advertises, accepts one node at a time, and forwards
-/// every SDU of its telemetry channel to `uart` unchanged (each SDU is one frame).
+/// The sink: writes a `Hello` frame, then advertises, accepts one fleet node at a time, and
+/// forwards every SDU of its telemetry channel to `uart` unchanged (each SDU is one frame).
 #[cfg(feature = "board-dk")]
 pub async fn serve_sink(
     stack: &Stack<'_, '_>,
+    fleet: &crate::keys::Fleet,
     mut uart: embassy_nrf::uarte::UarteTx<'_>,
     node: NodeId,
     adv_data: &[u8],
+    scan_data: &[u8],
     params: &AdvertisementParameters,
 ) -> ! {
     let mut buf = [0u8; MAX_FRAME_LEN];
@@ -106,16 +100,18 @@ pub async fn serve_sink(
             peripheral
                 .advertise(
                     params,
-                    Advertisement::ConnectableScannableUndirected {
-                        adv_data,
-                        scan_data: &[]
-                    },
+                    Advertisement::ConnectableScannableUndirected { adv_data, scan_data },
                 )
                 .await
         );
         defmt::info!("sink: advertising");
         let conn = defmt::unwrap!(advertiser.accept().await);
         defmt::info!("sink: connected: handle {}", conn.handle().raw());
+        fleet.trust(stack, &conn);
+        // Only fleet members get the channel.
+        if !crate::encrypted(stack, &conn, fleet).await {
+            continue;
+        }
         // A link can drop before or during the channel; never wait on a dead one.
         let disconnected = async {
             loop {

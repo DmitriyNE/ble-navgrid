@@ -30,7 +30,8 @@ commands, with the host as controller (§12).
   connections carry queued telemetry toward sinks when they wake to range (D-6).
 - **Tag links** are short-lived links between a moving tag and nearby nodes, one range at a time.
 - **Advertisements** carry each node's position, uncertainty, capacity, battery and pressure
-  (FR-M4), so a tag needs no directory service.
+  (FR-M4), so a tag needs no directory service. The layout is `navgrid_proto::Beacon`: 17 bytes
+  of manufacturer-specific data, with the name in the scan response.
 - **The person↔asset direct link** serves the final approach of a find (§10).
 
 ## 2. Roles on a link
@@ -58,6 +59,14 @@ set procedure params ─▶ procedure enable ─▶ ┌────────�
                                             │ ─▶ estimator ─▶ link filter    │
                                             └────────────────────────────────┘
 ```
+
+**Encryption (D-7).** The link key is AES-CMAC under the fleet key of a label and both device
+addresses, the lower first, so both ends derive it. A central adds it to TrouBLE as a non-bonded
+key before connecting, and a peripheral as soon as it accepts. TrouBLE then encrypts without
+pairing and forgets the key when the link drops.
+- **Outsiders:** a peer with another key fails on the first encrypted packet (MIC failure). A
+  provisioned node also drops a peer that pairs instead.
+- **Unprovisioned devices** pair Just Works, for bring-up.
 
 Capabilities and the FAE table are cached per peer to cut reconnect time. `bt-hci` has
 `LeCsWriteCachedRemoteSupportedCapabilities` / `...FaeTable` for this.
@@ -248,8 +257,10 @@ host/
   navgrid/                  CLI: sim, track, decode [--json], monitor, calibrate, cs, mesh-sim;
                             later replay, central solver, controller
 firmware/                   separate cargo workspace, thumbv8m.main-none-eabihf
-  node/                     single firmware image; role from config (D-2)
+  node/                     single firmware image; role from provisioning (D-2)
     src/board.rs            board-dk / board-tag: DC/DC, crystal caps, antenna switch (D-13)
+    src/store.rs            provisioning page and boot epoch log in the top 8 KiB of RRAM
+    src/keys.rs             link keys from the fleet key (D-7)
 docs/
   requirements.md, architecture.md
   engineering/              log, known defects, todo, spikes (D-21)
@@ -569,12 +580,12 @@ replica keeps a class whole or not at all.
 | ID | Decision | Status |
 |---|---|---|
 | D-1 | Rust everywhere: Embassy + `nrf-sdc` + `TrouBLE` + `bt-hci` on firmware; std Rust on host. | **Accepted** (user requirement; feasibility checked §6) |
-| D-2 | One firmware image; role (node / asset / person / sink), pinned coordinates and periods from provisioned `NodeConfig`. | Proposed |
+| D-2 | One firmware image; role (node / asset / person / sink), pinned coordinates and periods from provisioned `NodeConfig`. | **Accepted** (implemented 2026-11-02: `navgrid provision`) |
 | D-3 | On tag links the tag is central + initiator and nodes are peripheral + reflector. This gives self-positioning, nodes stay unaware of tags, and per-tag compute lands on the tag. | Proposed |
 | D-4 | Reflector → initiator data: **inline PCT transfer (IPT) first.** All devices are ours, and it is faster (~30 ms vs 100–200 ms per estimate), has no GATT hop, and costs less energy per range. Its limits are mode 2 only and weaker relay-attack resistance. **RAS** comes when phones do, or as the fallback if IPT fails the R-8 checks. | Proposed |
 | D-5 | Wire format: postcard + COBS; telemetry types in `navgrid-proto`, mesh state and sync in `navgrid-mesh`. | Proposed |
 | D-6 | Telemetry is delay-tolerant: queued data rides ranging contacts toward sinks over L2CAP CoC. No always-on routing tree and no second radio protocol. | Proposed |
-| D-7 | Every link uses LTKs derived from the fleet network key and starts encryption directly, with no pairing. Phones, if they come, use LE Secure Connections. | Proposed (verify against SDC/TrouBLE) |
+| D-7 | Every link uses LTKs derived from the fleet network key and starts encryption directly, with no pairing. Phones, if they come, use LE Secure Connections. | **Accepted** (works on the TAGs with SDC and TrouBLE, 2026-11-02; §3) |
 | D-8 | Firmware uses pinned revisions of our forks: `DmitriyNE/bt-hci`, `DmitriyNE/nrf-sdc` and `GreatKet/trouble`, with Embassy at the revision TrouBLE's nRF54 example uses. Upstream PRs follow. | **Accepted** |
 | D-9 | Solvers: tags use a Gauss-Newton fix to start, then the tracker (D-14). Mesh uses distributed weighted least squares with neighbor covariances, bootstrapped by a central solve on the host. | Proposed |
 | D-10 | Battery link policy (§3): low-duty persistent mesh links that burst to range, event-driven re-survey, wake-on-motion tags, configurable advertising. | Proposed (P0 measures alternatives) |

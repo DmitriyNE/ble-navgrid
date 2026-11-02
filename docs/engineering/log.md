@@ -4,6 +4,31 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Stage 2: devices provisioned at runtime, links encrypted under the fleet key, beacons on air.**
+
+- **Provisioning:** `navgrid provision` writes a CRC-checked page (role, diversity, pin, fleet
+  key, bring-up peer and sink) to the second-to-last RRAM page through the probe, and resets the
+  device. `navgrid fleet-key` makes the key file. Flashing firmware leaves the page alone; the
+  build-time role variables are gone (DEF-5, DEF-14 fixed).
+- **Boot epoch:** each boot writes the next of 256 slots in the last RRAM page. It counted 1 → 7
+  across resets and reflashes. The mesh epoch is now `u32`.
+- **Fleet keys (D-7):**
+  - **How:** the link key is AES-CMAC of both addresses under the fleet key, added to TrouBLE as
+    a non-bonded key, so the links encrypt without pairing.
+  - **Bench:** on the TAG pair and the sink, both links encrypt about 0.2 s after connecting, and ranging
+    holds 11.1/s with the uplink up.
+  - **Wrong key:** a reflector given another fleet key got no link through: MIC failure on
+    every attempt.
+  - **Pairing:** a provisioned node drops a peer that pairs (DEF-34).
+- **Beacon (FR-M4):** 17 bytes of manufacturer data. The initiator heard the reflector's and the
+  sink's at −48 to −58 dBm during a 3 s scan at boot.
+- **Found on the way:**
+  - TrouBLE runs one security procedure at a time (DEF-32): the uplink got `InvalidState` while
+    the CS link encrypted, then waited on the central role forever.
+  - Releasing the central role between connecting and encrypting let the CS link connect
+    without its spacing, which emptied every 4th procedure (8.3/s). A link now counts as up as
+    soon as it connects.
+
 **Mesh state, stage 1: the `navgrid-mesh` crate and `navgrid mesh-sim`**
 ([spike](spikes/2026-11-02-mesh-state-sim.md)). The crate:
 

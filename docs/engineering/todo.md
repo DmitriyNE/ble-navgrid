@@ -64,12 +64,9 @@ the 20 TAGs: about 8 nodes, a person tag, 2–3 asset tags, and the DK sink.
 Stage 1, the `navgrid-mesh` crate and `navgrid mesh-sim`, is done
 ([spike](spikes/2026-11-02-mesh-state-sim.md)).
 
-2. [ ] **Identity and configuration at runtime:**
-       - `NodeConfig` and the boot epoch in flash; `navgrid provision` writes them through the
-         probe (DEF-5, DEF-14);
-       - FR-M4 advertising with the hop count (DEF-11);
-       - fleet-key LTKs without pairing (D-7), and the controller key that authenticates desired
-         state (DEF-27).
+Stage 2, identity and configuration at runtime, is done too: the provisioning page and boot
+epoch in RRAM, `navgrid provision`, the FR-M4 beacon, and fleet-key link keys (log 2026-11-02).
+
 3. [ ] **Mesh links:** several links per node, with CS scheduled across them (generalising
        DEF-26's per-connection spacing), low-duty links that burst to range (D-10), and the
        one-path rate decision. Measure ranging rate and energy per link count.
@@ -81,7 +78,10 @@ Stage 1, the `navgrid-mesh` crate and `navgrid mesh-sim`, is done
        - the sink mirrors its replica to the host over VCOM1, and takes Desired records back
          (UART RX);
        - `navgrid monitor` mesh-state view (FR-S5);
-       - a controller CLI with the first commands: LED blink, BME688 on and period, diversity.
+       - a controller CLI with the first commands: LED blink, BME688 on and period, diversity;
+       - the controller key from the fleet key, and a MAC on desired state (DEF-27);
+       - the beacon's hop count from the mesh state, and neighbour discovery from beacons
+         (FR-M1, DEF-11).
        - Exit: commands and records cross partitions and several hops on the bench mesh;
          latency and bytes per contact against the simulator.
 5. [ ] **Positions:** the host solver over Link records (FR-M6) publishes Position records with
@@ -97,6 +97,7 @@ Protocol follow-ups, in the simulator first:
 - [ ] **Commands to unrouted nodes** (DEF-31): fall back to pushing toward the target's last
       known neighbours.
 - [ ] **Retiring a node:** a controller record that drops a node's records everywhere.
+- [ ] **Fleet key at rest** (DEF-33): APPROTECT on provisioned devices, and the key in the KMU.
 - [ ] **Simulate link loss and mid-session drops,** and reboots (new epochs).
 
 ## P1 — find my keys, first cut

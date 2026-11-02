@@ -75,24 +75,26 @@ size is wrong, the log prints the exact number needed; set `SDC_MEM` in `node/sr
 
 ### Two-board Channel Sounding (P0 bring-up)
 
-The role is chosen at build time until provisioning exists:
+Every device runs the same image; its role comes from its provisioning page, which flashing
+firmware leaves alone. Provision once per device, through its probe (`probe-rs list`):
 
 ```sh
-cd firmware
-cargo tag                                                    # board A: reflector; note "navgrid node <id>"
-NAVGRID_ROLE=initiator NAVGRID_PEER=<id of A> cargo tag      # board B: initiator
+cargo run -p navgrid -- fleet-key ~/.config/navgrid/fleet.key        # once per fleet; keep it out of git
+cargo run -p navgrid -- provision --probe <A> --fleet-key ~/.config/navgrid/fleet.key   # board A: reflector
+cargo run -p navgrid -- provision --probe <B> --fleet-key ~/.config/navgrid/fleet.key --peer <id of A>
+cd firmware && cargo tag                                    # each board; note "navgrid node <id>"
 ```
 
-With two probes attached, pick one per build with `probe-rs list` and probe-rs's probe selector.
+An unprovisioned device reflects and pairs Just Works. Provisioned devices encrypt their links
+under the fleet key without pairing, and drop a peer that isn't in the fleet.
 
-To get ranges on the host without a probe on the initiator, add a sink. A DK runs
-`NAVGRID_ROLE=sink cargo dk` (its node ID is in the boot log), the initiator is built with
-`NAVGRID_SINK=<sink id>` as well, and `navgrid monitor` reads the DK's VCOM1. To flash a DK whose
+To get ranges on the host without a probe on the initiator, add a sink. Provision a DK with
+`--role sink` and flash it with `cargo dk` (its node ID is in the boot log), provision the initiator
+with `--sink <sink id>` as well, and `navgrid monitor` reads the DK's VCOM1. To reach a DK whose
 `DEBUG OUT` holds a TAG, unplug the TAG first; the debugger then targets the DK's own chip.
 
 - **The initiator** connects at 30 ms, runs the feature exchange (the SDC needs it before CS),
-  moves the link to 2M with 251-byte packets, pairs (LE Secure Connections, Just Works), then
-  configures CS and starts procedures: mode 2, all 72 channels, 2M PHY, inline PCT transfer. Two
+  moves the link to 2M with 251-byte packets, encrypts it under the fleet key, then configures CS and starts procedures: mode 2, all 72 channels, 2M PHY, inline PCT transfer. Two
   TAGs use both antennas each (2×2, four antenna paths: about 11 procedures/s); otherwise 1×1
   (about 17/s).
 - **Built with `NAVGRID_LOG_STEPS` set**, both boards log each CS subevent as one line:

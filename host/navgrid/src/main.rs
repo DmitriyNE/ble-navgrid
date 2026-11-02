@@ -2,6 +2,7 @@ mod calibration;
 mod capture;
 mod fix;
 mod mesh_sim;
+mod provision;
 mod scenario;
 mod track;
 
@@ -53,6 +54,13 @@ enum Cmd {
     /// The mesh state protocol over a synthetic deployment: staleness, command latency, bytes per
     /// contact and memory per node.
     MeshSim(mesh_sim::MeshSimArgs),
+    /// Write a device's provisioning (role, fleet key, bring-up peer and sink) through its probe.
+    Provision(provision::ProvisionArgs),
+    /// Create a fleet key file for `provision`.
+    FleetKey {
+        /// Where to write it; it must not exist yet. Keep it out of the repository.
+        path: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -72,6 +80,8 @@ fn main() -> Result<()> {
         }
         Cmd::Calibrate(args) => calibration::run(&args),
         Cmd::MeshSim(args) => mesh_sim::run(&args),
+        Cmd::Provision(args) => provision::run(&args),
+        Cmd::FleetKey { path } => provision::new_key(&path),
     }
 }
 

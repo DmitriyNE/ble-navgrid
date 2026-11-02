@@ -253,7 +253,7 @@ pub struct Replica<S: Storage> {
 impl<S: Storage> Replica<S> {
     /// A fresh replica, which writes its node record. `epoch` must be greater than at any earlier
     /// boot (see [`Version`]); `node`'s hop count and neighbours are the replica's to fill in.
-    pub fn new(cfg: Config, epoch: u16, mut node: NodeInfo, now_ms: u64) -> Self {
+    pub fn new(cfg: Config, epoch: u32, mut node: NodeInfo, now_ms: u64) -> Self {
         node.hops = if cfg.sink { 0 } else { UNREACHABLE };
         node.neighbours.clear();
         let mut replica = Self {

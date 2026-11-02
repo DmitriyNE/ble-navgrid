@@ -109,7 +109,7 @@ mod tests {
     /// The largest node ID: device addresses are 48 bits.
     const ID: NodeId = NodeId(0xffff_ffff_ffff);
     const V: Version = Version {
-        epoch: u16::MAX,
+        epoch: u32::MAX,
         counter: u32::MAX,
     };
 

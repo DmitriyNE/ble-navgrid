@@ -8,8 +8,7 @@
 //! with the antenna path count (see [`procedure_timing`]). Like Zephyr's host, both sides run the
 //! feature exchange on connect and the initiator moves the link to 2M.
 //!
-//! Build-time role (no provisioning yet): `NAVGRID_ROLE=initiator` with `NAVGRID_PEER` set to the
-//! reflector's node ID as it logs it at boot (12 hex digits). Anything else builds a reflector.
+//! A node initiates when its provisioning names a peer to range with, and reflects otherwise.
 
 use bt_hci::cmd::le::{
     LeCsCreateConfig, LeCsProcedureEnable, LeCsReadRemoteSupportedCapabilities, LeCsSecurityEnableCommand,
@@ -20,14 +19,17 @@ use bt_hci::event::le::{
     LeCsSecurityEnableComplete, LeCsSubeventResult, LeCsSubeventResultContinue,
 };
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use bt_hci::param::{ConnHandle, ExtDuration, LeCsSubeventStepData, PackedAbortReasons, PhyKind, Status};
+use bt_hci::param::{
+    ConnHandle, ExtDuration, LeCsSubeventStepData, LeExtAdvReportsIter, PackedAbortReasons, PhyKind, Status,
+};
 use defmt::{Format, info, warn};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, with_timeout};
+use navgrid_proto::{BEACON_COMPANY, Beacon};
 use navgrid_ranging::steps::{self, MAX_ANTENNA_PATHS, RawStep, Role, Step, ToneQuality};
 use navgrid_ranging::{ChannelResponse, Combine, PhaseSlope, combine_paths, phase_slope};
 use nrf_sdc::SoftdeviceController;
@@ -64,29 +66,16 @@ const INLINE_PCT: bool = true;
 /// Fewest adjacent channel pairs for an on-device estimate.
 const MIN_PAIRS: u8 = 20;
 
-/// Bring-up role, from `NAVGRID_ROLE` at build time.
-pub fn is_initiator() -> bool {
-    option_env!("NAVGRID_ROLE") == Some("initiator")
+static INITIATOR: AtomicBool = AtomicBool::new(false);
+
+/// Makes this node the CS initiator, as its provisioning says; the event handler ranges and logs
+/// accordingly.
+pub fn set_initiator() {
+    INITIATOR.store(true, Ordering::Relaxed);
 }
 
-/// Whether this build is the sink (`NAVGRID_ROLE=sink`, DK only).
-#[cfg(feature = "board-dk")]
-pub fn is_sink() -> bool {
-    option_env!("NAVGRID_ROLE") == Some("sink")
-}
-
-/// The reflector's address, from `NAVGRID_PEER` at build time: its node ID as logged at boot,
-/// 12 hex digits, most significant first.
-pub fn peer() -> Option<[u8; 6]> {
-    address(option_env!("NAVGRID_PEER")?)
-}
-
-/// A device address from a node ID as logged at boot: 12 hex digits, most significant first.
-pub fn address(hex: &str) -> Option<[u8; 6]> {
-    let id = u64::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 12)?;
-    let mut addr = [0u8; 6];
-    addr.copy_from_slice(&id.to_le_bytes()[..6]);
-    Some(addr)
+fn is_initiator() -> bool {
+    INITIATOR.load(Ordering::Relaxed)
 }
 
 /// Completions of the asynchronous CS commands, passed from the host runner's event handler to
@@ -148,10 +137,31 @@ pub enum CsError {
     Timeout(&'static str),
 }
 
-/// Host event handler: completions go to the initiator sequence; subevent results are logged.
+/// Host event handler: completions go to the initiator sequence; subevent results are logged, and
+/// so are the navgrid beacons heard while scanning (FR-M4).
 pub struct Events;
 
 impl EventHandler for Events {
+    fn on_ext_adv_reports(&self, reports: LeExtAdvReportsIter) {
+        for report in reports.flatten() {
+            for ad in AdStructure::decode(report.data).flatten() {
+                if let AdStructure::ManufacturerSpecificData {
+                    company_identifier: BEACON_COMPANY,
+                    payload,
+                } = ad
+                    && let Some(beacon) = Beacon::decode(payload)
+                {
+                    info!(
+                        "beacon {=[u8]:02x} at {} dBm: {}",
+                        report.addr.raw(),
+                        report.rssi,
+                        beacon
+                    );
+                }
+            }
+        }
+    }
+
     fn on_cs_read_remote_supported_capabilities_complete(&self, e: &LeCsReadRemoteSupportedCapabilitiesComplete) {
         info!(
             "CS peer: antennas={} paths={} roles={=u8:#04x} modes={=u8:#04x}",

@@ -13,7 +13,7 @@ pub const MAX_NEIGHBOURS: usize = 8;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Version {
-    pub epoch: u16,
+    pub epoch: u32,
     pub counter: u32,
 }
 
@@ -26,7 +26,7 @@ pub struct Writer {
 
 impl Writer {
     /// `epoch` must be greater than at any earlier boot of `origin`.
-    pub fn new(origin: NodeId, epoch: u16) -> Self {
+    pub fn new(origin: NodeId, epoch: u32) -> Self {
         Self {
             origin,
             last: Version { epoch, counter: 0 },
