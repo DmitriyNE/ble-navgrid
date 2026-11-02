@@ -4,6 +4,18 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Calibration infrastructure, nothing calibrated yet.** Calibration lives on the host:
+
+- **Model:** a JSON file holds one constant offset per (initiator, reflector, antenna paths,
+  method), with the sample count and p10–p90 spread it was fitted from.
+- **Fit:** `navgrid calibrate --out cal.json capture.jsonl=<metres> …` fits it from
+  `monitor --json` captures at measured distances (median of reported − true), keeping entries
+  for other keys.
+- **Apply:** `navgrid monitor --calibration cal.json` adds each range's calibrated distance
+  (`calibrated_mm` in JSON).
+- **Smoke test:** a fit on a live capture at a rough 90 cm turned the stream into 0.80–0.94 m. The
+  file was not kept.
+
 **Ranges reach the host over the air.** The initiator TAG streams each on-device range to a
 sink, and `navgrid monitor` prints it.
 

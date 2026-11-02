@@ -1,3 +1,4 @@
+mod calibration;
 mod capture;
 mod fix;
 mod scenario;
@@ -42,7 +43,12 @@ enum Cmd {
         /// One JSON object per line.
         #[arg(long)]
         json: bool,
+        /// Add each range's calibrated distance from this file (`calibrated_mm` in JSON).
+        #[arg(long)]
+        calibration: Option<PathBuf>,
     },
+    /// Fit range offsets from `monitor --json` captures taken at measured distances.
+    Calibrate(calibration::CalibrateArgs),
 }
 
 fn main() -> Result<()> {
@@ -51,11 +57,20 @@ fn main() -> Result<()> {
         Cmd::Track(args) => track::run(&args),
         Cmd::Cs(args) => capture::run(&args),
         Cmd::Decode { path, json } => decode(path, json),
-        Cmd::Monitor { port, baud, json } => monitor(&port, baud, json),
+        Cmd::Monitor {
+            port,
+            baud,
+            json,
+            calibration,
+        } => {
+            let cal = calibration.as_deref().map(calibration::Calibration::load).transpose()?;
+            monitor(&port, baud, json, cal.as_ref())
+        }
+        Cmd::Calibrate(args) => calibration::run(&args),
     }
 }
 
-fn monitor(path: &str, baud: u32, json: bool) -> Result<()> {
+fn monitor(path: &str, baud: u32, json: bool, cal: Option<&calibration::Calibration>) -> Result<()> {
     let mut port = serialport::new(path, baud)
         .timeout(std::time::Duration::from_secs(1))
         .open()
@@ -69,7 +84,7 @@ fn monitor(path: &str, baud: u32, json: bool) -> Result<()> {
             Err(e) => return Err(e).with_context(|| format!("reading {path}")),
         }
         for frame in take_frames(&mut pending) {
-            match render(&frame, json) {
+            match render(&frame, json, cal) {
                 Ok(line) => println!("{line}"),
                 Err(e) => eprintln!("bad frame ({e}): {frame:02x?}"),
             }
@@ -97,7 +112,7 @@ fn decode(path: Option<PathBuf>, json: bool) -> Result<()> {
         None => _ = std::io::stdin().read_to_end(&mut data)?,
     }
     for frame in data.split(|&b| b == 0).filter(|f| !f.is_empty()) {
-        match render(frame, json) {
+        match render(frame, json, None) {
             Ok(line) => println!("{line}"),
             Err(e) => eprintln!("bad frame ({e}): {frame:02x?}"),
         }
@@ -105,13 +120,25 @@ fn decode(path: Option<PathBuf>, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// One COBS frame (without its `0x00` terminator) as a line of text.
-fn render(frame: &[u8], json: bool) -> Result<String> {
+/// One COBS frame (without its `0x00` terminator) as a line of text, with a range's calibrated
+/// distance when `cal` has an entry for it.
+fn render(frame: &[u8], json: bool, cal: Option<&calibration::Calibration>) -> Result<String> {
     let msg = navgrid_proto::decode(&mut frame.to_vec())?;
+    let calibrated = match (&msg, cal) {
+        (navgrid_proto::Message::Range(r), Some(cal)) => cal.apply(r),
+        _ => None,
+    };
     Ok(if json {
-        serde_json::to_string(&msg)?
+        let mut v = serde_json::to_value(msg)?;
+        if let (Some(mm), Some(o)) = (calibrated, v.as_object_mut()) {
+            o.insert("calibrated_mm".into(), mm.into());
+        }
+        v.to_string()
     } else {
-        format!("{msg:?}")
+        match calibrated {
+            Some(mm) => format!("{msg:?} → calibrated {mm} mm"),
+            None => format!("{msg:?}"),
+        }
     })
 }
 
@@ -144,7 +171,7 @@ mod tests {
         let mut buf = [0u8; navgrid_proto::MAX_FRAME_LEN];
         let frame = navgrid_proto::encode(&msg, &mut buf).unwrap();
         let body = &frame[..frame.len() - 1];
-        let line = render(body, true).unwrap();
+        let line = render(body, true, None).unwrap();
         let value: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(value["Environment"]["pressure_cpa"], 10_132_500);
         assert_eq!(value["Environment"]["gas_ohm"], serde_json::Value::Null);

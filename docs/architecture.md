@@ -83,7 +83,9 @@ Every device runs on a CR2032 (budget in §5): no radio stays busy without a rea
 1. **Collect.** Per mode-2 step, take the phase correction term (PCT) for each antenna path, on
    both sides, plus tone quality indicators. Per mode-1 step, take the RTT timestamps.
 2. **Combine.** `H[k] = PCT_init[k] · PCT_refl[k]`. Multiplying cancels both local-oscillator
-   phases and leaves the round-trip phase `−4π f d / c`.
+   phases and leaves the round-trip phase `−4π f d / c`. With inline PCT transfer (D-4, on by
+   default) the reflector applies its phase to the returned tone, so `H[k] = PCT_init[k]` and the
+   initiator ranges alone.
 3. **Estimate.**
    - **Phase slope** (implemented): angle of `Σ H[k+1]·conj(H[k])` over adjacent 1 MHz channel
      pairs, which needs no unwrapping and is unambiguous over 0–150 m. A weighted least-squares
@@ -99,6 +101,10 @@ Every device runs on a CR2032 (budget in §5): no radio stays busy without a rea
    decide ([spike](engineering/spikes/2026-11-01-antenna-path-combining.md)).
 5. **Fuse and filter.** Combine estimates per procedure into distance + σ. A per-link filter
    rejects outliers before the solver.
+6. **Calibrate** (host, `navgrid calibrate`). Devices report raw distances. The host subtracts one
+   constant offset per (initiator, reflector, antenna paths, method), fitted from ranges at
+   measured distances; recalibrating needs no reflash. The path count stands in for the CS timing
+   configuration, which moves the offset as well (spike 2026-11-02-cs-ranging-rate).
 
 **Antenna paths per link.** CS sounds local antennas × remote antennas paths, at most 4: TAG ↔ TAG
 gives 4, TAG ↔ single-antenna module gives 2. A device with diversity off configures its controller

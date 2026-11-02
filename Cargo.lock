@@ -262,6 +262,7 @@ dependencies = [
  "navgrid-proto",
  "navgrid-ranging",
  "navgrid-solver",
+ "serde",
  "serde_json",
  "serialport",
 ]

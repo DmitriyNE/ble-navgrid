@@ -32,7 +32,8 @@ cargo run --release -p navgrid -- track                       # walking target: 
 cargo run -p navgrid -- decode capture.bin [--json]           # decode COBS/postcard frames
 cargo run -p navgrid -- cs initiator.log reflector.log [--json]  # raw CS captures → distance per procedure
 cargo run -p navgrid -- cs --ipt initiator.log                   # same, inline PCT transfer: initiator only
-cargo run -p navgrid -- monitor /dev/cu.usbmodem…3 [--json]   # frames from a sink DK's VCOM1 as they arrive
+cargo run -p navgrid -- monitor /dev/cu.usbmodem…3 [--json] [--calibration cal.json]  # frames from a sink DK's VCOM1
+cargo run -p navgrid -- calibrate --out cal.json a.jsonl=0.90 b.jsonl=2.00   # range offsets from captures at measured distances
 ```
 
 ## Firmware
