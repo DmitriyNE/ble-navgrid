@@ -14,6 +14,10 @@ pub const PROTOCOL_VERSION: u16 = 1;
 /// Upper bound for one encoded frame, including COBS overhead and the `0x00` terminator.
 pub const MAX_FRAME_LEN: usize = 64;
 
+/// L2CAP LE credit-based channel (SPSM) that carries telemetry toward a sink (D-6). Each SDU is
+/// one encoded frame, terminator included.
+pub const TELEMETRY_SPSM: u16 = 0x0081;
+
 /// Device identity: the 48-bit BLE device address in the low bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -96,6 +100,7 @@ pub struct Range {
     /// Estimator quality: 0 = unusable, 255 = best. Mapping is defined in `navgrid-ranging`.
     pub quality: u8,
     pub method: RangeMethod,
+    /// How much the estimate rests on: for phase slope, the adjacent channel pairs in the fit.
     pub steps: u8,
     /// Antenna paths sounded: initiator antennas × reflector antennas, at most 4.
     pub antenna_paths: u8,

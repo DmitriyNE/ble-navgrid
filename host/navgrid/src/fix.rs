@@ -82,7 +82,7 @@ fn solve(links: &[Link], how: Combine, height: Height, target: Vec3) -> Option<(
             RangeObs {
                 anchor: l.anchor,
                 distance_m: est.distance_m,
-                sigma_m: scenario::sigma_m(&est),
+                sigma_m: navgrid_ranging::range_sigma_m(&est),
             }
         })
         .collect();

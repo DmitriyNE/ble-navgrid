@@ -69,10 +69,20 @@ pub fn is_initiator() -> bool {
     option_env!("NAVGRID_ROLE") == Some("initiator")
 }
 
+/// Whether this build is the sink (`NAVGRID_ROLE=sink`, DK only).
+#[cfg(feature = "board-dk")]
+pub fn is_sink() -> bool {
+    option_env!("NAVGRID_ROLE") == Some("sink")
+}
+
 /// The reflector's address, from `NAVGRID_PEER` at build time: its node ID as logged at boot,
 /// 12 hex digits, most significant first.
 pub fn peer() -> Option<[u8; 6]> {
-    let hex = option_env!("NAVGRID_PEER")?;
+    address(option_env!("NAVGRID_PEER")?)
+}
+
+/// A device address from a node ID as logged at boot: 12 hex digits, most significant first.
+pub fn address(hex: &str) -> Option<[u8; 6]> {
     let id = u64::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 12)?;
     let mut addr = [0u8; 6];
     addr.copy_from_slice(&id.to_le_bytes()[..6]);
@@ -314,10 +324,13 @@ fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSube
         })
     });
     match done {
-        Some((p, Ranged::Distance(d, n))) => info!(
-            "distance {=u16}: {=f32} m from {=usize} path(s), coherence {=f32}, residual {=f32} rad, {=u8} pairs",
-            p, d.distance_m, n, d.coherence, d.residual_rad, d.pairs
-        ),
+        Some((p, Ranged::Distance(d, n))) => {
+            crate::report::push(&d, n);
+            info!(
+                "distance {=u16}: {=f32} m from {=usize} path(s), coherence {=f32}, residual {=f32} rad, {=u8} pairs",
+                p, d.distance_m, n, d.coherence, d.residual_rad, d.pairs
+            );
+        }
         Some((p, Ranged::TooFewChannels(channels))) => {
             warn!("distance {=u16}: too few channels ({=usize})", p, channels)
         }

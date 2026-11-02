@@ -1,0 +1,159 @@
+//! Telemetry toward a sink (D-6), first cut. The initiator keeps a second link, to one sink, and
+//! sends each on-device range over an L2CAP channel as a `navgrid-proto` frame. The sink (a DK)
+//! writes every frame it receives to its UART, which the DK's debugger exposes as VCOM1, for
+//! `navgrid monitor`.
+//!
+//! Build-time sink address (no provisioning yet): `NAVGRID_SINK` set to the sink's node ID as it
+//! logs it at boot (12 hex digits).
+
+use core::cell::Cell;
+
+use defmt::warn;
+#[cfg(feature = "board-dk")]
+use embassy_futures::select::{Either, select};
+use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
+use embassy_time::Instant;
+use navgrid_proto::{MAX_FRAME_LEN, Message, NodeId, Range, RangeMethod};
+use navgrid_ranging::{PhaseSlope, range_quality, range_sigma_m};
+use nrf_sdc::SoftdeviceController;
+use trouble_host::prelude::*;
+
+type Stack<'a, 'd> = trouble_host::Stack<'a, SoftdeviceController<'d>, DefaultPacketPool>;
+
+/// Ranges waiting for the uplink. Full means the sink can't keep up; new ranges are dropped.
+static RANGES: Channel<CriticalSectionRawMutex, Range, 16> = Channel::new();
+
+/// The CS link the ranges belong to, once the uplink is up: (initiator, reflector).
+static LINK: Mutex<CriticalSectionRawMutex, Cell<Option<(NodeId, NodeId)>>> = Mutex::new(Cell::new(None));
+
+/// The sink's address, from `NAVGRID_SINK` at build time.
+pub fn sink() -> Option<[u8; 6]> {
+    crate::cs::address(option_env!("NAVGRID_SINK")?)
+}
+
+/// Starts reporting ranges of the CS link between `initiator` and `reflector`.
+pub fn set_link(initiator: NodeId, reflector: NodeId) {
+    LINK.lock(|l| l.set(Some((initiator, reflector))));
+}
+
+/// Queues one on-device range for the sink. A no-op until [`set_link`].
+pub fn push(est: &PhaseSlope, paths: usize) {
+    let Some((initiator, reflector)) = LINK.lock(Cell::get) else {
+        return;
+    };
+    let range = Range {
+        initiator,
+        reflector,
+        uptime_ms: Instant::now().as_millis() as u32,
+        distance_mm: (est.distance_m.max(0.0) * 1000.0) as u32,
+        sigma_mm: (range_sigma_m(est) * 1000.0) as u32,
+        quality: range_quality(est),
+        method: RangeMethod::PhaseSlope,
+        steps: est.pairs,
+        antenna_paths: paths as u8,
+    };
+    let _ = RANGES.try_send(range);
+}
+
+/// Sends queued ranges over `channel` until it fails.
+pub async fn run(stack: &Stack<'_, '_>, channel: &mut L2capChannel<'_, DefaultPacketPool>) {
+    let mut buf = [0u8; MAX_FRAME_LEN];
+    loop {
+        let range = RANGES.receive().await;
+        let frame = match navgrid_proto::encode(&Message::Range(range), &mut buf) {
+            Ok(frame) => frame,
+            Err(_) => {
+                warn!("uplink: range does not fit a frame");
+                continue;
+            }
+        };
+        if let Err(e) = channel.send(stack, frame).await {
+            warn!("uplink: {:?}", e);
+            LINK.lock(|l| l.set(None));
+            return;
+        }
+    }
+}
+
+/// The sink: writes a `Hello` frame, then advertises, accepts one node at a time, and forwards
+/// every SDU of its telemetry channel to `uart` unchanged (each SDU is one frame).
+#[cfg(feature = "board-dk")]
+pub async fn serve_sink(
+    stack: &Stack<'_, '_>,
+    mut uart: embassy_nrf::uarte::UarteTx<'_>,
+    node: NodeId,
+    adv_data: &[u8],
+    params: &AdvertisementParameters,
+) -> ! {
+    let mut buf = [0u8; MAX_FRAME_LEN];
+    let hello = Message::Hello {
+        node,
+        role: navgrid_proto::Role::Sink,
+        protocol: navgrid_proto::PROTOCOL_VERSION,
+        antennas: 1,
+    };
+    if let Ok(frame) = navgrid_proto::encode(&hello, &mut buf)
+        && uart.write(frame).await.is_err()
+    {
+        warn!("sink: UART write failed");
+    }
+    let config = L2capChannelConfig::default();
+    let mut peripheral = stack.peripheral();
+    loop {
+        let advertiser = defmt::unwrap!(
+            peripheral
+                .advertise(
+                    params,
+                    Advertisement::ConnectableScannableUndirected {
+                        adv_data,
+                        scan_data: &[]
+                    },
+                )
+                .await
+        );
+        defmt::info!("sink: advertising");
+        let conn = defmt::unwrap!(advertiser.accept().await);
+        defmt::info!("sink: connected: handle {}", conn.handle().raw());
+        // A link can drop before or during the channel; never wait on a dead one.
+        let disconnected = async {
+            loop {
+                if let ConnectionEvent::Disconnected { reason } = conn.next().await {
+                    return reason;
+                }
+            }
+        };
+        let forward = async {
+            let mut channel = match L2capChannel::listen(stack, &conn).accept(&config).await {
+                Ok(channel) => channel,
+                Err(e) => {
+                    warn!("sink: channel: {:?}", e);
+                    return;
+                }
+            };
+            let mut sdu = [0u8; 255];
+            let mut frames = 0u32;
+            loop {
+                match channel.receive(stack, &mut sdu).await {
+                    Ok(len) => {
+                        if uart.write(&sdu[..len]).await.is_err() {
+                            warn!("sink: UART write failed");
+                        }
+                        frames += 1;
+                        if frames.is_multiple_of(100) {
+                            defmt::info!("sink: {=u32} frames", frames);
+                        }
+                    }
+                    Err(e) => {
+                        defmt::info!("sink: channel closed after {=u32} frames: {:?}", frames, e);
+                        return;
+                    }
+                }
+            }
+        };
+        if let Either::Second(reason) = select(forward, disconnected).await {
+            defmt::info!("sink: disconnected: {:?}", reason);
+        }
+    }
+}

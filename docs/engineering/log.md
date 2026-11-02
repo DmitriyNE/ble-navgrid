@@ -4,6 +4,20 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Ranges reach the host over the air.** The initiator TAG streams each on-device range to a
+sink, and `navgrid monitor` prints it.
+
+- **Sink:** a DK (`001057770413`, node `c00cc5545178`) built with `NAVGRID_ROLE=sink`. It writes
+  a `Hello` frame at boot, then forwards every SDU of its L2CAP channel (SPSM `0x0081`) to UART20,
+  which is the DK's **VCOM1**. This was the DK's first boot of our firmware; the derived SDC memory
+  was exact.
+- **Initiator:** built with `NAVGRID_SINK=<sink id>`. It keeps a 100 ms link to the sink next to
+  its CS link, sharing the central role, and retries every 5 s if the link drops. It queues a
+  `Range` per estimate (σ from the shared placeholder model, quality from coherence).
+- **Result:** 154 ranges in 20 s at the host, every one the initiator produced, median 3.39 m.
+- **Cost:** the sink link takes about a third of CS procedures (11 → 7.8/s, DEF-26). At 500 ms
+  the link dropped after its 4 s supervision timeout every time.
+
 **Faster ranging: 11 estimates/s on four paths.** Details:
 [spike](spikes/2026-11-02-cs-ranging-rate.md).
 

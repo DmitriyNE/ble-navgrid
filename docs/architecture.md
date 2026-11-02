@@ -317,8 +317,10 @@ Monitoring is **our own small engineering tool** (D-16), not an external stack.
   The envelope format is still to be designed.
 - **One ingest serves three consumers:** the monitor view, the asset registry, and the central
   reference solver all read the same records.
-- **Today:** `navgrid decode --json` turns a capture into JSON lines. `navgrid monitor` (live
-  terminal view plus log) comes with the sink firmware.
+- **Today:** a DK sink forwards the frames it receives over L2CAP (SPSM `0x0081`) to its
+  VCOM1, and `navgrid monitor` prints them as text or JSON lines; only the initiator's `Range`
+  stream feeds it so far. `navgrid decode --json` does the same for a capture file. The live
+  mesh-state view is still to come.
 - **Later: a thin web UI** (FR-S6, D-23), served by the same host process from the same state.
   It shows the mesh on a floor plan, health and sideband, and the asset registry. Pin placement
   for referencing (§11) happens there too. It is a single static page polling a small JSON

@@ -32,6 +32,7 @@ cargo run --release -p navgrid -- track                       # walking target: 
 cargo run -p navgrid -- decode capture.bin [--json]           # decode COBS/postcard frames
 cargo run -p navgrid -- cs initiator.log reflector.log [--json]  # raw CS captures → distance per procedure
 cargo run -p navgrid -- cs --ipt initiator.log                   # same, inline PCT transfer: initiator only
+cargo run -p navgrid -- monitor /dev/cu.usbmodem…3 [--json]   # frames from a sink DK's VCOM1 as they arrive
 ```
 
 ## Firmware
@@ -80,6 +81,11 @@ NAVGRID_ROLE=initiator NAVGRID_PEER=<id of A> cargo tag      # board B: initiato
 ```
 
 With two probes attached, pick one per build with `probe-rs list` and probe-rs's probe selector.
+
+To get ranges on the host without a probe on the initiator, add a sink. A DK runs
+`NAVGRID_ROLE=sink cargo dk` (its node ID is in the boot log), the initiator is built with
+`NAVGRID_SINK=<sink id>` as well, and `navgrid monitor` reads the DK's VCOM1. To flash a DK whose
+`DEBUG OUT` holds a TAG, unplug the TAG first; the debugger then targets the DK's own chip.
 
 - **The initiator** connects at 30 ms, runs the feature exchange (the SDC needs it before CS),
   moves the link to 2M with 251-byte packets, pairs (LE Secure Connections, Just Works), then

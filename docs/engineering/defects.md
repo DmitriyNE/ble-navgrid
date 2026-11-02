@@ -7,8 +7,8 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 
 | ID | Area | Defect | Impact |
 |---|---|---|---|
-| DEF-1 | firmware | The initiator computes a distance on-device (inline PCT transfer) but only logs it: nothing reports ranges over the air, and the reflector has no estimate of its own. | Ranges reach the host only over the initiator's probe. |
-| DEF-2 | firmware | The node boots on a TAG (crystals start, DC/DC on), but the DK boot, the exact crystal load-cap values (ported from Zephyr, FICR-trimmed) and the TAG antenna-switch callback are unverified. | Frequency offset or RF misbehaviour would show only in an RF test or a CS run. |
+| DEF-1 | firmware | Telemetry is a first cut: the initiator streams its ranges to one sink over a dedicated link (no forwarding over ranging contacts, D-6), the sink serves one node at a time, records carry no age envelope, and the reflector has no estimate of its own. | Every reporting node needs a direct link to the sink. |
+| DEF-2 | firmware | The node boots on a TAG and, as the sink, on a DK (crystals start, DC/DC on), but the exact crystal load-cap values (ported from Zephyr, FICR-trimmed) are unverified, and the DK has not run CS. | Frequency offset or RF misbehaviour would show only in an RF test or a CS run. |
 | DEF-3 | firmware | Antenna 0 is selected outside CS by driving SKY13348 V1 high. NCS leaves both lines low, and the switch truth table has not been checked. | Ordinary BLE traffic could go through the wrong or an isolated path. |
 | DEF-4 | firmware | `CS_LINKS` (6) is a guess. `SDC_MEM` is measured on a TAG (95,448 bytes); the one-antenna figure (77,016) is derived, not measured. | A wrong size fails boot with "Memory buffer too small" and the needed size, or warns "too big". |
 | DEF-5 | firmware | `NodeConfig` is a compiled-in default. There is no flash storage or provisioning, so every device boots as a Node with diversity on. | All devices behave the same. |
@@ -24,6 +24,7 @@ What is wrong or unverified in what exists **now**. Planned-but-missing features
 | DEF-20 | deps | TrouBLE `unwrap!`s every LE meta event, so one bt-hci can't parse (e.g. CS capabilities complete v2, subevent 0x38) panics the node. | Don't unmask newer LE events until bt-hci parses them. |
 | DEF-22 | deps | embassy-nrf's GRTC time driver hard-codes CC[11], one of the channels nrf-mpsl hands to MPSL (CC[7]–[11]). Moving it to CC[1] didn't change DEF-18, and MPSL wasn't seen using CC[11]. | Latent: MPSL timing could break if it ever uses CC[11]. |
 | DEF-25 | ranging | On the TAG pair at one desk placement, antenna path 3 of the 2×2 configuration reads 5–7 m with a phase residual of about 1.3 rad, against 3.3–3.8 m and 0.3–0.4 rad on paths 0–2 ([spike](spikes/2026-11-02-cs-antenna-diversity.md)). Multipath or that antenna pairing; not tested at other placements. | The residual-weighted combination mostly ignores it; the plain mean is off by 0.4 m. |
+| DEF-26 | firmware | The initiator's link to the sink collides with its CS subevents: at a 100 ms sink interval about a third of procedures come back empty (11 → 7.8 ranges/s). At 500 ms the sink link dropped every time after its 4 s supervision timeout. | Ranging rate falls by a third while the uplink is up. |
 | DEF-12 | firmware | Building without a board feature prints the intended `compile_error!` plus a follow-on "unresolved import `consts`". | Cosmetic. |
 
 ## Fixed

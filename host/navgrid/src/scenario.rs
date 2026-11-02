@@ -78,12 +78,7 @@ pub fn procedure(args: &ChannelArgs, truth: f32, rng: &mut SplitMix64) -> Result
 pub fn range(args: &ChannelArgs, truth: f32, rng: &mut SplitMix64) -> Result<(PhaseSlope, f32)> {
     let paths = procedure(args, truth, rng)?;
     let est = navgrid_ranging::combine_paths(&paths, args.combine.into()).context("no antenna paths")?;
-    Ok((est, sigma_m(&est)))
-}
-
-/// Placeholder σ model until P0 calibrates quality → σ on real captures.
-pub fn sigma_m(est: &PhaseSlope) -> f32 {
-    0.05 + 2.0 * est.residual_rad
+    Ok((est, navgrid_ranging::range_sigma_m(&est)))
 }
 
 pub fn distance(a: Vec3, b: Vec3) -> f32 {

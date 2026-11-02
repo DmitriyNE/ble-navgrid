@@ -33,6 +33,16 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Print the frames a sink writes to its serial port as they arrive.
+    Monitor {
+        /// Serial device, e.g. the sink DK's VCOM1 (`/dev/cu.usbmodem…3` on macOS).
+        port: String,
+        #[arg(long, default_value_t = 115_200)]
+        baud: u32,
+        /// One JSON object per line.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -41,7 +51,43 @@ fn main() -> Result<()> {
         Cmd::Track(args) => track::run(&args),
         Cmd::Cs(args) => capture::run(&args),
         Cmd::Decode { path, json } => decode(path, json),
+        Cmd::Monitor { port, baud, json } => monitor(&port, baud, json),
     }
+}
+
+fn monitor(path: &str, baud: u32, json: bool) -> Result<()> {
+    let mut port = serialport::new(path, baud)
+        .timeout(std::time::Duration::from_secs(1))
+        .open()
+        .with_context(|| format!("opening {path}"))?;
+    let mut pending = Vec::new();
+    let mut buf = [0u8; 256];
+    loop {
+        match port.read(&mut buf) {
+            Ok(n) => pending.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e) => return Err(e).with_context(|| format!("reading {path}")),
+        }
+        for frame in take_frames(&mut pending) {
+            match render(&frame, json) {
+                Ok(line) => println!("{line}"),
+                Err(e) => eprintln!("bad frame ({e}): {frame:02x?}"),
+            }
+        }
+    }
+}
+
+/// Removes the complete frames (those ended by `0x00`) from the front of `pending`, without their
+/// terminators. A partial frame stays for the next read; empty frames are skipped.
+fn take_frames(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    while let Some(end) = pending.iter().position(|&b| b == 0) {
+        let frame: Vec<u8> = pending.drain(..=end).take(end).collect();
+        if !frame.is_empty() {
+            frames.push(frame);
+        }
+    }
+    frames
 }
 
 fn decode(path: Option<PathBuf>, json: bool) -> Result<()> {
@@ -74,6 +120,16 @@ mod tests {
     use navgrid_proto::{Environment, Message, NodeId};
 
     use super::*;
+
+    #[test]
+    fn frames_split_across_reads() {
+        let mut pending = vec![0, 1, 2, 0, 3];
+        assert_eq!(take_frames(&mut pending), vec![vec![1, 2]]);
+        assert_eq!(pending, vec![3]);
+        pending.extend_from_slice(&[4, 0, 0, 5]);
+        assert_eq!(take_frames(&mut pending), vec![vec![3, 4]]);
+        assert_eq!(pending, vec![5]);
+    }
 
     #[test]
     fn renders_environment_as_json() {

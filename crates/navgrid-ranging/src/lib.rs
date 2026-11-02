@@ -221,6 +221,18 @@ pub fn phase_slope(resp: &ChannelResponse, min_pairs: u8) -> Option<PhaseSlope> 
     })
 }
 
+/// 1-σ uncertainty of a phase-slope range: `0.05 m + 2 m/rad × residual`. A placeholder until
+/// real captures calibrate it (DEF-7); firmware and host use the same one.
+pub fn range_sigma_m(est: &PhaseSlope) -> f32 {
+    0.05 + 2.0 * est.residual_rad
+}
+
+/// Range quality, 0 (unusable) to 255 (best), as `navgrid_proto::Range::quality` carries it: the
+/// estimate's coherence scaled to a byte.
+pub fn range_quality(est: &PhaseSlope) -> u8 {
+    (est.coherence.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+}
+
 /// Mean one-way distance from mode-1 RTT steps.
 ///
 /// Each item is `(toa_tod_initiator, tod_toa_reflector)` from CS step data, in units of 0.5 ns:

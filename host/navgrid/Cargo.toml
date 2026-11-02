@@ -13,3 +13,4 @@ navgrid-solver.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
+serialport.workspace = true

@@ -50,8 +50,12 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       height steps (R-10).
 - [ ] **ADXL367 wake-on-motion** driver.
 - [ ] **Calibrate the range σ model** from captures (DEF-7).
-- [ ] **Sink role:** frames out over USB CDC (COBS/postcard).
-- [ ] **`navgrid monitor`:** terminal mesh-state view plus JSON-lines log (FR-S5).
+- [ ] **Uplink scheduling** (DEF-26): place the sink link's events between CS events (central ACL
+      event spacing, event lengths, interval multiples) so it costs no procedures.
+- [ ] **Telemetry beyond the first cut** (DEF-1): several nodes per sink, the age envelope, and
+      forwarding over ranging contacts toward the sink (D-6).
+- [ ] **`navgrid monitor` view:** a terminal mesh-state view on top of today's frame printing
+      (FR-S5).
 - [ ] **P-5 embassy-nrf:** nRF54L instruction cache enabled at init (DEF-18), crystal load-cap
       config, and stale GRTC state cleared by the time driver at init, upstream.
 - [ ] **CI:** host tests and clippy, plus firmware clippy and build for both boards.

@@ -12,6 +12,7 @@
 mod board;
 mod crypto;
 mod cs;
+mod report;
 
 use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilities;
 use defmt::{error, info, unwrap, warn};
@@ -19,7 +20,9 @@ use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::{bind_interrupts, config, cracen, pac};
-use embassy_time::Duration;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
+use embassy_time::{Duration, Timer, with_timeout};
 use navgrid_proto::{NodeConfig, NodeId};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, SoftdeviceController, mpsl};
@@ -28,6 +31,7 @@ use trouble_host::prelude::*;
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
+    SERIAL20 => embassy_nrf::uarte::InterruptHandler<embassy_nrf::peripherals::SERIAL20>;
     SWI00 => mpsl::LowPrioInterruptHandler;
     CLOCK_POWER => mpsl::ClockInterruptHandler;
     RADIO_0 => mpsl::HighPrioInterruptHandler;
@@ -224,6 +228,7 @@ async fn main(spawner: Spawner) {
     let mut resources: HostResources<DefaultPacketPool, MAX_LINKS, L2CAP_CHANNELS> = HostResources::new();
     let stack = trouble_host::new(sdc, &mut resources)
         .set_random_address(Address::random(addr))
+        .register_l2cap_spsm(navgrid_proto::TELEMETRY_SPSM)
         .build();
     let mut runner = stack.runner();
 
@@ -249,10 +254,24 @@ async fn main(spawner: Spawner) {
             "NAVGRID_PEER must be the reflector's node ID (12 hex digits)"
         )
     });
+    // The sink writes frames to UART20 (P1.04, 115200 baud), which the DK's debugger exposes as
+    // VCOM1.
+    #[cfg(feature = "board-dk")]
+    let uart = embassy_nrf::uarte::UarteTx::new(p.SERIAL20, Irqs, p.P1_04, Default::default());
     let role = async {
         log_cs_capabilities(&stack).await;
+        #[cfg(feature = "board-dk")]
+        if cs::is_sink() {
+            // USB-powered: advertise fast so nodes find it quickly.
+            let sink_params = AdvertisementParameters {
+                interval_min: Duration::from_millis(100),
+                interval_max: Duration::from_millis(100),
+                ..Default::default()
+            };
+            report::serve_sink(&stack, uart, node, &adv_data[..adv_len], &sink_params).await;
+        }
         match peer {
-            Some(peer) => initiator(&stack, peer, antennas).await,
+            Some(peer) => initiator(&stack, peer, antennas, node).await,
             None => reflector(&stack, &adv_data[..adv_len], &adv_params).await,
         }
     };
@@ -295,10 +314,87 @@ async fn reflector(stack: &Host<'_, '_>, adv_data: &[u8], params: &Advertisement
     }
 }
 
+/// Ranges with `peer` forever and, with `NAVGRID_SINK` set, keeps a telemetry uplink to the sink
+/// alongside. The two share the central role, taking it only while connecting.
+async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6], antennas: u8, node: NodeId) {
+    let central = Mutex::<CriticalSectionRawMutex, _>::new(stack.central());
+    let report = async {
+        let Some(sink) = report::sink() else {
+            return;
+        };
+        loop {
+            let uplink = uplink(stack, &mut *central.lock().await, sink).await;
+            if let Some((_conn, mut channel)) = uplink {
+                report::set_link(node, node_id(peer));
+                report::run(stack, &mut channel).await;
+            }
+            Timer::after(Duration::from_secs(5)).await;
+        }
+    };
+    join(ranging(stack, &central, peer, antennas), report).await;
+}
+
+/// The node ID of a device address: the address in the low six bytes.
+fn node_id(addr: [u8; 6]) -> NodeId {
+    let mut id = [0u8; 8];
+    id[..6].copy_from_slice(&addr);
+    NodeId(u64::from_le_bytes(id))
+}
+
+/// Connects to the sink and opens the telemetry channel. Gives up after 10 s, so a missing sink
+/// doesn't hold up ranging. The sink link's events collide with CS subevents, which then come back
+/// empty: about a third of procedures at 100 ms (DEF-26). At 500 ms the link dropped after its 4 s
+/// supervision timeout every time, so it stays at 100 ms until the two links are scheduled apart.
+async fn uplink<'a>(
+    stack: &'a Host<'_, '_>,
+    central: &mut Central<'a, SoftdeviceController<'_>, DefaultPacketPool>,
+    sink: [u8; 6],
+) -> Option<(Connection<'a, DefaultPacketPool>, L2capChannel<'a, DefaultPacketPool>)> {
+    let target = Address::random(sink);
+    let config = ConnectConfig {
+        connect_params: RequestedConnParams {
+            min_connection_interval: Duration::from_millis(100),
+            max_connection_interval: Duration::from_millis(100),
+            supervision_timeout: Duration::from_secs(4),
+            ..Default::default()
+        },
+        scan_config: ScanConfig {
+            filter_accept_list: &[target],
+            ..Default::default()
+        },
+    };
+    info!("uplink: connecting to sink {=[u8]:02x}", sink);
+    let conn = match with_timeout(Duration::from_secs(10), central.connect_ext(&config)).await {
+        Ok(Ok(conn)) => conn,
+        Ok(Err(e)) => {
+            warn!("uplink: connect: {:?}", e);
+            return None;
+        }
+        Err(_) => {
+            warn!("uplink: no sink within 10 s, ranging without it");
+            return None;
+        }
+    };
+    match L2capChannel::create(stack, &conn, navgrid_proto::TELEMETRY_SPSM, &Default::default()).await {
+        Ok(channel) => {
+            info!("uplink: channel open");
+            Some((conn, channel))
+        }
+        Err(e) => {
+            warn!("uplink: channel: {:?}", e);
+            None
+        }
+    }
+}
+
 /// Connects to `peer`, pairs, runs the CS initiator sequence, and serves the link until it drops.
 /// Repeats forever.
-async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6], antennas: u8) {
-    let mut central = stack.central();
+async fn ranging(
+    stack: &Host<'_, '_>,
+    central: &Mutex<CriticalSectionRawMutex, Central<'_, SoftdeviceController<'_>, DefaultPacketPool>>,
+    peer: [u8; 6],
+    antennas: u8,
+) {
     let target = Address::random(peer);
     // A 4 s supervision timeout, as Nordic's sample uses.
     let config = ConnectConfig {
@@ -317,7 +413,7 @@ async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6], antennas: u8) {
         info!("connecting to {=[u8]:02x}", peer);
         // Extended Create Connection: the legacy command trips SDC assert 50:701 on the nRF54L15 as
         // soon as the peer's advertisement is heard (DEF-17).
-        let conn = match central.connect_ext(&config).await {
+        let conn = match central.lock().await.connect_ext(&config).await {
             Ok(conn) => conn,
             Err(e) => {
                 warn!("connect: {:?}", e);
