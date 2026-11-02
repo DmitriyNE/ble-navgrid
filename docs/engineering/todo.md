@@ -19,11 +19,16 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **Standalone J-Link Pro** doesn't connect to the TAG at all; the SWD adapter may be bad.
 - [ ] **After first boot:** check the antenna-switch default and callback, and boot a DK (DEF-2,
       DEF-3).
-- [ ] **Nordic's samples on our TAGs** (DEF-18): build NCS v3.4.1 `ras_initiator` and
-      `ras_reflector` for `nrf54l15tag/nrf54l15/cpuapp` (RTT console snippet) and run them on
-      `ce36dfcc4c2d` / `df96e04a5900`. If they range, capture their HCI traffic and diff it with
-      ours; if they abort too, take it to Nordic with their samples as the reproduction. Untried
-      from the old list: sub mode 1, a DK pair.
+- [ ] **Distance calibration** (DEF-6): measure several separations accurately, fit the
+      constant offset (about 2.4 m on the TAG pair, spike 2026-11-02), and apply it, through the
+      SDC board distance offset or in the estimator.
+- [ ] **nrf-sdc fork** (DEF-23): review and push branch `fix-cs-reserved-irqs`, pin it, propose
+      upstream. Consider NCS's HFXO start-up latency (`mpsl_clock_hfclk_latency_set`, 1650 µs on
+      the nRF54L) and RRAM standby in the low-latency hooks as well.
+- [ ] **Legacy connect** (DEF-17): retry `LE Create Connection` now that the cache is on.
+- [ ] **Sub mode 1 and faster procedures:** with sub mode 1, 20 ms and a procedure every 5
+      events, two in three procedures aborted (unspecified, or no CS_SYNC). Find out why before
+      using RTT steps; RTT pairing gives nonsense today (DEF-21).
 - [ ] **embassy-nrf** (DEF-22): make the GRTC time driver's compare channel configurable, or move
       it off CC[7]–[11], which MPSL owns on the nRF54L.
 - [ ] **nrf-sdc fork:** bind `sdc_hci_cmd_vs_cs_params_set` (CS event length, T_PM, board distance
@@ -46,8 +51,8 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **Calibrate the range σ model** from captures (DEF-7).
 - [ ] **Sink role:** frames out over USB CDC (COBS/postcard).
 - [ ] **`navgrid monitor`:** terminal mesh-state view plus JSON-lines log (FR-S5).
-- [ ] **P-5 embassy-nrf:** nRF54L crystal load-cap config, and stale GRTC state cleared by the
-      time driver at init, upstream.
+- [ ] **P-5 embassy-nrf:** nRF54L instruction cache enabled at init (DEF-18), crystal load-cap
+      config, and stale GRTC state cleared by the time driver at init, upstream.
 - [ ] **CI:** host tests and clippy, plus firmware clippy and build for both boards.
 
 ## P1 — find my keys, first cut

@@ -31,13 +31,16 @@ mod consts {
 
 pub use consts::*;
 
-/// Prepares the chip for `embassy_nrf::init`: clears GRTC state left by an earlier image and sets
-/// the crystal load capacitors before the clocks start. embassy-nrf has no nRF54L option for the
-/// load capacitors yet (architecture §6, P-5), so this ports the equivalent part of Zephyr's
-/// `soc/nordic/nrf54l/soc.c` (ncs-v3.4.1). DC/DC needs nothing here: `embassy_nrf::init` enables
-/// it once the clocks run, and both boards fit the inductor.
+/// Prepares the chip for `embassy_nrf::init`: clears GRTC state left by an earlier image, enables
+/// the instruction cache and sets the crystal load capacitors before the clocks start. embassy-nrf
+/// does neither cache nor load capacitors on the nRF54L yet (architecture §6, P-5), so this ports
+/// the equivalent part of Zephyr's `soc/nordic/nrf54l/soc.c` (ncs-v3.4.1). DC/DC needs nothing
+/// here: `embassy_nrf::init` enables it once the clocks run, and both boards fit the inductor.
 pub fn early_init() {
     clear_grtc();
+    // Without the cache the CPU runs from RRAM, too slowly for the SDC's per-step CS work: every
+    // CS subevent aborted with "scheduling conflict or limited resources" (DEF-18).
+    pac::ICACHE.enable().write(|w| w.set_enable(true));
     pac::OSCILLATORS
         .xosc32ki()
         .intcap()

@@ -77,3 +77,70 @@ from NCS is the host (TrouBLE instead of Zephyr) and the Rust MPSL/SDC integrati
   Configurator until its USB was replugged.
 - **Reading a DK's VDD:** without the GUI, `nrfutil device x-execute-batch` with SMP group 64,
   command 0 returns the board-controller config. `[1, 3300]` means VDD is 3300 mV.
+
+## Continued: Nordic's samples, then the cause
+
+Same setup, same day. NCS v3.4.1 installed with `nrfutil sdk-manager`.
+
+**Nordic's samples work on these TAGs.** `ras_initiator` and `ras_reflector`, built for
+`nrf54l15tag/nrf54l15/cpuapp` with `-S rtt-console`, ranged with no aborts. They logged 374
+estimates in about 2.5 minutes: IFFT 2.16–2.18 m, phase slope about 2.47 m. So the boards and the
+radio are fine, and the fault is in our stack. Note that the sample's default is mode 2 with sub
+mode 1, not plain mode 2.
+
+| Run | Change | Procedures (R / I) | Result |
+|---|---|---|---|
+| 9 | Sub mode 1, as Nordic's default | 104 / 104 | All aborted. |
+| 10 | SDC and MPSL libraries from NCS v3.4.1 (fork copy) | 100 / 100 | All aborted. |
+| 11 | Nordic's timing: 20 ms ACL, procedure every 5 events, 80 ms maximum | 555 / 555 | All aborted. |
+| 12 | Nordic's reflector with our initiator | – / 852 | All of our initiator's aborted: the fault is on our initiator's side. |
+| 13 | Central ACL event spacing 90 ms (NCS's default when CS is on) | 515 / 515 | All aborted. |
+| 14 | HCI byte trace on both stacks (below) | 443 / 443 | All aborted; the CS commands match. |
+| 15 | NCS's controller setup: 1/1/1 links, privacy support | 383 / 383 | All aborted. |
+| 16 | MPSL HFXO start-up latency 1650 µs (the DT value NCS passes) | 451 / 451 | All aborted. |
+| 17 | RRAM standby in the MPSL low-latency hooks, as NCS | 462 / 461 | All aborted. |
+| 18 | nrf-mpsl critical section reserving RADIO_0 (DEF-23) | 416 / 416 | All aborted. |
+| 19 | **Instruction cache enabled** (with runs 9–18 still in) | 462 / 462 | **Steps on both sides.** 161 distances; the other procedures aborted, reason unspecified or no CS_SYNC. |
+| 20 | Committed firmware (`34ae288`) plus only the cache | 108 / 108 | **No aborts**, 108 distances, median 2.281 m (p10–p90 2.267–2.327 m). |
+| 21 | Run 20 plus the full config-complete log (committed) | 255 / 255 | **No aborts**, 255 distances, median 2.342 m (p10–p90 2.282–2.386 m). |
+
+**HCI comparison (run 14).** NCS's SDC driver was patched for the run to print every command and
+event; nrf-sdc printed each command's parameter bytes and both struct sizes. The CS commands were
+byte-identical (Set Default Settings `0000 01 fe 14`, Create Config, Set Procedure Params
+`… 8000 0500 0500 0000 803e00 803e00 00 02 80 01 ff ff`, Procedure Enable), the Rust and C struct
+sizes matched, and both controllers reported the same config (T_IP1 30, T_IP2 20, T_FCS 60,
+T_PM 10 µs). Only setup differed: event masks, host buffer size, default data length.
+
+## Conclusion
+
+**Cause:** embassy-nrf doesn't enable the nRF54L instruction cache; Zephyr's SoC init does
+(`soc/nordic/nrf54l/soc.c`). Without it the CPU runs from RRAM, and the SDC can't keep up with
+its per-step CS work, so it aborts every subevent with 0x3. Ordinary connections need far less
+real-time CPU and worked throughout.
+
+**Fix:** `board::early_init` sets `ICACHE.ENABLE`. Nothing else from runs 9–18 is needed (run 20).
+
+**Not needed but noted:** NCS also passes MPSL the HFXO start-up time, keeps the RRAM in standby
+during radio activity, and spaces central ACL events by 90 ms when CS is on. Run 19's aborts came
+from its experimental settings (20 ms, procedure every 5 events, sub mode 1, heavy logging); they
+are not explained yet.
+
+**Possibly related:** the SDC assert 50:701 on a legacy `LE Create Connection` (DEF-17) is also
+a timing failure inside the controller, and NCS's sample uses that command without trouble.
+Untested with the cache on.
+
+## Distance check
+
+Final firmware (run 21's build) against Nordic's samples on the same pair, at two hand-measured
+separations. Each cell is a median over 1–4 minutes.
+
+| Separation | Ours (phase slope) | Nordic IFFT | Nordic phase slope |
+|---|---|---|---|
+| ~10 cm | 2.34 m (p10–p90 2.28–2.39) | 2.17 m | 2.47 m |
+| ~90 cm | 3.34 m (p10–p90 3.27–3.40) | 2.93 m (2.93–3.22) | 3.56 m (3.42–3.62) |
+
+- **Sign and scale are right:** moving about 0.8 m changed ours by 1.0 m.
+- **Fixed offset:** ours reads about 2.4 m long. Nordic's samples show a similar offset (their
+  `BOARD_DISTANCE_OFFSET` is 0 on the TAG). Ours stays within 0.15–0.2 m of Nordic's phase slope.
+- **Not settled:** a calibration needs measured distances. With these hand estimates, offset and
+  close-range multipath can't be separated.

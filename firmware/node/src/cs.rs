@@ -101,7 +101,22 @@ impl EventHandler for Events {
     }
 
     fn on_cs_config_complete(&self, e: &LeCsConfigComplete) {
-        info!("CS config {} action {}: {}", e.config_id, e.action, e.status);
+        info!(
+            "CS config {} action {}: {}, mode {}/{}, steps {}-{}, mode-0 {}, map {=[u8]:02x}, T_IP1 {} T_IP2 {} T_FCS {} T_PM {} us",
+            e.config_id,
+            e.action,
+            e.status,
+            e.main_mode_type,
+            e.sub_mode_type,
+            e.min_main_mode_steps,
+            e.max_main_mode_steps,
+            e.mode_0_steps,
+            e.channel_map,
+            e.t_ip1_time,
+            e.t_ip2_time,
+            e.t_fcs_time,
+            e.t_pm_time
+        );
         let _ = DONE.try_send(Done::Config(e.status));
     }
 

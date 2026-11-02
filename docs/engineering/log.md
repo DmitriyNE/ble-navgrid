@@ -4,6 +4,25 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Distance check.** At about 10 cm and 90 cm, ours read 2.34 m and 3.34 m; Nordic's samples
+read 2.17/2.93 m (IFFT) and 2.47/3.56 m (phase slope). Sign and scale are right (DEF-6); both
+stacks share a fixed offset of about 2.4 m, which waits for a measured calibration.
+
+**CS ranges on our stack (DEF-18 fixed).** The cause was the instruction cache: embassy-nrf
+leaves it off on the nRF54L, Zephyr turns it on, and without it the SDC can't keep up with CS
+step processing. With `ICACHE` enabled, 255 of 255 procedures ranged with no aborts, median
+2.342 m (p10–p90 2.282–2.386 m). Details: [spike](spikes/2026-11-02-cs-subevent-aborts.md).
+
+- **Narrowing it down:** NCS v3.4.1's `ras_*` samples ranged on the same TAGs, so the hardware
+  was fine. With Nordic's reflector, our initiator still aborted everything, so the fault was ours.
+  An HCI byte trace showed our CS commands identical to NCS's.
+- **Ruled out first:** the newer SDC, Nordic's timing and controller setup, central ACL spacing,
+  HFXO latency, RRAM standby, sub mode 1.
+- **Found on the way:** nrf-mpsl's nRF54L critical section disables the radio interrupt (DEF-23);
+  fixed on fork branch `fix-cs-reserved-irqs`, not yet pinned.
+- **Config log:** the initiator now logs the full config-complete event (modes, steps, channel
+  map, T_IP1/T_IP2/T_FCS/T_PM).
+
 **Lab session: probe dropouts fixed, subevents still abort (DEF-18, DEF-19).** Both TAGs on DK power
 at 3.3 V, each logged by its own DK at the same time. Details: [spike](spikes/2026-11-02-cs-subevent-aborts.md).
 

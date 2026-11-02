@@ -94,6 +94,6 @@ the Channel Sounding support upstream lacks. See architecture §6 and D-8.
 
 ## Status
 
-Phase P0 (bring-up). The scaffold builds and is tested on the host; nothing has run on hardware
-yet. What's next: [todo](docs/engineering/todo.md). What's known broken:
-[defects](docs/engineering/defects.md).
+Phase P0 (bring-up). Two TAGs run Channel Sounding on our stack and log raw steps; `navgrid cs`
+turns the two captures into distances (first run: median 2.34 m, p10–p90 2.28–2.39 m). What's
+next: [todo](docs/engineering/todo.md). What's known broken: [defects](docs/engineering/defects.md).
