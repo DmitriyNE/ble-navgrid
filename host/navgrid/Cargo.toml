@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 navgrid-proto.workspace = true
+navgrid-mesh = { workspace = true, features = ["alloc"] }
 navgrid-ranging.workspace = true
 navgrid-solver.workspace = true
 anyhow.workspace = true

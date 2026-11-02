@@ -207,7 +207,7 @@ at best", so P0 measurements will re-baseline these.
 | R-11 | The gyro costs far more than the accelerometer. | Tags only need it for optional dead reckoning (FR-T7b); use it only if measurements show a net saving. |
 | R-12 | **Referencing error goes straight into pointing.** A mis-surveyed pin or a wrong preset bearing biases the mesh yaw, and a short baseline magnifies mesh position errors into bearing error (0.1 m over 5 m ≈ 1°). | Presets on long baselines. Use more presets than the minimum and report their misfit and agreement, so a bad one shows. |
 | R-13 | **Close-in pointing.** Bearing error ≈ combined position error ÷ distance: 0.5 m at 1 m is ~27°. Mesh-based pointing fails exactly where the user needs it most. | Final approach on direct person↔asset ranging (FR-F4); show distance prominently close in. |
-| R-14 | **State sync costs** airtime, RAM and energy on coin cells, and the global state grows with the mesh. Records several hops from a sink may lag far behind. | Per-node scope bounded by degree, not by mesh size; a per-contact byte budget with priorities; size, convergence and latency measured in a simulator at 20 and 500 nodes before firmware (architecture §12). |
+| R-14 | **State sync costs** airtime, RAM and energy on coin cells, and the global state grows with the mesh. Records several hops from a sink may lag far behind. | Per-node scope bounded by degree, not by mesh size; a per-session byte budget; commands first in the outbox. Simulated at 20 and 500 nodes: per-node cost stays flat, and about one sink per 125 nodes keeps relays from piling up records (architecture §12). |
 
 ## 8. Decisions and open questions
 

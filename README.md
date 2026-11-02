@@ -15,7 +15,8 @@ Rust everywhere: firmware and host.
 crates/navgrid-proto     no_std  wire messages (postcard + COBS), shared by firmware and host
 crates/navgrid-ranging   no_std  CS channel response → distance (phase slope, RTT); channel simulator
 crates/navgrid-solver    no_std  multilateration (target); cooperative mesh solver later
-host/navgrid             CLI: `sim`, `decode`
+crates/navgrid-mesh      no_std  mesh state: records, sync between neighbours, routing to sinks and targets
+host/navgrid             CLI: `sim`, `track`, `cs`, `decode`, `monitor`, `calibrate`, `mesh-sim`
 firmware/                separate workspace for thumbv8m.main-none-eabihf
   node/                  single firmware image (node / target role from config)
 ```
@@ -34,6 +35,7 @@ cargo run -p navgrid -- cs initiator.log reflector.log [--json]  # raw CS captur
 cargo run -p navgrid -- cs --ipt initiator.log                   # same, inline PCT transfer: initiator only
 cargo run -p navgrid -- monitor /dev/cu.usbmodem…3 [--json] [--calibration cal.json]  # frames from a sink DK's VCOM1
 cargo run -p navgrid -- calibrate --out cal.json a.jsonl=0.90 b.jsonl=2.00   # range offsets from captures at measured distances
+cargo run --release -p navgrid -- mesh-sim --nodes 500 --sinks 4   # mesh state protocol: staleness, commands, bytes, memory
 ```
 
 ## Firmware

@@ -4,6 +4,29 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Mesh state, stage 1: the `navgrid-mesh` crate and `navgrid mesh-sim`**
+([spike](spikes/2026-11-02-mesh-state-sim.md)). The crate:
+
+- **Records and merging:** single-writer records, newest version per key.
+- **Classes and scope:** a node keeps its own records and its 2-hop neighbourhood's.
+- **Sync:** per-class hashes, then versions, then records.
+- **Custody pushes:** toward sinks along the hop-count gradient, and back toward targets along
+  learned routes.
+- **Commands:** desired state with reports.
+- **Memory:** fixed-capacity tables; it builds for the nRF54L15.
+
+Simulated at 20 and 500 nodes:
+
+- **Steady state:** at 60 s sessions, neighbourhood replicas are current ~97 % of the time.
+- **Commands:** round trip 1.6 min at p50 with 20 nodes, and 4.8 min with 500 nodes and 4 sinks.
+- **Partitions:** replicas are back to normal 4–12 min after a one-hour partition.
+- **Cost per node** is set by degree: 140 records and ~650 B per session at 500 nodes.
+- **Sinks:** one sink can't carry 500 nodes; about one per 125 can.
+
+§12's per-origin digest broke under relaying and was replaced. Strict push priority starved bulk
+records and was replaced by commands first, then oldest first. Budget chosen: 2 KB per side per
+session. Full summaries are most of the traffic (DEF-28).
+
 **Mesh state, routing and control designed (FR-C, architecture §12).** The requirements for the
 full system: a shared state the mesh agrees on, routing to keep it, positions and the link graph
 built on it, sideband and commands carried by it, and a controller that observes and steers it.

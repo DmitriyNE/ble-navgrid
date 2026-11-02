@@ -1,6 +1,7 @@
 mod calibration;
 mod capture;
 mod fix;
+mod mesh_sim;
 mod scenario;
 mod track;
 
@@ -49,6 +50,9 @@ enum Cmd {
     },
     /// Fit range offsets from `monitor --json` captures taken at measured distances.
     Calibrate(calibration::CalibrateArgs),
+    /// The mesh state protocol over a synthetic deployment: staleness, command latency, bytes per
+    /// contact and memory per node.
+    MeshSim(mesh_sim::MeshSimArgs),
 }
 
 fn main() -> Result<()> {
@@ -67,6 +71,7 @@ fn main() -> Result<()> {
             monitor(&port, baud, json, cal.as_ref())
         }
         Cmd::Calibrate(args) => calibration::run(&args),
+        Cmd::MeshSim(args) => mesh_sim::run(&args),
     }
 }
 

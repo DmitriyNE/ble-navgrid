@@ -243,10 +243,10 @@ crates/                     no_std, shared by firmware and host
   navgrid-ranging/          CS channel response → distance; channel model for simulation
   navgrid-solver/           multilateration with height sources; tag tracker; frame + pointer;
                             mesh solver later
-  navgrid-mesh/             planned: record store, merge, digests, scopes, routing (§12)
+  navgrid-mesh/             mesh state: records, merge, classes, sync, outbox, routes (§12)
 host/
-  navgrid/                  CLI: sim, track, decode [--json], monitor, calibrate, cs; later
-                            mesh-sim, replay, central solver, controller
+  navgrid/                  CLI: sim, track, decode [--json], monitor, calibrate, cs, mesh-sim;
+                            later replay, central solver, controller
 firmware/                   separate cargo workspace, thumbv8m.main-none-eabihf
   node/                     single firmware image; role from config (D-2)
     src/board.rs            board-dk / board-tag: DC/DC, crystal caps, antenna switch (D-13)
@@ -425,19 +425,20 @@ On a coin-cell mesh that partitions, "consensus" means **convergence**. Every re
 
 ### State model
 
-The state is a set of **records**. Each record has exactly one writer, its origin, and a key
-`(origin, kind, subkey)`:
+The state is a set of **records** (`navgrid-mesh`). Each record has exactly one writer, its
+origin, and a key `(origin, topic)`. Records fall into **classes**: one subject, one scope. A
+replica keeps a class whole or not at all.
 
-| Kind | Writer | Content | Held by |
+| Kind | Writer | Content | Class: kept by |
 |---|---|---|---|
-| Node | the node | role, config hash, firmware, frame version seen, hop count to a sink | neighbourhood, sinks |
-| Health | the node | battery, die temperature, uptime, queue depth (FR-S2) | sinks |
-| Environment | the node | BME688 sample (FR-S3); pressure also serves FR-T2 | sinks; pressure in the neighbourhood |
-| Link | the link's initiator | peer, distance, σ, quality, antenna paths, procedures and failures, aggregated over a ranging burst | neighbourhood, sinks |
-| Position | the controller until P2, then the node | position, covariance, frame version | neighbourhood, sinks |
-| Desired | the controller | per-target config or one-shot action, with a sequence | the path to its target |
-| Reported | the node | the last desired sequence applied per key, and status | sinks |
-| Frame | the controller | the versioned mesh→world transform (FR-A5) | everyone |
+| Node | the node | role, config hash, firmware, frame version seen, hop count to a sink, neighbour list | Near: 2-hop neighbourhood, sinks |
+| Health | the node | battery, die temperature, uptime, queue depth (FR-S2) | Up: sinks |
+| Environment | the node | BME688 sample (FR-S3); pressure also serves FR-T2 | Near |
+| Link | the link's initiator | peer, distance, σ, quality, antenna paths, procedures and failures, aggregated over a ranging burst | Near |
+| Position | the controller until P2, then the node | position, covariance, frame version | About (controller's): the node's neighbourhood, sinks; Near (node's own) |
+| Desired | the controller | one setting's config, or a one-shot action | Desired: the target and its peers, sinks |
+| Reported | the node | the desired version it acted on, per setting, and status | Up |
+| Frame | the controller | the versioned mesh→world transform (FR-A5) | Global: everyone |
 
 - **Versions.** Each origin numbers its writes with a monotonic sequence: an epoch bumped at boot
   (persisted), then a counter. A replica keeps the record with the highest sequence. With one
@@ -445,62 +446,92 @@ The state is a set of **records**. Each record has exactly one writer, its origi
   replicas converge in any order, through any partition.
 - **Derived state** is either a deterministic function of records (the link graph is the set of
   Link records) or a single-writer record of its own (positions, the frame).
-- **Age and expiry.** Records carry the origin's uptime plus a summed hop residence time
-  (FR-S4, NFR-5), so any replica knows a record's age. Records expire by kind (a Link after it
-  has gone unrefreshed for long enough), and the controller can retire a node.
+- **Age and expiry.** Records carry their age, which every holder advances by the time it held
+  them (FR-S4, NFR-5), so any replica knows a record's age without a clock. Records expire by
+  kind: node records after 2 h, links after 24 h, unless rewritten. The controller retiring a
+  node is still to come.
 
 ### Scope: who holds what (D-25)
 
-- **Every node:** its own records, its neighbourhood out to 2 hops (Node, Link, Position, recent
-  pressure), the Frame, the Desired records addressed to it, and its routing state. That is what
-  cooperative localization (FR-M2) and tag node selection (FR-T1) need.
+- **Every node keeps:**
+  - its own records;
+  - its 2-hop neighbourhood's node, link, environment and own-position records, and the
+    controller's positions of them;
+  - the frame;
+  - desired state for itself and its peers.
+
+  The 2-hop neighbourhood comes from its peers' node records. That is what cooperative
+  localization (FR-M2) and tag node selection (FR-T1) need.
+- **A node also holds:**
+  - an **outbox** of records in its custody, on their way to sinks or to a target;
+  - **routes:** for each origin whose records it carried, the peer they came from.
 - **Sinks and the host:** everything. Several sinks merge at the host; merging doesn't depend on
   order.
-- **Size** *(estimates for the simulator to check)*. A record is about 20–40 B with its key and
-  version, and a node writes about 300 B of them (Node, Health, Environment, Position, about 6
-  Links, Reported).
-  - **A node:** its 2-hop neighbourhood at degree 6 is about 20–35 nodes of Node, Link and
-    Position records, about 4–7 KB whatever the mesh size. Reverse-path entries (about 8 B per
-    origin) do grow with the mesh near a sink: about 4 KB at 500 nodes.
-  - **The global replica:** about 6 KB at 20 nodes and 150 KB at 500. The nRF54L15 has 256 KB
-    of RAM, of which the SDC takes 80–99 KB. A DK sink holds the whole replica at 20 nodes; at
-    500 the host holds it, and the sink relays digests and deltas between the host and its
-    neighbours.
+- **Size, measured** ([spike](engineering/spikes/2026-11-02-mesh-state-sim.md)):
+  - **Wire:** a record is 20–40 B.
+  - **RAM:** a record is 136 B as the crate holds it today (DEF-29).
+  - **A node:** peaks at 111 records with 20 nodes and 143 with 500, set by degree rather than
+    mesh size. That is 13–17 KiB at p50, and up to ~34 KiB at the busiest relays at 500 nodes
+    with 4 sinks. Routes reach about 75 there.
+  - **A sink:** 173 records (26 KiB) at 20 nodes, which fits a DK. At 500 nodes, each of 4 sinks
+    holds 145–185 KiB, more than a DK can spare next to the SDC, so the host holds the replica.
 
 ### Sync on contacts
 
-- **When:** sync runs over each mesh link's L2CAP channel while the link is awake to range
-  (D-10), never on a dedicated wake-up (FR-S4).
-- **How:** each side sends a **digest** of what it holds in the scopes they share (per origin,
-  the highest sequence per kind). Each then sends the records the other lacks, by priority:
-  Desired and Frame first, then Position and Link, then Health and Environment. A per-contact byte
-  budget caps the exchange.
-- **Wire format:** postcard + COBS frames as today (D-5), one record per frame.
+- **When:** a session runs over each mesh link's L2CAP channel (SPSM `0x0082`) when the link is
+  awake (D-10), never on a dedicated wake-up (FR-S4). The simulator's starting point is a
+  session every 60 s.
+- **How** (`navgrid_mesh::wire`):
+  1. Hello: hop count and sink flag.
+  2. A **summary** from each side: an order-free hash (the sum of per-record hashes of key and
+     version) for every class it keeps. A sink keeps everything, so it answers the peer's
+     summary class for class.
+  3. For the classes both list with different hashes, the **versions** each holds.
+  4. The **records** the other lacks or holds older.
+  5. Then the **pushes** (below).
+- **Budget:** 2 KB per side per session caps records and pushes. It was reached in 0.01 % of
+  sessions at 500 nodes with 4 sinks.
+- **Cost:** summaries are about 80 % of the bytes, roughly 650 B per side per session.
+  Sending only the classes that changed since the last complete session with that peer is the
+  obvious saving (DEF-28).
+- **Wire format:** postcard + COBS frames as today (D-5), one record per frame, at most 240 B.
 
 ### Routing (D-26)
 
-- **Up, toward sinks:** a sink's hop count is 0; a node's is one more than its lowest neighbour's,
-  carried in its Node record and its advertisement (FR-M4). Records bound for sinks move to
-  neighbours with a lower hop count. This is gradient routing, store-and-forward, delay-tolerant
-  (D-6). Copies that arrive by several paths merge away. A node keeps a record outside its own
-  scope only until a lower-hop neighbour's digest shows that neighbour has it.
-- **Down, toward a target:** for each origin whose records it forwarded up, a node remembers the
-  neighbour they came from. Desired records follow that reverse path to their target. A node
-  without an entry floods within its neighbourhood scope.
+- **Hop counts:** a sink's hop count is 0, and a node's is one more than its lowest peer's. It is
+  carried in its node record, its session Hello, and later its advertisement (FR-M4).
+- **Up, toward sinks:** a node writes its records into its outbox and **pushes** them to any
+  peer with a lower hop count, which takes custody. The sender drops a record once the peer
+  accepts it; a full peer refuses, and the sender keeps it. This is gradient routing,
+  store-and-forward and delay-tolerant (D-6).
+  - **Compaction:** a newer version replaces an older one in the outbox but keeps its place in
+    the queue.
+  - **Order:** commands and reports go first, the rest oldest first, so bulk can't starve
+    anything.
+- **Down, toward a target:** a node remembers, for each origin whose records it took from
+  uphill, the peer they came from. The controller's records for a node (desired state,
+  positions) are pushed along those routes until they reach a node that keeps their class. The
+  target's neighbourhood takes them from there by sync. The host hands them to the sinks that
+  have a route to the node.
 - **No routing tree** to maintain and no second radio protocol; Q5 stays on BLE.
+- **Sinks:** one sink cannot carry 500 nodes, because the relays next to it queue over a
+  thousand records. About one sink per 125 nodes keeps every relay's outbox near 100.
 
 ### Commands are desired state (D-27)
 
-- **What the controller writes:** `Desired { target, key, sequence, value }`, either persistent
-  config (a sensor on or off, a period, diversity, the role) or a one-shot action with its own
-  counter ("blink #7").
-- **How the target applies it:** idempotently. Config converges to the latest value; a one-shot
-  action runs once per new counter. The target then reports `Reported { key, sequence, status }`,
-  and the controller sees the acknowledgement when that record reaches a sink.
-- **Retries, deduplication and ordering** come with the sync: a command waits out a partition and
-  arrives once.
-- **Authentication:** Desired records carry a MAC under a controller key derived from the fleet
-  key (NFR-7), so a node obeys only the controller.
+- **What the controller writes:** `Desired { target, command }`, one record per setting of a
+  node. It is either persistent config (BME688 period and gas, diversity, advertising interval)
+  or a one-shot action (blink).
+- **How the target applies it:** once per version. Config converges to the latest value, and a
+  one-shot action runs once for each new version of its record. The target then writes
+  `Reported { setting, applied, status }`, and the controller sees the acknowledgement when that
+  record reaches a sink.
+- **Retries:** the controller hands the same version to the sinks again. A command waits out a
+  partition, and a node acts on each version once.
+- **Measured:** a command's round trip at 60 s sessions is 1.6 min at p50 with 20 nodes (3 hops),
+  and 4.8 min with 500 nodes and 4 sinks (11 hops).
+- **Authentication** *(not yet, DEF-27)*: Desired records will carry a MAC under a controller key
+  derived from the fleet key (NFR-7), so that a node obeys only the controller.
 
 ### Positions and the link graph (D-28)
 
@@ -522,11 +553,16 @@ The state is a set of **records**. Each record has exactly one writer, its origi
 
 ### Validation first
 
-- **Shared crate:** a `no_std` crate, `navgrid-mesh`, holds the record store, the merge, digests,
-  scopes and routing tables. Firmware and host share it.
-- **Simulator:** `navgrid mesh-sim` runs the crate over synthetic deployments (nodes, contact
-  schedules, partitions, sink placement, 20 to 500 nodes). It measures convergence time, command
-  latency, bytes per contact and memory per node before any firmware work.
+- **Shared crate:** `navgrid-mesh` (`no_std`, fixed-capacity tables on devices, growable on the
+  host) holds the records, the merge, classes and scope, sync, the outbox and routes. Firmware
+  and host share it.
+- **Simulator:** `navgrid mesh-sim` runs the crate over synthetic deployments: nodes on a grid,
+  sinks, contact and ranging periods, budgets, partitions. It reports staleness, delivery and
+  command latency, bytes per session and memory per node.
+- **Results so far** ([spike](engineering/spikes/2026-11-02-mesh-state-sim.md)):
+  - **Steady state:** at 60 s sessions, neighbourhood replicas are current ~97 % of the time.
+  - **Partitions:** after a one-hour partition, replicas are back to normal in 4–12 min.
+  - **Cost per node** is set by degree, not mesh size.
 
 ## 13. Decision log
 
@@ -536,7 +572,7 @@ The state is a set of **records**. Each record has exactly one writer, its origi
 | D-2 | One firmware image; role (node / asset / person / sink), pinned coordinates and periods from provisioned `NodeConfig`. | Proposed |
 | D-3 | On tag links the tag is central + initiator and nodes are peripheral + reflector. This gives self-positioning, nodes stay unaware of tags, and per-tag compute lands on the tag. | Proposed |
 | D-4 | Reflector → initiator data: **inline PCT transfer (IPT) first.** All devices are ours, and it is faster (~30 ms vs 100–200 ms per estimate), has no GATT hop, and costs less energy per range. Its limits are mode 2 only and weaker relay-attack resistance. **RAS** comes when phones do, or as the fallback if IPT fails the R-8 checks. | Proposed |
-| D-5 | Wire format: postcard + COBS; types in `navgrid-proto`. | Proposed |
+| D-5 | Wire format: postcard + COBS; telemetry types in `navgrid-proto`, mesh state and sync in `navgrid-mesh`. | Proposed |
 | D-6 | Telemetry is delay-tolerant: queued data rides ranging contacts toward sinks over L2CAP CoC. No always-on routing tree and no second radio protocol. | Proposed |
 | D-7 | Every link uses LTKs derived from the fleet network key and starts encryption directly, with no pairing. Phones, if they come, use LE Secure Connections. | Proposed (verify against SDC/TrouBLE) |
 | D-8 | Firmware uses pinned revisions of our forks: `DmitriyNE/bt-hci`, `DmitriyNE/nrf-sdc` and `GreatKet/trouble`, with Embassy at the revision TrouBLE's nRF54 example uses. Upstream PRs follow. | **Accepted** |
@@ -557,6 +593,6 @@ The state is a set of **records**. Each record has exactly one writer, its origi
 | D-23 | Monitoring gets a thin web UI later: one static page plus a JSON endpoint on the host tool, sharing `navgrid monitor`'s state (§9). | Proposed (later) |
 | D-24 | Mesh state is **convergent**: single-writer records with per-origin sequence numbers, merged by keeping the highest. Derived values agree by determinism or by having a single writer. No voting (§12). | **Accepted** (2026-11-02) |
 | D-25 | Replication scope: each node holds its own records, a 2-hop neighbourhood and routing state; sinks and the host hold the global state (§12). | **Accepted** (2026-11-02) |
-| D-26 | Routing rides the sync: a hop-count gradient toward sinks, the reverse path toward targets, store-and-forward on contacts (§12). | Proposed |
+| D-26 | Routing rides the sessions: custody pushes down a hop-count gradient toward sinks, and back along learned routes toward targets, store-and-forward (§12). | Proposed (simulated, 2026-11-02) |
 | D-27 | Commands are **desired state**: controller-written, authenticated, sequenced per target; targets apply them idempotently and report what they applied (§12). | **Accepted** (2026-11-02) |
 | D-28 | Positions: the host solves centrally and publishes them as records first; on-node distributed solving (FR-M2) follows and is validated against it (§12). | **Accepted** (2026-11-02) |

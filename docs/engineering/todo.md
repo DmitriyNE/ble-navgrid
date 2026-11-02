@@ -61,26 +61,23 @@ Staged; each stage ends with something measured. It runs alongside the rest of P
 the old telemetry, configuration, mesh-link, routing and self-survey items. Bench deployment from
 the 20 TAGs: about 8 nodes, a person tag, 2–3 asset tags, and the DK sink.
 
-1. [ ] **`navgrid-mesh` crate and simulator.**
-       - `no_std` crate: record keys and versions (boot epoch plus counter), a bounded store with
-         scopes and expiry, the merge, digests and deltas, gradient and reverse-path routing
-         tables, and applying desired state.
-       - `navgrid mesh-sim` on the host: synthetic deployments of 20 and 500 nodes, contact
-         schedules, partitions, sink placement. It reports convergence time, command latency,
-         bytes per contact and memory per node.
-       - Exit: §12's size and scope estimates confirmed or replaced, and a per-contact budget
-         chosen.
+Stage 1, the `navgrid-mesh` crate and `navgrid mesh-sim`, is done
+([spike](spikes/2026-11-02-mesh-state-sim.md)).
+
 2. [ ] **Identity and configuration at runtime:**
        - `NodeConfig` and the boot epoch in flash; `navgrid provision` writes them through the
          probe (DEF-5, DEF-14);
        - FR-M4 advertising with the hop count (DEF-11);
-       - fleet-key LTKs without pairing (D-7).
+       - fleet-key LTKs without pairing (D-7), and the controller key that authenticates desired
+         state (DEF-27).
 3. [ ] **Mesh links:** several links per node, with CS scheduled across them (generalising
        DEF-26's per-connection spacing), low-duty links that burst to range (D-10), and the
        one-path rate decision. Measure ranging rate and energy per link count.
 4. [ ] **Sync over the links:**
-       - a mesh L2CAP channel per link running digest and delta exchange (replaces DEF-1's
-         dedicated uplink; Health and Environment records, age envelope DEF-10);
+       - `navgrid_mesh::wire` sessions on SPSM `0x0082` per mesh link, a session every 60 s with
+         a 2 KB budget (replaces DEF-1's dedicated uplink; health and environment records carry
+         their age, DEF-10). A session completes only when both sides have seen the other's
+         `Done`;
        - the sink mirrors its replica to the host over VCOM1, and takes Desired records back
          (UART RX);
        - `navgrid monitor` mesh-state view (FR-S5);
@@ -89,6 +86,18 @@ the 20 TAGs: about 8 nodes, a person tag, 2–3 asset tags, and the DK sink.
          latency and bytes per contact against the simulator.
 5. [ ] **Positions:** the host solver over Link records (FR-M6) publishes Position records with
        the frame version; then distributed on-node solving (FR-M2), validated against the host.
+
+Protocol follow-ups, in the simulator first:
+
+- [ ] **Delta summaries** (DEF-28): per peer, send only the classes changed or newly in scope
+      since the last complete session with it.
+- [ ] **Compact device layout** for stored records (DEF-29): 48-bit IDs, `u8` lengths.
+- [ ] **Hop counts** (DEF-30): poison the route when the sink path goes, instead of counting up to
+      `MAX_HOPS`.
+- [ ] **Commands to unrouted nodes** (DEF-31): fall back to pushing toward the target's last
+      known neighbours.
+- [ ] **Retiring a node:** a controller record that drops a node's records everywhere.
+- [ ] **Simulate link loss and mid-session drops,** and reboots (new epochs).
 
 ## P1 — find my keys, first cut
 
