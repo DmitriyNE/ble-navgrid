@@ -643,11 +643,34 @@ button footprints are empty. The LED draws a few mA, so a 50 ms blink every 10 s
 | Trigger | LED | Also |
 |---|---|---|
 | Power-up | 1 s colour: green enrolled, blue not enrolled, red provisioning page corrupt | — |
-| Short press | 2 s status: green route to a sink, yellow mesh but no sink, red no peers; then 1–3 blinks for battery | event record, beacon attention for 30 s |
+| Short press | about 3 s of status, below | event record, beacon attention for 30 s |
 | Long press (3 s) | toggles **install mode** for 10 min: a short pulse every 2 s coloured by link and route quality, for placing a node at the edge of coverage | fast advertising while on |
 | Identify (command) | white fast blinks, 30 s | — |
 | Asset blink (FR-F6) | as identify, for the final approach | — |
 | Hold 5 s at power-up | red, then wipes provisioning | factory reset |
+
+**Status on a short press.** A white 50 ms flash acknowledges the press, then two phases with a
+0.7 s dark gap between them. The pattern carries the meaning on its own and the colour repeats
+it, so neither colour vision nor a miscount loses it.
+
+| Phase | Shows | Pattern |
+|---|---|---|
+| Connectivity: can this node get data out? | route to a sink | green, one short blink (100 ms) per hop, 1–4; one long glow for 5 or more; solid at a sink |
+| | mesh peers, no route to a sink | yellow, one long glow |
+| | beacons heard, but links fail to encrypt: another fleet key | magenta, slow double blink |
+| | no peers | red, fast flicker |
+| | not enrolled | blue, one long glow |
+| Battery: under radio load | good | 3 long green blinks (300 ms) |
+| | fine | 2 long yellow blinks |
+| | replace soon | 1 long red blink |
+
+- **Critically low cell:** the whole display is one short red blink, since a longer LED load could
+  brown the node out (R-9).
+- **Thresholds:** they come from the CR2032 sag measurements (P0). A CR2032 holds about 3.0 V at
+  rest almost to the end, so only a reading under load tells.
+- **Before devices run the mesh state** (§12, stage 4), the connectivity phase can only say
+  whether the node's links are up, not its hop count.
+- **A second press** restarts the display.
 
 The ADXL367 adds a third signal: a node that notices it was moved asks for a re-survey (FR-M5).
 The DK sink shows host link and connected nodes on its four LEDs.
