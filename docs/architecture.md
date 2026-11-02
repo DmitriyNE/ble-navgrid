@@ -649,18 +649,26 @@ replica keeps a class whole or not at all.
 - **Checking:** the monitor marks a device whose reported build differs from the registry's, so
   one that missed an update stands out.
 
-**Image layout with a bootloader (D-34, planned).** embassy-boot: a Rust bootloader built on
-`NorFlash`, which embassy-nrf's RRAM driver implements on the nRF54L15. It swaps an update slot
-into the active one, verifies Ed25519 signatures, and reverts an image that doesn't confirm itself.
+**The bootloader (D-34, built).**
+- **What it is:** embassy-boot (`firmware/bootloader`, 5.4 KB), a Rust bootloader on `NorFlash`,
+  which embassy-nrf's RRAM driver implements on the nRF54L15. It swaps a marked update into the
+  active slot, verifies Ed25519 signatures, and reverts an image that doesn't confirm itself.
+- **The firmware side** (`firmware.rs`): it takes over the bootloader's 5 s watchdog, and
+  confirms a new image once a fleet link is up. It restarts unconfirmed after 5 min.
+- **Measured** ([spike](engineering/spikes/2026-11-03-bootloader.md)): a swap takes about 25 s
+  for the whole slot, and the confirm write 75 ms.
 
 | Region | Start | Size |
 |---|---|---|
 | bootloader | 0x000000 | 32 KiB |
-| bootloader state | 0x008000 | 4 KiB |
-| active image | 0x009000 | 720 KiB; today's image is 401 KiB |
-| update slot | 0x0BD000 | 724 KiB (one page more than active, for the swap) |
-| spare | 0x172000 | 36 KiB |
-| provisioning, boot epoch | 0x17B000 | 4 + 4 KiB, as now |
+| bootloader state | 0x008000 | 12 KiB (embassy-boot needs four 16-byte progress lines per page) |
+| active image | 0x00B000 | 720 KiB; today's image is 415 KiB |
+| update slot | 0x0BF000 | 724 KiB (one page more than active, for the swap) |
+| spare | 0x174000 | 28 KiB |
+| provisioning, boot epoch | 0x17B000 | 4 + 4 KiB, as before |
+
+`navgrid_proto::layout` holds the same addresses. `navgrid flash --bootloader` writes the
+bootloader once per device, and every flash blanks the state region.
 
 **Signing (D-35).** An Ed25519 key pair on the host, separate from the fleet key; the
 bootloader holds the public key. `navgrid sign` makes an update image: a header (firmware ID, size,
@@ -767,6 +775,6 @@ The DK sink shows host link and connected nodes on its four LEDs.
 | D-31 | Devices are labelled with a sequential fleet number, stored on the device and in the host registry (§13). | **Accepted** (2026-11-02) |
 | D-32 | Every operation works through the host and the mesh; a field tool (laptop + DK as a portable sink) does the same in seconds on site (§13). | **Accepted** (2026-11-02) |
 | D-33 | Every build carries its version, commit and dirty flag, reported at boot, in Health and in node records; `navgrid flash` records what each device got (§13). | **Accepted** (built 2026-11-03) |
-| D-34 | The bootloader is embassy-boot: active and update slots in RRAM, swap with rollback (§13). | Proposed (spike first) |
+| D-34 | The bootloader is embassy-boot: active and update slots in RRAM, swap with rollback (§13). | **Accepted** (spike 2026-11-03) |
 | D-35 | Firmware images are signed with an Ed25519 key separate from the fleet key; the bootloader verifies them (§13). | **Accepted** (2026-11-03) |
 | D-36 | Over-the-air updates come single hop first (before stage 3), then spread mesh-wide over a bulk channel with controller-scheduled, canary-first rollout (after stage 4) (§13). | **Accepted** (2026-11-03) |

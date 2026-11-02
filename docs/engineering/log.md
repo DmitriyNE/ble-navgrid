@@ -4,6 +4,25 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**The bootloader works** ([spike](spikes/2026-11-03-bootloader.md)).
+
+- **Bootloader:** embassy-boot on the TAG, 5.4 KB in its own workspace, with the image moved to
+  `0xB000`. MPSL, the SDC and CS run unchanged under it.
+- **Firmware side:** the image takes over the bootloader's watchdog. A new image confirms itself
+  once a fleet link is up.
+- **On N002:**
+  - **Swap:** to a 0.1.1 build took about 25 s for the whole slot; the confirm wrote in 75 ms.
+  - **Persistence:** the confirmed image survived a reset.
+  - **Revert:** a build that panics at boot was reverted after the watchdog reset it.
+- **Layout:** the state region needs 12 KiB, not 8 (four progress lines per page); the layout is
+  now in both `memory.x` files and `navgrid_proto::layout`.
+- **Flashing:** `navgrid flash --bootloader` writes the bootloader, and every flash blanks the
+  state region. Both TAGs now run under the bootloader.
+- **Found on the way: DEF-26 is back.** With the CS link up before the sink link, every fourth
+  procedure is empty (8.3/s), in every run today, the run before the bootloader included. Making
+  the uplink wait until CS runs didn't help, so it was reverted. Only the sink-first order holds
+  11.1/s.
+
 **Firmware versions tracked; updates designed (FR-O2, architecture §13).**
 
 - **Identity:** every build carries its version, commit and dirty flag (`0.1.0+1950d455-dirty`),

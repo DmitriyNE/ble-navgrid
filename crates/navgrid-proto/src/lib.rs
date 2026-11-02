@@ -184,6 +184,20 @@ struct ProvisioningV1 {
     sink: Option<NodeId>,
 }
 
+/// RRAM layout under the bootloader (architecture §13), as `firmware/node/memory.x` and
+/// `firmware/bootloader/memory.x` have it.
+pub mod layout {
+    /// The bootloader's state: the update and revert markers and swap progress.
+    pub const BOOTLOADER_STATE: u32 = 0x0000_8000;
+    pub const BOOTLOADER_STATE_LEN: u32 = 12 * 1024;
+    /// The running image.
+    pub const ACTIVE: u32 = 0x0000_B000;
+    pub const ACTIVE_LEN: u32 = 720 * 1024;
+    /// Where an update waits for the bootloader to swap it in.
+    pub const DFU: u32 = 0x000B_F000;
+    pub const DFU_LEN: u32 = 724 * 1024;
+}
+
 /// Where the [`Provisioning`] page lives in RRAM: the second-to-last 4 KiB, which the firmware's
 /// `memory.x` keeps out of the image. Flashing firmware leaves it alone.
 pub const PROVISIONING_ADDRESS: u32 = 0x0017_B000;

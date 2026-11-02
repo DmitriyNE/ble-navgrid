@@ -1,11 +1,16 @@
 //! `navgrid flash`: firmware onto devices through their probes, several at once, recording in the
 //! registry which build each device got (architecture §13). The image says which build it is: the
 //! firmware embeds `navgrid-firmware 0.1.0+1950d45d[-dirty]`.
+//!
+//! Images run under the bootloader: `--bootloader` writes it too, which a device needs once.
+//! Every flash blanks the bootloader's state, so nothing left in the update slot gets swapped over
+//! the image just written.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use navgrid_proto::NodeId;
+use navgrid_proto::layout::{BOOTLOADER_STATE, BOOTLOADER_STATE_LEN};
 
 use crate::fleet::{Fleet, FleetArgs, label_name, today};
 use crate::probe;
@@ -18,6 +23,9 @@ pub struct FlashArgs {
     /// at once.
     #[arg(long = "probe", required = true)]
     probes: Vec<String>,
+    /// Also write this bootloader ELF (`firmware/bootloader`), as a device without one needs.
+    #[arg(long)]
+    bootloader: Option<PathBuf>,
     #[command(flatten)]
     fleet: FleetArgs,
 }
@@ -39,14 +47,22 @@ pub fn run(args: &FlashArgs) -> Result<()> {
         "flashing {tag} through {} probe(s); about 2 min at 100 kHz",
         args.probes.len()
     );
+    // A blank bootloader state: no update pending, nothing to revert.
+    let state = std::env::temp_dir().join(format!("navgrid-boot-state-{}.bin", std::process::id()));
+    std::fs::write(&state, vec![0xffu8; BOOTLOADER_STATE_LEN as usize])
+        .with_context(|| format!("writing {}", state.display()))?;
     let results: Vec<(String, Result<NodeId>)> = std::thread::scope(|s| {
         let jobs: Vec<_> = args
             .probes
             .iter()
             .map(|p| {
-                let elf = &args.elf;
+                let (elf, bootloader, state) = (&args.elf, &args.bootloader, &state);
                 s.spawn(move || {
                     let id = probe::read_id(Some(p))?;
+                    if let Some(bootloader) = bootloader {
+                        probe::download(Some(p), bootloader, None)?;
+                    }
+                    probe::download(Some(p), state, Some(BOOTLOADER_STATE))?;
                     probe::download(Some(p), elf, None)?;
                     probe::reset(Some(p))?;
                     Ok(id)
@@ -59,6 +75,7 @@ pub fn run(args: &FlashArgs) -> Result<()> {
             .zip(jobs.into_iter().map(|j| j.join().expect("flash thread panicked")))
             .collect()
     });
+    let _ = std::fs::remove_file(&state);
     let fleet = Fleet::open(&args.fleet).ok();
     let mut registry = fleet.as_ref().map(Fleet::registry).transpose()?;
     let mut failed = 0;

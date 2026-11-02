@@ -16,6 +16,7 @@ mod beacon;
 mod board;
 mod crypto;
 mod cs;
+mod firmware;
 mod keys;
 mod report;
 mod status;
@@ -239,6 +240,7 @@ async fn main(spawner: Spawner) {
     #[cfg(not(feature = "board-tag"))]
     let _ = corrupt;
     spawner.spawn(unwrap!(battery::run(p.SAADC)));
+    spawner.spawn(unwrap!(firmware::run(rram, p.WDT0)));
     let antennas = if node_cfg.diversity { board::ANTENNAS } else { 1 };
     #[cfg(feature = "board-tag")]
     board::antenna::init(p.P1_09, p.P1_10);

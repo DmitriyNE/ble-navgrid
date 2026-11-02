@@ -50,6 +50,11 @@ cargo dk                   # nRF54L15 DK
 cargo build --release --features board-tag   # build only
 ```
 
+Images link at `0xB000` and run under the bootloader (`firmware/bootloader`, architecture §13), so
+a device needs the bootloader once: `navgrid flash --bootloader …` (below). `cargo tag` then
+flashes and logs as before, but it leaves the bootloader's state alone. After an update
+experiment, `navgrid flash` clears it.
+
 On boot the node clears GRTC state left by earlier firmware, sets the crystal load caps, selects
 antenna 0, and logs its ID, config and the controller's CS capabilities. If the SDC memory pool
 size is wrong, the log prints the exact number needed; set `SDC_MEM` in `node/src/main.rs` to it.
@@ -85,6 +90,8 @@ cargo run -p navgrid -- provision --probe <B> --peer <id of A>
 cargo run -p navgrid -- fleet list
 cargo run -p navgrid -- flash firmware/target/thumbv8m.main-none-eabihf/release/navgrid-node \
     --probe <A> --probe <B>                                # firmware onto several devices at once, recorded
+    # add --bootloader firmware/bootloader/target/thumbv8m.main-none-eabihf/release/navgrid-bootloader
+    # once per device (build it with `cd firmware/bootloader && cargo build --release`)
 cd firmware && cargo tag                                    # each board; note "navgrid node <id>"
 ```
 
