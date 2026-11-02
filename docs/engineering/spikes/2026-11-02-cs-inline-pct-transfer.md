@@ -37,3 +37,16 @@ trip. No reflector data has to travel back over the ACL.
 
 The nrf-sdc fork has a local branch `update-nrfxlib-3.4.1` (`e6da399`), not pushed. Until the pin
 moves, `INLINE_PCT` stays off in main (DEF-24).
+
+## Pinned fork: RRAM standby needed too
+
+With the fork pinned at `6cfdf6a` (SDC v3.4.1 and the critical-section fix, but not the RRAM
+standby of the working copy), IPT was noise again: coherence 0.28, median 7.2 m. The SDC libraries
+were byte-identical to NCS's. Adding RRAM standby in nrf-mpsl's low-latency hooks, as NCS does,
+fixed it: 158 on-device estimates, median 3.68 m (p10–p90 3.63–3.76), coherence 0.991.
+
+The IPT reflector must measure each tone and set the phase of its reply within T_IP2 (20 µs).
+Code fetches from an RRAM waking from power-down presumably miss that deadline.
+
+**Conclusion, revised:** IPT on our stack needs SDC v3.4.1 *and* RRAM standby during radio
+activity. Both are in the fork at `6381257`, which the firmware pins.

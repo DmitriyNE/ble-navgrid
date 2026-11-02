@@ -2,9 +2,8 @@
 //! events (Core 6.0, Vol 4, Part E, 7.7.65.44–45): per step a mode, a channel, a length, and
 //! data whose layout depends on the mode and on which side reported it.
 //!
-//! Tone-to-antenna-path mapping is implemented for one antenna path only. With more, tones come
-//! in the order the step's antenna permutation index selects, and the permutation tables are not
-//! here yet.
+//! With several antenna paths, a step's tones come in the order its antenna permutation index
+//! selects (Core 6.0, Vol 6, Part H, Tables 4.13–4.15); [`Tones::path`] undoes that.
 
 use crate::Complex;
 
@@ -106,15 +105,70 @@ impl Tones {
         self.paths
     }
 
-    /// The tone measured on antenna path `path`. `None` if `path` is out of range or the step has
-    /// more than one path (permutation tables not implemented).
+    /// The tone measured on antenna path `path` (0-based). `None` if `path` is out of range or
+    /// the permutation index is invalid for the path count.
     pub fn path(&self, path: u8) -> Option<Tone> {
-        (self.paths == 1 && path == 0).then_some(self.tones[0])
+        (0..self.paths)
+            .find(|&i| antenna_path(self.paths, self.permutation, i) == Some(path))
+            .map(|i| self.tones[usize::from(i)])
     }
 
     /// The tone in the extension slot, after the antenna-path tones.
     pub fn extension_slot(&self) -> Tone {
         self.tones[usize::from(self.paths)]
+    }
+}
+
+/// Antenna path permutations, Core 6.0, Vol 6, Part H, Tables 4.13–4.15: row = permutation
+/// index, column = tone position in the step, value = 0-based antenna path. The last column is
+/// the tone extension slot. One path has the single permutation `[0, 0]`.
+const PERMUTATIONS_2: [[u8; 3]; 2] = [[0, 1, 1], [1, 0, 0]];
+const PERMUTATIONS_3: [[u8; 4]; 6] = [
+    [0, 1, 2, 2],
+    [1, 0, 2, 2],
+    [0, 2, 1, 1],
+    [2, 0, 1, 1],
+    [2, 1, 0, 0],
+    [1, 2, 0, 0],
+];
+const PERMUTATIONS_4: [[u8; 5]; 24] = [
+    [0, 1, 2, 3, 3],
+    [1, 0, 2, 3, 3],
+    [0, 2, 1, 3, 3],
+    [2, 0, 1, 3, 3],
+    [2, 1, 0, 3, 3],
+    [1, 2, 0, 3, 3],
+    [0, 1, 3, 2, 2],
+    [1, 0, 3, 2, 2],
+    [0, 3, 1, 2, 2],
+    [3, 0, 1, 2, 2],
+    [3, 1, 0, 2, 2],
+    [1, 3, 0, 2, 2],
+    [0, 3, 2, 1, 1],
+    [3, 0, 2, 1, 1],
+    [0, 2, 3, 1, 1],
+    [2, 0, 3, 1, 1],
+    [2, 3, 0, 1, 1],
+    [3, 2, 0, 1, 1],
+    [3, 1, 2, 0, 0],
+    [1, 3, 2, 0, 0],
+    [3, 2, 1, 0, 0],
+    [2, 3, 1, 0, 0],
+    [2, 1, 3, 0, 0],
+    [1, 2, 3, 0, 0],
+];
+
+/// The antenna path of the tone at `tone` (0-based position in the step, `paths` being the
+/// extension slot) for a step with `paths` antenna paths and antenna permutation index
+/// `permutation`. `None` for an invalid combination.
+pub fn antenna_path(paths: u8, permutation: u8, tone: u8) -> Option<u8> {
+    let (p, t) = (usize::from(permutation), usize::from(tone));
+    match paths {
+        1 => (p == 0 && t <= 1).then_some(0),
+        2 => PERMUTATIONS_2.get(p)?.get(t).copied(),
+        3 => PERMUTATIONS_3.get(p)?.get(t).copied(),
+        4 => PERMUTATIONS_4.get(p)?.get(t).copied(),
+        _ => None,
     }
 }
 
@@ -354,11 +408,32 @@ mod tests {
         assert_eq!(t.path(1), None);
         assert_eq!(t.extension_slot().extension, 1);
         assert_eq!(t.extension_slot().quality, ToneQuality::Unavailable);
-        // Two paths decode, but aren't mapped to paths yet.
-        let Ok(Step::Mode2(t)) = decode(Role::Reflector, 2, raw(2, &[0u8; 13])) else {
-            panic!("mode 2, two paths");
+        // Four paths, permutation 7 ([A2, A1, A4, A3]): tone n carries a marker n + 1.
+        let mut four = [0u8; 21];
+        four[0] = 7;
+        for n in 0..5 {
+            four[1 + 4 * n..4 + 4 * n].copy_from_slice(&encode_pct(Complex::new(n as f32 + 1.0, 0.0)));
+        }
+        let step = |data| RawStep {
+            mode: 2,
+            channel: 30,
+            data,
         };
-        assert_eq!((t.paths(), t.path(0)), (2, None));
+        let Ok(Step::Mode2(t)) = decode(Role::Initiator, 4, step(&four)) else {
+            panic!("mode 2, four paths");
+        };
+        let marker = |path| t.path(path).map(|t| t.pct.re);
+        assert_eq!(
+            [marker(0), marker(1), marker(2), marker(3), marker(4)],
+            [Some(2.0), Some(1.0), Some(4.0), Some(3.0), None]
+        );
+        // An index beyond the table maps nothing.
+        let mut bad = four;
+        bad[0] = 24;
+        let Ok(Step::Mode2(t)) = decode(Role::Initiator, 4, step(&bad)) else {
+            panic!("mode 2, bad permutation");
+        };
+        assert_eq!(t.path(0), None);
         // Mode 3 = mode 1 then mode 2.
         let mut mode3 = [0u8; 15];
         mode3[..6].copy_from_slice(&mode1);
@@ -369,6 +444,29 @@ mod tests {
         ));
         assert_eq!(decode(Role::Initiator, 1, raw(4, &[])), Err(StepError::Mode(4)));
         assert_eq!(decode(Role::Initiator, 5, raw(2, &[])), Err(StepError::Paths(5)));
+    }
+
+    #[test]
+    fn permutation_tables_are_permutations() {
+        for paths in 1..=MAX_ANTENNA_PATHS {
+            let rows = (0..).take_while(|&p| antenna_path(paths, p, 0).is_some());
+            let mut count = 0;
+            for p in rows {
+                count += 1;
+                let mut row = [0u8; MAX_ANTENNA_PATHS as usize + 1];
+                for t in 0..=paths {
+                    row[usize::from(t)] = antenna_path(paths, p, t).unwrap();
+                }
+                // Each path once among the first `paths` tones.
+                let seen = row[..usize::from(paths)].iter().fold(0u8, |m, &a| m | 1 << a);
+                assert_eq!(seen, (1u8 << paths) - 1, "paths {paths}, row {p}");
+                // The extension slot repeats the last path's antenna.
+                assert_eq!(row[usize::from(paths)], row[usize::from(paths) - 1]);
+                assert_eq!(antenna_path(paths, p, paths + 1), None);
+            }
+            // N_AP! permutations.
+            assert_eq!(count, (1..=usize::from(paths)).product::<usize>(), "paths {paths}");
+        }
     }
 
     #[test]

@@ -1190,7 +1190,7 @@ dependencies = [
 [[package]]
 name = "nrf-mpsl"
 version = "0.4.0"
-source = "git+https://github.com/DmitriyNE/nrf-sdc.git?rev=f705f4c9058b1c8091500bd2e017b6bd2ff6b25e#f705f4c9058b1c8091500bd2e017b6bd2ff6b25e"
+source = "git+https://github.com/DmitriyNE/nrf-sdc.git?rev=638125782879d7c4664f47a583560fc6b53e53e1#638125782879d7c4664f47a583560fc6b53e53e1"
 dependencies = [
  "cfg-if",
  "cortex-m",
@@ -1207,7 +1207,7 @@ dependencies = [
 [[package]]
 name = "nrf-mpsl-sys"
 version = "0.3.0"
-source = "git+https://github.com/DmitriyNE/nrf-sdc.git?rev=f705f4c9058b1c8091500bd2e017b6bd2ff6b25e#f705f4c9058b1c8091500bd2e017b6bd2ff6b25e"
+source = "git+https://github.com/DmitriyNE/nrf-sdc.git?rev=638125782879d7c4664f47a583560fc6b53e53e1#638125782879d7c4664f47a583560fc6b53e53e1"
 dependencies = [
  "bindgen",
  "doxygen-rs",
@@ -1226,7 +1226,7 @@ dependencies = [
 [[package]]
 name = "nrf-sdc"
 version = "0.4.0"
-source = "git+https://github.com/DmitriyNE/nrf-sdc.git?rev=f705f4c9058b1c8091500bd2e017b6bd2ff6b25e#f705f4c9058b1c8091500bd2e017b6bd2ff6b25e"
+source = "git+https://github.com/DmitriyNE/nrf-sdc.git?rev=638125782879d7c4664f47a583560fc6b53e53e1#638125782879d7c4664f47a583560fc6b53e53e1"
 dependencies = [
  "bt-hci",
  "bt-hci-transport",
@@ -1244,7 +1244,7 @@ dependencies = [
 [[package]]
 name = "nrf-sdc-sys"
 version = "0.3.0"
-source = "git+https://github.com/DmitriyNE/nrf-sdc.git?rev=f705f4c9058b1c8091500bd2e017b6bd2ff6b25e#f705f4c9058b1c8091500bd2e017b6bd2ff6b25e"
+source = "git+https://github.com/DmitriyNE/nrf-sdc.git?rev=638125782879d7c4664f47a583560fc6b53e53e1#638125782879d7c4664f47a583560fc6b53e53e1"
 dependencies = [
  "bindgen",
  "doxygen-rs",

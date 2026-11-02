@@ -252,7 +252,7 @@ async fn main(spawner: Spawner) {
     let role = async {
         log_cs_capabilities(&stack).await;
         match peer {
-            Some(peer) => initiator(&stack, peer).await,
+            Some(peer) => initiator(&stack, peer, antennas).await,
             None => reflector(&stack, &adv_data[..adv_len], &adv_params).await,
         }
     };
@@ -297,7 +297,7 @@ async fn reflector(stack: &Host<'_, '_>, adv_data: &[u8], params: &Advertisement
 
 /// Connects to `peer`, pairs, runs the CS initiator sequence, and serves the link until it drops.
 /// Repeats forever.
-async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6]) {
+async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6], antennas: u8) {
     let mut central = stack.central();
     let target = Address::random(peer);
     // A 4 s supervision timeout, as Nordic's sample uses.
@@ -340,7 +340,7 @@ async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6]) {
         if !encrypted(stack, &conn).await {
             continue;
         }
-        match cs::initiate(stack, conn.handle()).await {
+        match cs::initiate(stack, conn.handle(), antennas).await {
             Ok(()) => info!("CS running"),
             Err(e) => warn!("CS: {}", e),
         }

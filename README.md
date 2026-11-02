@@ -83,14 +83,14 @@ With two probes attached, pick one per build with `probe-rs list` and probe-rs's
 
 - **The initiator** connects at 50 ms, runs the feature exchange (the SDC needs it before CS),
   moves the link to 2M with 251-byte packets, pairs (LE Secure Connections, Just Works), then configures CS and starts
-  procedures: mode 2, all 72 channels, 1×1 antennas, 2M PHY, 16 ms subevents, every 10
-  connection events.
+  procedures: mode 2, all 72 channels, 2M PHY, 16 ms subevents, every 10 connection events. Two
+  TAGs use both antennas each (2×2, four antenna paths); otherwise 1×1.
 - **Both boards** log each CS subevent as one line:
   `CSR <I|R> <procedure> <freq comp> <ref power> <proc done> <subevent done> <abort> <paths>
   <steps> [step bytes]`. Continuations are logged as `CSC`. The step bytes keep the HCI layout,
   so the host can join the two sides by procedure counter.
-- **With inline PCT transfer** (`INLINE_PCT` in `cs.rs`, off until the nrf-sdc pin reaches
-  SDC v3.4.1), the initiator also logs `distance <procedure>: … m` from its own tones.
+- **With inline PCT transfer** (`INLINE_PCT` in `cs.rs`, on), the initiator also logs
+  `distance <procedure>: … m` from its own tones, combining the antenna paths.
 
 Firmware dependencies are pinned revisions of our forks of bt-hci, nrf-sdc and TrouBLE, which add
 the Channel Sounding support upstream lacks. See architecture §6 and D-8.

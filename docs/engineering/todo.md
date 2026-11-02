@@ -4,9 +4,11 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 
 ## P0 — bring-up
 
-- [ ] **Upstream PRs** from the forks: bt-hci step parsing, nrf-sdc CS bindings, TrouBLE CS
-      feature, `iso` import fix and connection-parameter-update identifier fix (drop the blank-line
-      commit first).
+- [ ] **Upstream PRs** from the forks:
+      - bt-hci: step parsing;
+      - nrf-sdc: CS bindings, the nRF54L critical-section fix (DEF-23), RRAM standby;
+      - TrouBLE: the CS feature, the `iso` import fix and the connection-parameter-update
+        identifier fix (drop the blank-line commit first).
 - [ ] **nrf-sdc fork docs:** say on `cs_count` / `cs_cfg` that they must follow the `support_*`
       calls and `cs_antenna_switch_callback` (the SDC ignores or rejects them otherwise).
 - [ ] **nrf-sdc optional follow-up:**
@@ -17,15 +19,12 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       OB replaces one word near each page start with its successor. Evidence in the 2026-11-02
       log; check whether it also happens on the DK's own chip.
 - [ ] **Standalone J-Link Pro** doesn't connect to the TAG at all; the SWD adapter may be bad.
-- [ ] **After first boot:** check the antenna-switch default and callback, and boot a DK (DEF-2,
-      DEF-3).
+- [ ] **After first boot:** check the antenna-switch default outside CS (the CS callback works:
+      2×2 ranges on four paths), and boot a DK (DEF-2, DEF-3).
 - [ ] **Distance calibration** (DEF-6): measure several separations accurately, fit the
       constant offset (about 2.4 m on the TAG pair, spike 2026-11-02), and apply it, through the
       SDC board distance offset or in the estimator. Calibrate IPT and two-sided ranging apart;
       IPT read about 0.5 m higher.
-- [ ] **nrf-sdc fork** (DEF-23, DEF-24): review and push branches `fix-cs-reserved-irqs` and
-      `update-nrfxlib-3.4.1`, pin them, turn `INLINE_PCT` on, propose the fix upstream. Consider NCS's HFXO start-up latency (`mpsl_clock_hfclk_latency_set`, 1650 µs on
-      the nRF54L) and RRAM standby in the low-latency hooks as well.
 - [ ] **Legacy connect** (DEF-17): retry `LE Create Connection` now that the cache is on.
 - [ ] **Sub mode 1 and faster procedures:** with sub mode 1, 20 ms and a procedure every 5
       events, two in three procedures aborted (unspecified, or no CS_SYNC). Find out why before
@@ -39,11 +38,11 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       feature exchange on connect, which the SDC needs before CS (log 2026-11-02).
 - [ ] **Move all advertising and scanning to the extended commands** once a node does both roles
       (the SDC rejects mixing the legacy and extended sets; DEF-17).
-- [ ] **Antenna permutation tables** (DEF-21): map multi-path tones to antenna paths in
-      `navgrid-ranging::steps`, from the Core spec tables, so diversity captures work.
+- [ ] **Diversity evaluation** (DEF-25): per-path ranges at several placements against measured
+      distances. Find out why path 3 is bad, and pick the path combiner on accuracy.
 - [ ] **IPT ranging rate:** Nordic's IPT sample ranges every 30 ms (15 ms ACL, a procedure every
-      2 events, 11 ms subevents); ours every 500 ms. Tune once IPT is on, and make the raw step
-      logs optional.
+      2 events, 11 ms subevents); ours every 500 ms. Tune it, and make the raw step logs
+      optional.
 - [ ] **Cross-check estimator:** compare against NCS v3.4.1 `ipt_*` / `ras_*` samples and `cs_de`
       on the same captures; settle sign and units (DEF-6).
 - [ ] **Energy per activity** with a power profiler on a TAG: advertising, idle link, CS per

@@ -20,6 +20,7 @@ use bt_hci::event::le::{
     LeCsSecurityEnableComplete, LeCsSubeventResult, LeCsSubeventResultContinue,
 };
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use bt_hci::param::{ConnHandle, ExtDuration, LeCsSubeventStepData, PackedAbortReasons, PhyKind, Status};
 use defmt::{Format, info, warn};
@@ -27,8 +28,8 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, with_timeout};
-use navgrid_ranging::steps::{self, RawStep, Role, Step, ToneQuality};
-use navgrid_ranging::{ChannelResponse, PhaseSlope, phase_slope};
+use navgrid_ranging::steps::{self, MAX_ANTENNA_PATHS, RawStep, Role, Step, ToneQuality};
+use navgrid_ranging::{ChannelResponse, Combine, PhaseSlope, combine_paths, phase_slope};
 use nrf_sdc::SoftdeviceController;
 use trouble_host::prelude::*;
 
@@ -57,9 +58,9 @@ const SUBEVENT_LENGTH_US: u32 = 16_000;
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Inline PCT transfer (IPT, `CS_Enhancements_1` bit 0): the reflector returns each tone with the
 /// phase it measured added, so the initiator's own PCTs carry the round trip and it can range
-/// alone. Off until the nrf-sdc pin moves to SDC v3.4.1: v3.4.0 reflectors apply the IPT phase
-/// wrongly when several antenna paths are configured (DRGN-29459, DEF-24).
-const INLINE_PCT: bool = false;
+/// alone. Needs SDC v3.4.1 or later on the reflector: v3.4.0 applies the IPT phase wrongly when
+/// several antenna paths are configured (DRGN-29459).
+const INLINE_PCT: bool = true;
 /// Fewest adjacent channel pairs for an on-device estimate.
 const MIN_PAIRS: u8 = 20;
 
@@ -90,6 +91,21 @@ enum Done {
 
 static DONE: Channel<CriticalSectionRawMutex, Done, 4> = Channel::new();
 
+/// The peer's antenna count from its CS capabilities.
+static PEER_ANTENNAS: AtomicU8 = AtomicU8::new(1);
+
+/// Tone antenna configuration index (LE CS Set Procedure Parameters) and preferred peer antenna
+/// mask for the local and peer antenna counts, using up to two antennas each. Indices: 0 A1:B1,
+/// 1 A2:B1, 4 A1:B2, 7 A2:B2 (A initiator, B reflector); antenna paths = A × B.
+fn tone_antenna_config(local: u8, peer: u8) -> (u8, u8) {
+    match (local >= 2, peer >= 2) {
+        (true, true) => (7, 0b11),
+        (true, false) => (1, 0b01),
+        (false, true) => (4, 0b11),
+        (false, false) => (0, 0b01),
+    }
+}
+
 #[derive(Format)]
 pub enum CsError {
     /// The controller refused a command.
@@ -109,6 +125,7 @@ impl EventHandler for Events {
             "CS peer: antennas={} paths={} roles={=u8:#04x} modes={=u8:#04x}",
             e.num_antennas_supported, e.max_antenna_paths_supported, e.roles_supported, e.optional_modes_supported
         );
+        PEER_ANTENNAS.store(e.num_antennas_supported, Ordering::Relaxed);
         let _ = DONE.try_send(Done::RemoteCapabilities(e.status));
     }
 
@@ -190,20 +207,29 @@ impl EventHandler for Events {
     }
 }
 
-/// The procedure being collected for an on-device estimate.
+/// The procedure being collected for an on-device estimate: one response per antenna path.
 struct Ranging {
     procedure: u16,
-    response: ChannelResponse,
+    responses: [ChannelResponse; MAX_ANTENNA_PATHS as usize],
 }
 
 static RANGING: Mutex<CriticalSectionRawMutex, RefCell<Ranging>> = Mutex::new(RefCell::new(Ranging {
     procedure: 0,
-    response: ChannelResponse::new(),
+    responses: [const { ChannelResponse::new() }; MAX_ANTENNA_PATHS as usize],
 }));
 
+/// The outcome of one procedure on the initiator.
+enum Ranged {
+    /// The per-path estimates combined, and how many paths gave one.
+    Distance(PhaseSlope, usize),
+    /// No path had enough channels; the most any path had.
+    TooFewChannels(usize),
+    Aborted,
+}
+
 /// On the initiator with inline PCT transfer, adds the subevent's mode-2 tones to the current
-/// procedure and logs a distance once the procedure completes. `procedure` is `None` for a
-/// continuation, which belongs to the procedure of the preceding result.
+/// procedure, per antenna path, and logs a distance once the procedure completes. `procedure` is
+/// `None` for a continuation, which belongs to the procedure of the preceding result.
 fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSubeventStepData<'_>) {
     if !(INLINE_PCT && is_initiator()) {
         return;
@@ -214,7 +240,7 @@ fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSube
             && p != r.procedure
         {
             r.procedure = p;
-            r.response = ChannelResponse::new();
+            r.responses = [const { ChannelResponse::new() }; MAX_ANTENNA_PATHS as usize];
         }
         for step in steps.iter() {
             let raw = RawStep {
@@ -222,37 +248,54 @@ fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSube
                 channel: step.step_channel,
                 data: step.step_data,
             };
-            if let Ok(Step::Mode2(tones)) = steps::decode(Role::Initiator, paths, raw)
-                && let Some(tone) = tones.path(0)
-                && tone.quality != ToneQuality::Unavailable
-            {
-                r.response.insert(raw.channel, tone.pct);
+            let Ok(Step::Mode2(tones)) = steps::decode(Role::Initiator, paths, raw) else {
+                continue;
+            };
+            for path in 0..tones.paths() {
+                if let Some(tone) = tones.path(path)
+                    && tone.quality != ToneQuality::Unavailable
+                {
+                    r.responses[usize::from(path)].insert(raw.channel, tone.pct);
+                }
             }
         }
         // 0: all results in; 1: more to come; 0xF: aborted.
         (procedure_done != 1).then(|| {
-            let result = (procedure_done == 0).then(|| phase_slope(&r.response, MIN_PAIRS));
-            let channels = r.response.len();
-            r.response = ChannelResponse::new();
-            (r.procedure, channels, result)
+            let ranged = if procedure_done == 0 {
+                let unused = PhaseSlope {
+                    distance_m: 0.0,
+                    coherence: 0.0,
+                    residual_rad: 0.0,
+                    pairs: 0,
+                };
+                let mut slopes = [unused; MAX_ANTENNA_PATHS as usize];
+                let mut n = 0;
+                for response in &r.responses {
+                    if let Some(slope) = phase_slope(response, MIN_PAIRS) {
+                        slopes[n] = slope;
+                        n += 1;
+                    }
+                }
+                match combine_paths(&slopes[..n], Combine::ResidualWeighted) {
+                    Some(combined) => Ranged::Distance(combined, n),
+                    None => Ranged::TooFewChannels(r.responses.iter().map(ChannelResponse::len).max().unwrap_or(0)),
+                }
+            } else {
+                Ranged::Aborted
+            };
+            r.responses = [const { ChannelResponse::new() }; MAX_ANTENNA_PATHS as usize];
+            (r.procedure, ranged)
         })
     });
     match done {
-        Some((
-            p,
-            _,
-            Some(Some(PhaseSlope {
-                distance_m,
-                coherence,
-                residual_rad,
-                pairs,
-            })),
-        )) => info!(
-            "distance {=u16}: {=f32} m, coherence {=f32}, residual {=f32} rad, {=u8} pairs",
-            p, distance_m, coherence, residual_rad, pairs
+        Some((p, Ranged::Distance(d, n))) => info!(
+            "distance {=u16}: {=f32} m from {=usize} path(s), coherence {=f32}, residual {=f32} rad, {=u8} pairs",
+            p, d.distance_m, n, d.coherence, d.residual_rad, d.pairs
         ),
-        Some((p, channels, Some(None))) => warn!("distance {=u16}: too few channels ({=usize})", p, channels),
-        Some((p, _, None)) => warn!("distance {=u16}: procedure aborted", p),
+        Some((p, Ranged::TooFewChannels(channels))) => {
+            warn!("distance {=u16}: too few channels ({=usize})", p, channels)
+        }
+        Some((p, Ranged::Aborted)) => warn!("distance {=u16}: procedure aborted", p),
         None => {}
     }
 }
@@ -374,8 +417,9 @@ pub async fn reflect(stack: &Stack<'_, '_>, handle: ConnHandle) -> Result<(), Cs
 }
 
 /// The initiator's sequence, on an encrypted link: default settings, peer capabilities, config,
-/// CS security, procedure parameters, then procedures until the link drops.
-pub async fn initiate(stack: &Stack<'_, '_>, handle: ConnHandle) -> Result<(), CsError> {
+/// CS security, procedure parameters, then procedures until the link drops. `antennas` is how
+/// many antennas this node may use for CS.
+pub async fn initiate(stack: &Stack<'_, '_>, handle: ConnHandle, antennas: u8) -> Result<(), CsError> {
     while DONE.try_receive().is_ok() {}
 
     stack
@@ -437,6 +481,12 @@ pub async fn initiate(stack: &Stack<'_, '_>, handle: ConnHandle) -> Result<(), C
     })
     .await?;
 
+    let peer = PEER_ANTENNAS.load(Ordering::Relaxed);
+    let (antenna_config, peer_antennas) = tone_antenna_config(antennas, peer);
+    info!(
+        "CS antennas: {=u8} local, {=u8} peer, tone antenna config {=u8}",
+        antennas, peer, antenna_config
+    );
     // A procedure every 10 connection events may last up to 9 intervals, as in Nordic's sample.
     stack
         .command(LeCsSetProcedureParams::new(
@@ -448,12 +498,12 @@ pub async fn initiate(stack: &Stack<'_, '_>, handle: ConnHandle) -> Result<(), C
             0,                  // procedure count: until disabled
             ExtDuration::from_u32(SUBEVENT_LENGTH_US),
             ExtDuration::from_u32(SUBEVENT_LENGTH_US),
-            0, // antenna configuration index 0: 1×1
+            antenna_config,
             PhyKind::Le2M,
             i8::MIN, // tx power delta: no recommendation
-            1,       // preferred peer antenna: first
-            0xFF,    // SNR control, initiator: not used
-            0xFF,    // SNR control, reflector: not used
+            peer_antennas,
+            0xFF, // SNR control, initiator: not used
+            0xFF, // SNR control, reflector: not used
         ))
         .await
         .map_err(|_| CsError::Command("set procedure parameters"))?;

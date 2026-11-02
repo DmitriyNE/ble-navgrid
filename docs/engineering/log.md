@@ -4,6 +4,21 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**IPT on, 2×2 antenna diversity.** Details: [IPT](spikes/2026-11-02-cs-inline-pct-transfer.md),
+[diversity](spikes/2026-11-02-cs-antenna-diversity.md).
+
+- **Fork:** `DmitriyNE/nrf-sdc` main is now `6381257`, which the firmware pins. It has three
+  merged changes: the critical-section fix (DEF-23), nrfxlib v3.4.1, and RRAM standby in the
+  low-latency hooks. IPT needed both of the last two (DEF-24); `INLINE_PCT` is now on.
+- **Diversity:**
+  - `navgrid-ranging::steps` maps tones to antenna paths with the Core permutation tables.
+  - The initiator picks the tone antenna configuration from both antenna counts (A2:B2 between
+    TAGs).
+  - On-device ranging keeps one response per path and combines them by residual.
+- **Result at about 90 cm:** two captures gave median 3.72 m (p10–p90 3.62–3.87) from 4 paths.
+  Paths 0–2 agree; path 3 is consistently bad (DEF-25). No accuracy gain over one path at this
+  placement yet.
+
 **Inline PCT transfer: the initiator ranges alone, with SDC v3.4.1.** Details:
 [spike](spikes/2026-11-02-cs-inline-pct-transfer.md).
 
