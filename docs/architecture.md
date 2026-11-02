@@ -1,9 +1,10 @@
 # navgrid — architecture
 
-Status: **draft v0.6** (2026-11-02). Companion to [requirements.md](requirements.md). Evidence
+Status: **draft v0.7** (2026-11-02). Companion to [requirements.md](requirements.md). Evidence
 behind the numbers here lives in [engineering/spikes](engineering/spikes/).
-v0.6: the mesh keeps a convergent shared state that carries routing, positions, sideband and
-commands, with the host as controller (§12).
+v0.7: operations: enrolment, commissioning, identification, the field tool, LED and button
+(§13). v0.6: the mesh keeps a convergent shared state that carries routing, positions, sideband
+and commands, with the host as controller (§12).
 
 ## 1. Overview
 
@@ -575,7 +576,83 @@ replica keeps a class whole or not at all.
   - **Partitions:** after a one-hour partition, replicas are back to normal in 4–12 min.
   - **Cost per node** is set by degree, not mesh size.
 
-## 13. Decision log
+## 13. Operations: enrolment, commissioning, identification (FR-O)
+
+### Lifecycle (FR-O1, FR-O4)
+
+| State | Reached by | Where | The device |
+|---|---|---|---|
+| Blank | — | — | runs nothing, or unprovisioned firmware (reflects, pairs Just Works) |
+| Enrolled | `navgrid provision` through the probe: firmware, fleet key, fleet number, role and defaults (D-29) | bench | joins any fleet link; registry entry *enrolled*; label printed |
+| Unplaced | powered on site; its records reach a sink | site | in the mesh; the monitor lists it as *unplaced*, with its neighbours |
+| Commissioned | the operator names and places it: name, room, position or pin; role and settings as desired state | field tool, or host | normal operation |
+| Retired | `retire`: a controller record drops the node's records everywhere, and a desired *decommission* makes the device wipe its provisioning page | either | silent; reusable after enrolment |
+
+- **Replace** (`replace N042 N107`): the registry moves N042's placement (name, room, pin) to N107,
+  writes N107's settings as desired state, and retires N042. IDs stay with the hardware; only
+  placements move.
+- **A node that goes silent** past its expiry is flagged *missing* in the monitor until the
+  operator retires it or it returns.
+- **Factory reset:** hold the button for 5 s while the device powers up (inserting the cell or a
+  reset) until the LED turns red; it wipes the provisioning page. It can't happen by accident in
+  operation, and a reset device can't join the fleet until it is enrolled again.
+- **One shared fleet key** (D-30): losing a device means re-enrolling the fleet with a new key.
+  That is fine without production deployments (DEF-33); provisioning gets revisited before them.
+
+### Registry and labels (FR-O5)
+
+- **The fleet directory** on the host holds:
+  - `fleet.key`, the secret: never in git;
+  - `devices.json`: node ID, fleet number, board, firmware, enrolment date, status;
+  - placements per site: name, room, pin, notes; the site file of §11 holds the pins.
+- **Fleet numbers** (D-31): `navgrid provision` assigns the next number (`N001`, `N002`, …),
+  stores it in the provisioning page, and prints a label: the number in large type and a QR code
+  of the full ID. The device reports its number in its node record and beacon, so the registry
+  can be rebuilt from the devices.
+- **The monitor** joins mesh state with the registry: `N042 kitchen-NE: battery 2.41 V
+  (≈ 9 days), last heard 40 s ago, 3 hops`. Battery comes from Health records; the host keeps the
+  trend and estimates days left, and flags low cells.
+
+### Finding a node, either way
+
+| Direction | How | Through the mesh (host only) | With the field tool |
+|---|---|---|---|
+| Host → device | **identify**: blink a distinctive pattern for 30 s | a Desired command: minutes in a deep mesh | a direct link: seconds |
+| Device → host | **button press**: the node writes an event record and sets an *attention* flag in its beacon for 30 s, advertising fast | the event reaches the host in minutes | the tool sees the flag at once, with RSSI |
+| Where is it | the surveyed position on the floor plan (P2), and the registry's room and notes | yes | yes, plus a hot/cold RSSI or CS-distance finder, which reuses the final approach of §10 |
+
+### The field tool (FR-O6, D-32)
+
+- **What it is:** a laptop running `navgrid field` with a DK that is enrolled like any node and
+  runs a field-sink mode.
+- **What it does:**
+  - lists nearby nodes from their beacons: fleet number, role, hops, battery, attention, RSSI;
+  - connects to one over a fleet link and runs an ordinary sync session at hop 0, so desired
+    state (name, pin, identify, settings) lands at once and reports come straight back;
+  - joins the mesh as a temporary sink while it is there; when it leaves, peers time out and
+    routes heal (§12).
+- **Without it,** every operation still works through the permanent sinks and the host, at mesh
+  latency. The field tool is a shortcut, not a dependency.
+
+### LED and button (FR-O7)
+
+The TAG has one RGB LED (P2.08–P2.10, active low) and one button (P0.00). The second LED and
+button footprints are empty. The LED draws a few mA, so a 50 ms blink every 10 s would cost about
+4 % of NFR-6's budget: the LED only shows events.
+
+| Trigger | LED | Also |
+|---|---|---|
+| Power-up | 1 s colour: green enrolled, blue not enrolled, red provisioning page corrupt | — |
+| Short press | 2 s status: green route to a sink, yellow mesh but no sink, red no peers; then 1–3 blinks for battery | event record, beacon attention for 30 s |
+| Long press (3 s) | toggles **install mode** for 10 min: a short pulse every 2 s coloured by link and route quality, for placing a node at the edge of coverage | fast advertising while on |
+| Identify (command) | white fast blinks, 30 s | — |
+| Asset blink (FR-F6) | as identify, for the final approach | — |
+| Hold 5 s at power-up | red, then wipes provisioning | factory reset |
+
+The ADXL367 adds a third signal: a node that notices it was moved asks for a re-survey (FR-M5).
+The DK sink shows host link and connected nodes on its four LEDs.
+
+## 14. Decision log
 
 | ID | Decision | Status |
 |---|---|---|
@@ -607,3 +684,7 @@ replica keeps a class whole or not at all.
 | D-26 | Routing rides the sessions: custody pushes down a hop-count gradient toward sinks, and back along learned routes toward targets, store-and-forward (§12). | Proposed (simulated, 2026-11-02) |
 | D-27 | Commands are **desired state**: controller-written, authenticated, sequenced per target; targets apply them idempotently and report what they applied (§12). | **Accepted** (2026-11-02) |
 | D-28 | Positions: the host solves centrally and publishes them as records first; on-node distributed solving (FR-M2) follows and is validated against it (§12). | **Accepted** (2026-11-02) |
+| D-29 | Enrolment at a bench through the probe (firmware, fleet key, fleet number); everything after it over the air (§13). | **Accepted** (2026-11-02) |
+| D-30 | One shared fleet key; a lost device means re-enrolling the fleet. Revisit before production deployments (§13, DEF-33). | **Accepted** (2026-11-02) |
+| D-31 | Devices are labelled with a sequential fleet number, stored on the device and in the host registry (§13). | **Accepted** (2026-11-02) |
+| D-32 | Every operation works through the host and the mesh; a field tool (laptop + DK as a portable sink) does the same in seconds on site (§13). | **Accepted** (2026-11-02) |

@@ -1,6 +1,6 @@
 # navgrid — requirements
 
-Status: **draft v0.6** (2026-11-02). §8 records what is decided. Items marked *(proposed)* still
+Status: **draft v0.7** (2026-11-02). §8 records what is decided. Items marked *(proposed)* still
 need sign-off.
 
 ## 1. Concept
@@ -57,6 +57,11 @@ distance, from across the building down to the last metre.
 | **Frame** | Building coordinate system (metres, right-handed, z up). |
 | **Record** | One unit of mesh state with a single writer, its origin, and a sequence number. The shared state is the set of records (FR-C). |
 | **Controller** | The host, through a sink: it holds the global state, solves positions until nodes do, and writes commands as desired-state records. |
+| **Enrolment** | Making a device a fleet member, once per device at a bench: firmware, fleet key, fleet number (FR-O1). |
+| **Commissioning** | Giving an enrolled device its place on site: name, room, position or pin, role tweaks, over the air (FR-O4). |
+| **Fleet number** | A short sequential number (`N042`) assigned at enrolment, printed on the device's label and stored on it. |
+| **Registry** | The host's record of every device: node ID, fleet number, placement, status (FR-O5). |
+| **Field tool** | A laptop with a DK acting as a portable sink, for commissioning and finding nodes on site (FR-O6). |
 
 ## 3. Phases (agreed)
 
@@ -160,9 +165,25 @@ A self-surveyed mesh knows its shape, not its orientation, handedness or origin.
 
 ### Operations (O)
 
-- **FR-O1** Provisioning of device identity, role, diversity on/off, pinned coordinates (or height only) and network key.
+- **FR-O1** **Enrolment** at a bench through the debug probe: firmware, fleet key, fleet number, role and defaults. The fleet key never travels over the air.
 - **FR-O2** OTA firmware update over BLE (P3).
 - **FR-O3** Observability: `defmt` over RTT in development; per-link counters (procedures, failures, quality) in the field.
+- **FR-O4** **Lifecycle**, all but enrolment over the air:
+  - **Commission:** an enrolled device that joins shows up as *unplaced*; the operator gives it a name, room, and position or pin.
+  - **Configure:** change its role or settings at any time (desired state, FR-C5).
+  - **Replace:** a new device takes over an old one's placement.
+  - **Retire:** remove a node from the mesh state, and have the device wipe its provisioning if it is still there.
+  - **Factory reset** at the device.
+- **FR-O5** **Physical ↔ logical identification:**
+  - **Registry and labels:** the registry maps node ID ↔ fleet number ↔ placement, and each device carries a label with its fleet number and a QR code of its ID.
+  - **The monitor** shows nodes by fleet number and name, e.g. `N042 kitchen-NE: battery 2.41 V`.
+  - **Host to device:** an *identify* command blinks a node.
+  - **Device to host:** a button press tells the host which node it is.
+  - **Later:** the surveyed position on a floor plan, and a proximity finder.
+- **FR-O6** **Both ways of working are supported:**
+  - **Host and mesh alone:** every operation works this way, at mesh latency.
+  - **Field tool:** a laptop with a DK lists nearby nodes by beacon and RSSI, sees button presses at once, and talks to a node directly. It does the same operations in seconds.
+- **FR-O7** **LED and button** are event-driven: no periodic LED activity in normal operation (NFR-6). The LED shows boot state, status on request, identify, the asset blink (FR-F6) and a time-limited install mode. The button asks for status and identifies the node, toggles install mode, and does a factory reset when held at power-up.
 
 ## 5. Non-functional requirements
 
@@ -238,6 +259,15 @@ Decided 2026-11-02 (FR-C, architecture §12):
 | — | Who holds what | **Neighbourhood plus sinks:** each node holds its own records, its 2-hop neighbourhood and routing state; sinks and the host hold everything (D-25). |
 | — | Where positions are solved | **Host first, nodes later:** the host solves centrally and publishes positions as records; distributed on-node solving (FR-M2) follows and is validated against it (D-28). |
 | — | Command semantics | **Desired plus reported state:** the controller writes the desired state with a sequence; the target applies it once and reports what it applied (D-27). |
+
+Decided 2026-11-02 (operations, architecture §13):
+
+| ID | Question | Decision |
+|---|---|---|
+| — | How devices get the fleet key | **At a bench through the probe**, for now (FR-O1). Over-the-air enrolment can come later. |
+| — | Lost or stolen devices | **One shared fleet key**; re-enrol the fleet if a key is lost (DEF-33). No production deployments for now; revisit with provisioning. |
+| — | Where commissioning happens | **Both**: everything through the host and the mesh, and faster with a field tool (FR-O6). |
+| — | Labels | **Fleet numbers** (`N042`), assigned at enrolment and stored on the device (FR-O5). |
 
 Open:
 

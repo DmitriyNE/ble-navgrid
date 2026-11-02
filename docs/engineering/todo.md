@@ -100,6 +100,33 @@ Protocol follow-ups, in the simulator first:
 - [ ] **Fleet key at rest** (DEF-33): APPROTECT on provisioned devices, and the key in the KMU.
 - [ ] **Simulate link loss and mid-session drops,** and reboots (new epochs).
 
+## Operations (FR-O, architecture §13)
+
+Each item works through the host and the mesh first; the field tool shortens it.
+
+1. [ ] **Fleet numbers and the registry:**
+       - the fleet number in the provisioning page, the node record and the beacon (format 2,
+         with a flags byte for attention and install mode);
+       - `navgrid provision` assigns the next number from `devices.json` and prints a label
+         (number and QR code of the ID);
+       - a `--fleet DIR` directory for `fleet.key`, `devices.json` and placements.
+2. [ ] **LED and button on the TAG:**
+       - LED colour codes and patterns;
+       - the button on GPIOTE with wake, debounce, short and long press, and hold at power-up for
+         factory reset;
+       - the boot colour.
+3. [ ] **Battery:** SAADC VDD readings into Health records and the beacon; the host's low-battery
+       flag and days-left estimate.
+4. [ ] **Identify and button events through the mesh:** the blink command (with stage 4's desired
+       state), an event record for button presses, and `navgrid identify`.
+5. [ ] **Registry operations:** `navgrid place`, `replace` and `retire` (with the mesh's retire
+       record); the monitor shows fleet numbers, names, *unplaced* and *missing*.
+6. [ ] **Field tool:**
+       - a DK field-sink mode: beacon list with RSSI, direct fleet links, and a sync session at
+         hop 0;
+       - `navgrid field`: list, identify, name and place, plus install-mode readings.
+7. [ ] **Install mode:** link and route quality on the LED, with fast advertising, for 10 min.
+
 ## P1 — find my keys, first cut
 
 - [ ] **Tag firmware:** on-device tracker, motion gating with a settling burst, asset

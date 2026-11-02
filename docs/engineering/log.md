@@ -4,6 +4,18 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Operations designed (FR-O4–O7, architecture §13).** Decided:
+
+- **Enrolment** at a bench through the probe (D-29).
+- **One shared fleet key**, re-enrolling the fleet if one is lost (D-30).
+- **Labels:** sequential fleet numbers stored on the device (D-31).
+- **Both ways of working:** every operation through the host and the mesh, plus a field tool
+  (laptop + DK as a portable sink) that does them in seconds on site (D-32).
+
+The TAG has one RGB LED and one button, and no usable NFC, so the LED and button are
+event-driven: boot code, status, identify, install mode, factory reset at power-up. Plan in the
+[todo](todo.md).
+
 **Stage 2: devices provisioned at runtime, links encrypted under the fleet key, beacons on air.**
 
 - **Provisioning:** `navgrid provision` writes a CRC-checked page (role, diversity, pin, fleet
