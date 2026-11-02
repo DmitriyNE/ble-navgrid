@@ -21,9 +21,10 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       DEF-3).
 - [ ] **Distance calibration** (DEF-6): measure several separations accurately, fit the
       constant offset (about 2.4 m on the TAG pair, spike 2026-11-02), and apply it, through the
-      SDC board distance offset or in the estimator.
-- [ ] **nrf-sdc fork** (DEF-23): review and push branch `fix-cs-reserved-irqs`, pin it, propose
-      upstream. Consider NCS's HFXO start-up latency (`mpsl_clock_hfclk_latency_set`, 1650 µs on
+      SDC board distance offset or in the estimator. Calibrate IPT and two-sided ranging apart;
+      IPT read about 0.5 m higher.
+- [ ] **nrf-sdc fork** (DEF-23, DEF-24): review and push branches `fix-cs-reserved-irqs` and
+      `update-nrfxlib-3.4.1`, pin them, turn `INLINE_PCT` on, propose the fix upstream. Consider NCS's HFXO start-up latency (`mpsl_clock_hfclk_latency_set`, 1650 µs on
       the nRF54L) and RRAM standby in the low-latency hooks as well.
 - [ ] **Legacy connect** (DEF-17): retry `LE Create Connection` now that the cache is on.
 - [ ] **Sub mode 1 and faster procedures:** with sub mode 1, 20 ms and a procedure every 5
@@ -40,7 +41,9 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       (the SDC rejects mixing the legacy and extended sets; DEF-17).
 - [ ] **Antenna permutation tables** (DEF-21): map multi-path tones to antenna paths in
       `navgrid-ranging::steps`, from the Core spec tables, so diversity captures work.
-- [ ] **Inline PCT transfer** (`cs_enhancements`) so the initiator alone has both sides (R-8).
+- [ ] **IPT ranging rate:** Nordic's IPT sample ranges every 30 ms (15 ms ACL, a procedure every
+      2 events, 11 ms subevents); ours every 500 ms. Tune once IPT is on, and make the raw step
+      logs optional.
 - [ ] **Cross-check estimator:** compare against NCS v3.4.1 `ipt_*` / `ras_*` samples and `cs_de`
       on the same captures; settle sign and units (DEF-6).
 - [ ] **Energy per activity** with a power profiler on a TAG: advertising, idle link, CS per

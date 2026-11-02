@@ -19,11 +19,16 @@ use bt_hci::event::le::{
     LeCsConfigComplete, LeCsProcedureEnableComplete, LeCsReadRemoteSupportedCapabilitiesComplete,
     LeCsSecurityEnableComplete, LeCsSubeventResult, LeCsSubeventResultContinue,
 };
+use core::cell::RefCell;
+
 use bt_hci::param::{ConnHandle, ExtDuration, LeCsSubeventStepData, PackedAbortReasons, PhyKind, Status};
 use defmt::{Format, info, warn};
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, with_timeout};
+use navgrid_ranging::steps::{self, RawStep, Role, Step, ToneQuality};
+use navgrid_ranging::{ChannelResponse, PhaseSlope, phase_slope};
 use nrf_sdc::SoftdeviceController;
 use trouble_host::prelude::*;
 
@@ -50,6 +55,13 @@ const CS_EVENT_LENGTH_US: u32 = SUBEVENT_LENGTH_US;
 const SUBEVENT_LENGTH_US: u32 = 16_000;
 /// How long to wait for an asynchronous CS command to complete.
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
+/// Inline PCT transfer (IPT, `CS_Enhancements_1` bit 0): the reflector returns each tone with the
+/// phase it measured added, so the initiator's own PCTs carry the round trip and it can range
+/// alone. Off until the nrf-sdc pin moves to SDC v3.4.1: v3.4.0 reflectors apply the IPT phase
+/// wrongly when several antenna paths are configured (DRGN-29459, DEF-24).
+const INLINE_PCT: bool = false;
+/// Fewest adjacent channel pairs for an on-device estimate.
+const MIN_PAIRS: u8 = 20;
 
 /// Bring-up role, from `NAVGRID_ROLE` at build time.
 pub fn is_initiator() -> bool {
@@ -102,7 +114,7 @@ impl EventHandler for Events {
 
     fn on_cs_config_complete(&self, e: &LeCsConfigComplete) {
         info!(
-            "CS config {} action {}: {}, mode {}/{}, steps {}-{}, mode-0 {}, map {=[u8]:02x}, T_IP1 {} T_IP2 {} T_FCS {} T_PM {} us",
+            "CS config {} action {}: {}, mode {}/{}, steps {}-{}, mode-0 {}, map {=[u8]:02x}, enhancements {=u8:#04x}, T_IP1 {} T_IP2 {} T_FCS {} T_PM {} us",
             e.config_id,
             e.action,
             e.status,
@@ -112,6 +124,7 @@ impl EventHandler for Events {
             e.max_main_mode_steps,
             e.mode_0_steps,
             e.channel_map,
+            e.reserved,
             e.t_ip1_time,
             e.t_ip2_time,
             e.t_fcs_time,
@@ -152,6 +165,12 @@ impl EventHandler for Events {
             e.num_antenna_paths,
             &e.steps,
         );
+        range(
+            Some(e.procedure_counter),
+            e.procedure_done_status as u8,
+            e.num_antenna_paths,
+            &e.steps,
+        );
     }
 
     fn on_cs_subevent_result_continue(&self, e: &LeCsSubeventResultContinue<'_>) {
@@ -167,6 +186,74 @@ impl EventHandler for Events {
             e.num_antenna_paths,
             &e.steps,
         );
+        range(None, e.procedure_done_status as u8, e.num_antenna_paths, &e.steps);
+    }
+}
+
+/// The procedure being collected for an on-device estimate.
+struct Ranging {
+    procedure: u16,
+    response: ChannelResponse,
+}
+
+static RANGING: Mutex<CriticalSectionRawMutex, RefCell<Ranging>> = Mutex::new(RefCell::new(Ranging {
+    procedure: 0,
+    response: ChannelResponse::new(),
+}));
+
+/// On the initiator with inline PCT transfer, adds the subevent's mode-2 tones to the current
+/// procedure and logs a distance once the procedure completes. `procedure` is `None` for a
+/// continuation, which belongs to the procedure of the preceding result.
+fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSubeventStepData<'_>) {
+    if !(INLINE_PCT && is_initiator()) {
+        return;
+    }
+    let done = RANGING.lock(|r| {
+        let mut r = r.borrow_mut();
+        if let Some(p) = procedure
+            && p != r.procedure
+        {
+            r.procedure = p;
+            r.response = ChannelResponse::new();
+        }
+        for step in steps.iter() {
+            let raw = RawStep {
+                mode: step.step_mode,
+                channel: step.step_channel,
+                data: step.step_data,
+            };
+            if let Ok(Step::Mode2(tones)) = steps::decode(Role::Initiator, paths, raw)
+                && let Some(tone) = tones.path(0)
+                && tone.quality != ToneQuality::Unavailable
+            {
+                r.response.insert(raw.channel, tone.pct);
+            }
+        }
+        // 0: all results in; 1: more to come; 0xF: aborted.
+        (procedure_done != 1).then(|| {
+            let result = (procedure_done == 0).then(|| phase_slope(&r.response, MIN_PAIRS));
+            let channels = r.response.len();
+            r.response = ChannelResponse::new();
+            (r.procedure, channels, result)
+        })
+    });
+    match done {
+        Some((
+            p,
+            _,
+            Some(Some(PhaseSlope {
+                distance_m,
+                coherence,
+                residual_rad,
+                pairs,
+            })),
+        )) => info!(
+            "distance {=u16}: {=f32} m, coherence {=f32}, residual {=f32} rad, {=u8} pairs",
+            p, distance_m, coherence, residual_rad, pairs
+        ),
+        Some((p, channels, Some(None))) => warn!("distance {=u16}: too few channels ({=usize})", p, channels),
+        Some((p, _, None)) => warn!("distance {=u16}: procedure aborted", p),
+        None => {}
     }
 }
 
@@ -326,11 +413,11 @@ pub async fn initiate(stack: &Stack<'_, '_>, handle: ConnHandle) -> Result<(), C
             0,    // RTT type: access address only
             1,    // CS_SYNC PHY: 1M
             channel_map(),
-            1, // channel map repetition
-            0, // channel selection algorithm #3b
-            0, // ch3c shape: hat (unused by #3b)
-            2, // ch3c jump (unused by #3b)
-            0, // cs_enhancements (Core 6.3): no inline PCT transfer
+            1,                    // channel map repetition
+            0,                    // channel selection algorithm #3b
+            0,                    // ch3c shape: hat (unused by #3b)
+            2,                    // ch3c jump (unused by #3b)
+            u8::from(INLINE_PCT), // cs_enhancements (Core 6.3): bit 0, inline PCT transfer
         ))
         .await
         .map_err(|_| CsError::Command("create config"))?;

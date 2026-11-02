@@ -31,6 +31,10 @@ pub struct CsArgs {
     /// One JSON object per procedure.
     #[arg(long)]
     json: bool,
+    /// The capture used inline PCT transfer: estimate from the initiator's tones alone, whose
+    /// PCTs already carry the round trip.
+    #[arg(long)]
+    ipt: bool,
 }
 
 pub fn run(args: &CsArgs) -> Result<()> {
@@ -51,7 +55,7 @@ pub fn run(args: &CsArgs) -> Result<()> {
     let procedures = assemble(subevents);
     let estimates: Vec<Estimate> = procedures
         .iter()
-        .map(|(&counter, sides)| estimate(counter, sides, args.min_pairs, args.combine.into()))
+        .map(|(&counter, sides)| estimate(counter, sides, args.min_pairs, args.combine.into(), args.ipt))
         .collect();
     for e in &estimates {
         if args.json {
@@ -272,6 +276,24 @@ fn responses(initiator: &[(u8, Tones)], reflector: &[(u8, Tones)], paths: u8) ->
         .collect()
 }
 
+/// Per-antenna-path responses from the initiator's tones alone (inline PCT transfer). Repeats on
+/// a channel are summed, as in [`responses`].
+fn responses_ipt(initiator: &[(u8, Tones)], paths: u8) -> Vec<ChannelResponse> {
+    (0..paths)
+        .map(|path| {
+            let mut resp = ChannelResponse::new();
+            for (channel, t) in initiator {
+                if let Some(a) = t.path(path)
+                    && a.quality != ToneQuality::Unavailable
+                {
+                    resp.insert(*channel, a.pct);
+                }
+            }
+            resp
+        })
+        .collect()
+}
+
 struct Estimate {
     procedure: u16,
     sides: [Option<SideSummary>; 2],
@@ -292,7 +314,7 @@ struct SideSummary {
     freq_comp_ppm: Option<f32>,
 }
 
-fn estimate(procedure: u16, sides: &[Option<Side>; 2], min_pairs: u8, how: Combine) -> Estimate {
+fn estimate(procedure: u16, sides: &[Option<Side>; 2], min_pairs: u8, how: Combine, ipt: bool) -> Estimate {
     let summary = |s: &Option<Side>| {
         s.as_ref().map(|s| SideSummary {
             subevents: s.subevents,
@@ -311,6 +333,25 @@ fn estimate(procedure: u16, sides: &[Option<Side>; 2], min_pairs: u8, how: Combi
         rtt_m: None,
         note: None,
     };
+    if ipt {
+        let Some(init) = &sides[0] else {
+            e.note = Some("no initiator side".into());
+            return e;
+        };
+        let i = match decode(Role::Initiator, init) {
+            Ok(i) => i,
+            Err(err) => {
+                e.note = Some(format!("bad step data: {err:#}"));
+                return e;
+            }
+        };
+        if i.tones.is_empty() {
+            e.note = Some("no mode-2 tones".into());
+            return e;
+        }
+        let resp = responses_ipt(&i.tones, init.paths);
+        return finish(e, &resp, init.paths, min_pairs, how);
+    }
     let [Some(init), Some(refl)] = sides else {
         e.note = Some(format!(
             "only the {} side",
@@ -340,9 +381,14 @@ fn estimate(procedure: u16, sides: &[Option<Side>; 2], min_pairs: u8, how: Combi
         return e;
     }
     let resp = responses(&i.tones, &r.tones, init.paths);
+    finish(e, &resp, init.paths, min_pairs, how)
+}
+
+/// Phase slope per antenna path, then the combined range.
+fn finish(mut e: Estimate, resp: &[ChannelResponse], paths: u8, min_pairs: u8, how: Combine) -> Estimate {
     e.channels = resp.first().map_or(0, ChannelResponse::len);
-    if e.channels == 0 && init.paths > 1 {
-        e.note = Some(format!("{} antenna paths: tone mapping not implemented", init.paths));
+    if e.channels == 0 && paths > 1 {
+        e.note = Some(format!("{paths} antenna paths: tone mapping not implemented"));
         return e;
     }
     e.paths = resp.iter().filter_map(|r| phase_slope(r, min_pairs)).collect();
@@ -614,7 +660,7 @@ mod tests {
         let procedures = assemble(subevents);
         assert_eq!(procedures.keys().copied().collect::<Vec<_>>(), [7, 8]);
         for (&counter, sides) in &procedures {
-            let e = estimate(counter, sides, 20, Combine::ResidualWeighted);
+            let e = estimate(counter, sides, 20, Combine::ResidualWeighted, false);
             let c = e.combined.unwrap_or_else(|| panic!("{e}"));
             assert!((c.distance_m - 4.2).abs() < 0.1, "{e}");
             assert_eq!(e.channels, 72);
@@ -630,7 +676,7 @@ mod tests {
             "CSR R 4 49152 0 0 f 20 1 0 []",
         ];
         let procedures = assemble(lines.iter().map(|l| parse_line(l).unwrap().unwrap()));
-        let three = estimate(3, &procedures[&3], 20, Combine::Mean);
+        let three = estimate(3, &procedures[&3], 20, Combine::Mean, false);
         assert_eq!(three.note.as_deref(), Some("no mode-2 tones"));
         assert!(
             three
@@ -639,7 +685,7 @@ mod tests {
             "{three}"
         );
         assert_eq!(three.to_json()["initiator"]["freq_comp_ppm"], -6.06);
-        let four = estimate(4, &procedures[&4], 20, Combine::Mean);
+        let four = estimate(4, &procedures[&4], 20, Combine::Mean, false);
         assert_eq!(four.note.as_deref(), Some("only the reflector side"));
         let summary = Summary::of(&[three, four]).to_string();
         assert!(

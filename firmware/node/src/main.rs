@@ -49,7 +49,7 @@ const CS_LINKS: u8 = 6;
 /// SDC memory pool. The TAG figure (2 antennas, 4 paths) is what its SDC reported; one antenna
 /// saves 1 KiB per CS link for each of the 3 extra paths. If this is off, the SDC logs the exact
 /// requirement at boot.
-const SDC_MEM: usize = if board::ANTENNAS > 1 { 95_448 } else { 77_016 };
+const SDC_MEM: usize = if board::ANTENNAS > 1 { 99_072 } else { 80_640 };
 
 #[embassy_executor::task]
 async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
@@ -81,6 +81,9 @@ fn build_sdc<'d, const N: usize>(
         .support_dle_peripheral()
         .support_le_power_control_central()
         .support_le_power_control_peripheral()
+        // Inline PCT transfer needs the extended feature set, as NCS's IPT samples enable it.
+        .support_extended_feature_set_central()
+        .support_extended_feature_set_peripheral()
         .support_channel_sounding_initiator_role_central()
         .support_channel_sounding_initiator_role_peripheral()
         .support_channel_sounding_reflector_role_central()

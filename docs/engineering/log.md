@@ -4,6 +4,19 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Inline PCT transfer: the initiator ranges alone, with SDC v3.4.1.** Details:
+[spike](spikes/2026-11-02-cs-inline-pct-transfer.md).
+
+- **What's in:** IPT in Create Config, the SDC extended feature set, and an on-device phase-slope
+  estimate on the initiator (`distance <procedure>: … m` log lines). `navgrid cs --ipt`
+  estimates from the initiator's capture alone.
+- **v3.4.0 doesn't work:** our reflector applied the IPT phase wrongly (DRGN-29459). Mixed pairs
+  with Nordic's samples pinned it on our reflector's controller.
+- **v3.4.1 works:** our pair gave 3.88 m on-device (coherence 0.986), equal to the host estimate.
+- **Not pinned yet:** the fork update is on a local branch, so `INLINE_PCT` is off in main
+  (DEF-24).
+- **DEF-19 reopened:** one probe dropout at 100 kHz in about 25 runs.
+
 **Distance check.** At about 10 cm and 90 cm, ours read 2.34 m and 3.34 m; Nordic's samples
 read 2.17/2.93 m (IFFT) and 2.47/3.56 m (phase slope). Sign and scale are right (DEF-6); both
 stacks share a fixed offset of about 2.4 m, which waits for a measured calibration.

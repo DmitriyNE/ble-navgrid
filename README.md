@@ -31,6 +31,7 @@ cargo run -p navgrid -- sim --trials 500 --multipath 3 --antenna-paths 4   # com
 cargo run --release -p navgrid -- track                       # walking target: ranging rate vs accuracy, IMU gating on/off
 cargo run -p navgrid -- decode capture.bin [--json]           # decode COBS/postcard frames
 cargo run -p navgrid -- cs initiator.log reflector.log [--json]  # raw CS captures → distance per procedure
+cargo run -p navgrid -- cs --ipt initiator.log                   # same, inline PCT transfer: initiator only
 ```
 
 ## Firmware
@@ -88,6 +89,8 @@ With two probes attached, pick one per build with `probe-rs list` and probe-rs's
   `CSR <I|R> <procedure> <freq comp> <ref power> <proc done> <subevent done> <abort> <paths>
   <steps> [step bytes]`. Continuations are logged as `CSC`. The step bytes keep the HCI layout,
   so the host can join the two sides by procedure counter.
+- **With inline PCT transfer** (`INLINE_PCT` in `cs.rs`, off until the nrf-sdc pin reaches
+  SDC v3.4.1), the initiator also logs `distance <procedure>: … m` from its own tones.
 
 Firmware dependencies are pinned revisions of our forks of bt-hci, nrf-sdc and TrouBLE, which add
 the Channel Sounding support upstream lacks. See architecture §6 and D-8.
