@@ -51,13 +51,44 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       height steps (R-10).
 - [ ] **ADXL367 wake-on-motion** driver.
 - [ ] **Calibrate the range σ model** from captures (DEF-7).
-- [ ] **Telemetry beyond the first cut** (DEF-1): several nodes per sink, the age envelope, and
-      forwarding over ranging contacts toward the sink (D-6).
-- [ ] **`navgrid monitor` view:** a terminal mesh-state view on top of today's frame printing
-      (FR-S5).
 - [ ] **P-5 embassy-nrf:** nRF54L instruction cache enabled at init (DEF-18), crystal load-cap
       config, and stale GRTC state cleared by the time driver at init, upstream.
 - [ ] **CI:** host tests and clippy, plus firmware clippy and build for both boards.
+
+## Mesh state and control (FR-C, architecture §12)
+
+Staged; each stage ends with something measured. It runs alongside the rest of P0, and replaces
+the old telemetry, configuration, mesh-link, routing and self-survey items. Bench deployment from
+the 20 TAGs: about 8 nodes, a person tag, 2–3 asset tags, and the DK sink.
+
+1. [ ] **`navgrid-mesh` crate and simulator.**
+       - `no_std` crate: record keys and versions (boot epoch plus counter), a bounded store with
+         scopes and expiry, the merge, digests and deltas, gradient and reverse-path routing
+         tables, and applying desired state.
+       - `navgrid mesh-sim` on the host: synthetic deployments of 20 and 500 nodes, contact
+         schedules, partitions, sink placement. It reports convergence time, command latency,
+         bytes per contact and memory per node.
+       - Exit: §12's size and scope estimates confirmed or replaced, and a per-contact budget
+         chosen.
+2. [ ] **Identity and configuration at runtime:**
+       - `NodeConfig` and the boot epoch in flash; `navgrid provision` writes them through the
+         probe (DEF-5, DEF-14);
+       - FR-M4 advertising with the hop count (DEF-11);
+       - fleet-key LTKs without pairing (D-7).
+3. [ ] **Mesh links:** several links per node, with CS scheduled across them (generalising
+       DEF-26's per-connection spacing), low-duty links that burst to range (D-10), and the
+       one-path rate decision. Measure ranging rate and energy per link count.
+4. [ ] **Sync over the links:**
+       - a mesh L2CAP channel per link running digest and delta exchange (replaces DEF-1's
+         dedicated uplink; Health and Environment records, age envelope DEF-10);
+       - the sink mirrors its replica to the host over VCOM1, and takes Desired records back
+         (UART RX);
+       - `navgrid monitor` mesh-state view (FR-S5);
+       - a controller CLI with the first commands: LED blink, BME688 on and period, diversity.
+       - Exit: commands and records cross partitions and several hops on the bench mesh;
+         latency and bytes per contact against the simulator.
+5. [ ] **Positions:** the host solver over Link records (FR-M6) publishes Position records with
+       the frame version; then distributed on-node solving (FR-M2), validated against the host.
 
 ## P1 — find my keys, first cut
 
@@ -72,17 +103,11 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **Spike:** first-path IFFT / super-resolution estimator vs phase slope.
 - [ ] **Simulator:** full-fix vs single-range tracking side by side; GDOP/battery-aware node
       selection; a find-my-keys scenario with pointer-error statistics.
-- [ ] **Configuration:** `NodeConfig` in flash, and provisioning over serial (DEF-5).
-- [ ] **Telemetry envelope** with age and hop count (DEF-10).
 
 ## P2 / P3
 
-- [ ] **Mesh links:** low-duty persistent connections, ranging bursts, event-driven re-survey
-      (D-10).
-- [ ] **Self-survey:** central solver on the host, then the distributed one on nodes.
-- [ ] **Routing:** delay-tolerant forwarding toward sinks (D-6).
-- [ ] **Fleet-key LTKs** without pairing (D-7).
-- [ ] **OTA, provisioning tooling, capacity tests.**
+- [ ] **Event-driven re-survey** of moved nodes (FR-M5).
+- [ ] **OTA and capacity tests.**
 
 ## Later
 

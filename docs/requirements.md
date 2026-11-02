@@ -1,6 +1,6 @@
 # navgrid — requirements
 
-Status: **draft v0.5** (2026-11-01). §8 records what is decided. Items marked *(proposed)* still
+Status: **draft v0.6** (2026-11-02). §8 records what is decided. Items marked *(proposed)* still
 need sign-off.
 
 ## 1. Concept
@@ -18,6 +18,9 @@ navgrid is an **ambient positioning mesh** of nRF54L15 nodes.
    positioning must not depend on it.
 6. **Mesh state and sideband data** (topology, link health, positions, battery, environmental
    readings) reach a small monitoring tool of our own.
+7. The mesh keeps one **shared state** that converges across partitions. Routing, the link graph
+   and positions, sideband and commands all ride it, and a central controller observes and steers
+   it (FR-C).
 
 Target scale is a **building with many tags**. Early phases are smaller, but no architectural
 decision may preclude building scale.
@@ -52,6 +55,8 @@ distance, from across the building down to the last metre.
 | **Initiator / reflector** | CS roles on a link. The initiator computes the distance; it needs the reflector's step data. |
 | **Procedure** | One CS ranging exchange (many steps over many channels) → one distance estimate. |
 | **Frame** | Building coordinate system (metres, right-handed, z up). |
+| **Record** | One unit of mesh state with a single writer, its origin, and a sequence number. The shared state is the set of records (FR-C). |
+| **Controller** | The host, through a sink: it holds the global state, solves positions until nodes do, and writes commands as desired-state records. |
 
 ## 3. Phases (agreed)
 
@@ -129,6 +134,15 @@ A self-surveyed mesh knows its shape, not its orientation, handedness or origin.
 - **FR-D1** Telemetry (ranges, positions, health) can be routed from any device to one or more sinks; sinks forward to the host over USB/UART.
 - **FR-D2** Routing is optional for positioning. Asset registry updates (FR-F1) need it.
 
+### Mesh state and control (C)
+
+- **FR-C1** **Shared state:** the mesh keeps one state (nodes, links, positions, health, sideband, commands) as records with a single writer each. Replicas that have seen the same records agree, however and in whatever order the records arrived, across partitions, with no voting.
+- **FR-C2** **Routing:** records move hop by hop over ranging contacts toward sinks, and commands move back toward their target, delay-tolerant and without a dedicated wake-up (FR-S4). No routing tree to maintain.
+- **FR-C3** **Link graph and positions** are part of the state: link records from each link's initiator, and position records that the host publishes until nodes solve their own (FR-M2, FR-M6). Each node holds its 2-hop neighbourhood; sinks and the host hold everything.
+- **FR-C4** **Sideband** (health, environment, FR-S2/S3) is carried as records too, with their age (NFR-5).
+- **FR-C5** **Commands** route to any node: persistent config ("enable the BME688", "diversity off") and one-shot actions ("blink the LED"). The controller writes the desired state; the target applies each command once and reports what it applied. Only the controller can command (NFR-7).
+- **FR-C6** **Controller:** the host, through a sink, observes the whole state, sees which commands each node has applied, and gets the current positions and link graph. Several sinks may feed it.
+
 ### Monitoring and sideband (S)
 
 - **FR-S1** Mesh state reaches the monitoring tool: nodes (role, config, firmware, position and covariance, last seen), links (distance, quality, antenna paths, success rate) and tags.
@@ -193,6 +207,7 @@ at best", so P0 measurements will re-baseline these.
 | R-11 | The gyro costs far more than the accelerometer. | Tags only need it for optional dead reckoning (FR-T7b); use it only if measurements show a net saving. |
 | R-12 | **Referencing error goes straight into pointing.** A mis-surveyed pin or a wrong preset bearing biases the mesh yaw, and a short baseline magnifies mesh position errors into bearing error (0.1 m over 5 m ≈ 1°). | Presets on long baselines. Use more presets than the minimum and report their misfit and agreement, so a bad one shows. |
 | R-13 | **Close-in pointing.** Bearing error ≈ combined position error ÷ distance: 0.5 m at 1 m is ~27°. Mesh-based pointing fails exactly where the user needs it most. | Final approach on direct person↔asset ranging (FR-F4); show distance prominently close in. |
+| R-14 | **State sync costs** airtime, RAM and energy on coin cells, and the global state grows with the mesh. Records several hops from a sink may lag far behind. | Per-node scope bounded by degree, not by mesh size; a per-contact byte budget with priorities; size, convergence and latency measured in a simulator at 20 and 500 nodes before firmware (architecture §12). |
 
 ## 8. Decisions and open questions
 
@@ -214,6 +229,15 @@ Decided 2026-11-01:
 | — | Monitoring UI | Terminal tool now; a **thin web UI later** (FR-S6). |
 | Q15 | Referencing source | **Commissioning presets:** a few nodes with known absolute coordinates, or preset bearings between node pairs (FR-A3a/b). Learning from HUD headings is a later option. |
 | — | Phases | P0–P3 as in §3. |
+
+Decided 2026-11-02 (FR-C, architecture §12):
+
+| ID | Question | Decision |
+|---|---|---|
+| — | What "consensus" means | **Convergence**: single-writer records, merged by sequence number; replicas that have seen the same writes agree. No voting or leader (D-24). |
+| — | Who holds what | **Neighbourhood plus sinks:** each node holds its own records, its 2-hop neighbourhood and routing state; sinks and the host hold everything (D-25). |
+| — | Where positions are solved | **Host first, nodes later:** the host solves centrally and publishes positions as records; distributed on-node solving (FR-M2) follows and is validated against it (D-28). |
+| — | Command semantics | **Desired plus reported state:** the controller writes the desired state with a sequence; the target applies it once and reports what it applied (D-27). |
 
 Open:
 

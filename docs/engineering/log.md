@@ -4,6 +4,25 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Mesh state, routing and control designed (FR-C, architecture §12).** The requirements for the
+full system: a shared state the mesh agrees on, routing to keep it, positions and the link graph
+built on it, sideband and commands carried by it, and a controller that observes and steers it.
+Decided:
+
+- **Consensus is convergence** (D-24). Every record has one writer and a per-origin sequence; the
+  highest wins. Merging is order-free, so replicas agree across partitions without voting.
+- **Scope** (D-25): a node holds its own records, its 2-hop neighbourhood and routing state;
+  sinks and the host hold everything.
+- **Routing** (D-26, proposed): sync on ranging contacts, a hop-count gradient up to sinks, the
+  reverse path down to targets.
+- **Commands are desired state** (D-27): written and authenticated by the controller, applied
+  once by the target, which reports what it applied.
+- **Positions** (D-28): the host solves and publishes them as records first; on-node solving
+  follows.
+
+Plan in the [todo](todo.md): the `navgrid-mesh` crate and a simulator first, then runtime
+configuration, mesh links, sync, and positions.
+
 **The uplink no longer costs ranging (DEF-26 fixed).** The initiator schedules its two central
 links apart, following the SDC docs' advice for CS with several central links:
 

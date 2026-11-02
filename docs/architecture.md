@@ -1,9 +1,9 @@
 # navgrid — architecture
 
-Status: **draft v0.5** (2026-11-01). Companion to [requirements.md](requirements.md). Evidence
+Status: **draft v0.6** (2026-11-02). Companion to [requirements.md](requirements.md). Evidence
 behind the numbers here lives in [engineering/spikes](engineering/spikes/).
-v0.5: heading comes from the HUD, the mesh is absolutely referenced (§11), and a thin web UI is
-planned for later (§9).
+v0.6: the mesh keeps a convergent shared state that carries routing, positions, sideband and
+commands, with the host as controller (§12).
 
 ## 1. Overview
 
@@ -243,8 +243,10 @@ crates/                     no_std, shared by firmware and host
   navgrid-ranging/          CS channel response → distance; channel model for simulation
   navgrid-solver/           multilateration with height sources; tag tracker; frame + pointer;
                             mesh solver later
+  navgrid-mesh/             planned: record store, merge, digests, scopes, routing (§12)
 host/
-  navgrid/                  CLI: sim, track, decode [--json]; later monitor, replay, central solver
+  navgrid/                  CLI: sim, track, decode [--json], monitor, calibrate, cs; later
+                            mesh-sim, replay, central solver, controller
 firmware/                   separate cargo workspace, thumbv8m.main-none-eabihf
   node/                     single firmware image; role from config (D-2)
     src/board.rs            board-dk / board-tag: DC/DC, crystal caps, antenna switch (D-13)
@@ -320,7 +322,8 @@ Monitoring is **our own small engineering tool** (D-16), not an external stack.
   connections whenever devices have queued data.
 - **Timestamps without clock sync.** Records carry the origin's uptime, and each forwarding hop
   adds its residence time, so the sink computes the record's age and timestamps it on arrival.
-  The envelope format is still to be designed.
+  These messages become the Health, Environment and Link records of the shared state (§12),
+  which also carries the age.
 - **One ingest serves three consumers:** the monitor view, the asset registry, and the central
   reference solver all read the same records.
 - **Today:** a DK sink forwards the frames it receives over L2CAP (SPSM `0x0081`) to its
@@ -407,7 +410,125 @@ observations from many places, because indoor magnetic disturbances are local.
 **Versioning (FR-A5).** The host owns the current transform and its version. Positions carry the
 version they were solved in. Re-estimation happens when presets change or the mesh re-solves.
 
-## 12. Decision log
+## 12. Mesh state, routing and control (FR-C)
+
+```
+ node ──contact──▶ node ──contact──▶ sink ──USB──▶ host: controller
+        records flow up the hop-count gradient       global replica, solver, view
+        ◀──── desired state flows down the reverse path ────  commands
+```
+
+FR-C asks for consensus about the mesh state, routing to keep it, positions and the link graph
+built on it, sideband and commands carried in it, and a controller that observes and steers it.
+On a coin-cell mesh that partitions, "consensus" means **convergence**. Every replica that has seen the same writes holds the same state, without voting
+(D-24).
+
+### State model
+
+The state is a set of **records**. Each record has exactly one writer, its origin, and a key
+`(origin, kind, subkey)`:
+
+| Kind | Writer | Content | Held by |
+|---|---|---|---|
+| Node | the node | role, config hash, firmware, frame version seen, hop count to a sink | neighbourhood, sinks |
+| Health | the node | battery, die temperature, uptime, queue depth (FR-S2) | sinks |
+| Environment | the node | BME688 sample (FR-S3); pressure also serves FR-T2 | sinks; pressure in the neighbourhood |
+| Link | the link's initiator | peer, distance, σ, quality, antenna paths, procedures and failures, aggregated over a ranging burst | neighbourhood, sinks |
+| Position | the controller until P2, then the node | position, covariance, frame version | neighbourhood, sinks |
+| Desired | the controller | per-target config or one-shot action, with a sequence | the path to its target |
+| Reported | the node | the last desired sequence applied per key, and status | sinks |
+| Frame | the controller | the versioned mesh→world transform (FR-A5) | everyone |
+
+- **Versions.** Each origin numbers its writes with a monotonic sequence: an epoch bumped at boot
+  (persisted), then a counter. A replica keeps the record with the highest sequence. With one
+  writer per key nothing conflicts, so merging is commutative, associative and idempotent:
+  replicas converge in any order, through any partition.
+- **Derived state** is either a deterministic function of records (the link graph is the set of
+  Link records) or a single-writer record of its own (positions, the frame).
+- **Age and expiry.** Records carry the origin's uptime plus a summed hop residence time
+  (FR-S4, NFR-5), so any replica knows a record's age. Records expire by kind (a Link after it
+  has gone unrefreshed for long enough), and the controller can retire a node.
+
+### Scope: who holds what (D-25)
+
+- **Every node:** its own records, its neighbourhood out to 2 hops (Node, Link, Position, recent
+  pressure), the Frame, the Desired records addressed to it, and its routing state. That is what
+  cooperative localization (FR-M2) and tag node selection (FR-T1) need.
+- **Sinks and the host:** everything. Several sinks merge at the host; merging doesn't depend on
+  order.
+- **Size** *(estimates for the simulator to check)*. A record is about 20–40 B with its key and
+  version, and a node writes about 300 B of them (Node, Health, Environment, Position, about 6
+  Links, Reported).
+  - **A node:** its 2-hop neighbourhood at degree 6 is about 20–35 nodes of Node, Link and
+    Position records, about 4–7 KB whatever the mesh size. Reverse-path entries (about 8 B per
+    origin) do grow with the mesh near a sink: about 4 KB at 500 nodes.
+  - **The global replica:** about 6 KB at 20 nodes and 150 KB at 500. The nRF54L15 has 256 KB
+    of RAM, of which the SDC takes 80–99 KB. A DK sink holds the whole replica at 20 nodes; at
+    500 the host holds it, and the sink relays digests and deltas between the host and its
+    neighbours.
+
+### Sync on contacts
+
+- **When:** sync runs over each mesh link's L2CAP channel while the link is awake to range
+  (D-10), never on a dedicated wake-up (FR-S4).
+- **How:** each side sends a **digest** of what it holds in the scopes they share (per origin,
+  the highest sequence per kind). Each then sends the records the other lacks, by priority:
+  Desired and Frame first, then Position and Link, then Health and Environment. A per-contact byte
+  budget caps the exchange.
+- **Wire format:** postcard + COBS frames as today (D-5), one record per frame.
+
+### Routing (D-26)
+
+- **Up, toward sinks:** a sink's hop count is 0; a node's is one more than its lowest neighbour's,
+  carried in its Node record and its advertisement (FR-M4). Records bound for sinks move to
+  neighbours with a lower hop count. This is gradient routing, store-and-forward, delay-tolerant
+  (D-6). Copies that arrive by several paths merge away. A node keeps a record outside its own
+  scope only until a lower-hop neighbour's digest shows that neighbour has it.
+- **Down, toward a target:** for each origin whose records it forwarded up, a node remembers the
+  neighbour they came from. Desired records follow that reverse path to their target. A node
+  without an entry floods within its neighbourhood scope.
+- **No routing tree** to maintain and no second radio protocol; Q5 stays on BLE.
+
+### Commands are desired state (D-27)
+
+- **What the controller writes:** `Desired { target, key, sequence, value }`, either persistent
+  config (a sensor on or off, a period, diversity, the role) or a one-shot action with its own
+  counter ("blink #7").
+- **How the target applies it:** idempotently. Config converges to the latest value; a one-shot
+  action runs once per new counter. The target then reports `Reported { key, sequence, status }`,
+  and the controller sees the acknowledgement when that record reaches a sink.
+- **Retries, deduplication and ordering** come with the sync: a command waits out a partition and
+  arrives once.
+- **Authentication:** Desired records carry a MAC under a controller key derived from the fleet
+  key (NFR-7), so a node obeys only the controller.
+
+### Positions and the link graph (D-28)
+
+- **Links:** the initiator writes a Link record after each ranging burst, aggregated (median
+  distance, σ, quality), not one per procedure.
+- **Until P2:** the host solves centrally over all Link records (FR-M6) and publishes Position
+  records, with the frame version, as controller records. Nodes use them, e.g. in their
+  advertisements.
+- **From P2:** nodes write their own Position records (FR-M2), and the host solution stays as
+  the reference that validates them.
+
+### The controller
+
+- **The host is the controller.** It holds the global replica merged from its sinks and shows it
+  (`navgrid monitor`). It runs the central solver, and writes Desired records through a sink.
+  Observing is reading the replica; controlling is writing desired state.
+- **A sink is a mesh node at hop count 0 with a USB port.** It syncs with its neighbours like any
+  node and mirrors its replica to the host over serial: records out, Desired in.
+
+### Validation first
+
+- **Shared crate:** a `no_std` crate, `navgrid-mesh`, holds the record store, the merge, digests,
+  scopes and routing tables. Firmware and host share it.
+- **Simulator:** `navgrid mesh-sim` runs the crate over synthetic deployments (nodes, contact
+  schedules, partitions, sink placement, 20 to 500 nodes). It measures convergence time, command
+  latency, bytes per contact and memory per node before any firmware work.
+
+## 13. Decision log
 
 | ID | Decision | Status |
 |---|---|---|
@@ -434,3 +555,8 @@ version they were solved in. Re-estimation happens when presets change or the me
 | D-21 | Engineering records live in `docs/engineering/`: log, known defects, todo, spikes. Design stays in requirements/architecture; evidence goes in spikes. | **Accepted** (repo rule) |
 | D-22 | Absolute referencing from **commissioning presets**: barometry for up; pins and/or preset node-pair bearings for yaw and handedness; one pin for origin. The host owns a versioned mesh→world transform, fitted from a site file (§11). Learning from HUD headings is a later option. | **Accepted** (revised: presets, Q15) |
 | D-23 | Monitoring gets a thin web UI later: one static page plus a JSON endpoint on the host tool, sharing `navgrid monitor`'s state (§9). | Proposed (later) |
+| D-24 | Mesh state is **convergent**: single-writer records with per-origin sequence numbers, merged by keeping the highest. Derived values agree by determinism or by having a single writer. No voting (§12). | **Accepted** (2026-11-02) |
+| D-25 | Replication scope: each node holds its own records, a 2-hop neighbourhood and routing state; sinks and the host hold the global state (§12). | **Accepted** (2026-11-02) |
+| D-26 | Routing rides the sync: a hop-count gradient toward sinks, the reverse path toward targets, store-and-forward on contacts (§12). | Proposed |
+| D-27 | Commands are **desired state**: controller-written, authenticated, sequenced per target; targets apply them idempotently and report what they applied (§12). | **Accepted** (2026-11-02) |
+| D-28 | Positions: the host solves centrally and publishes them as records first; on-node distributed solving (FR-M2) follows and is validated against it (§12). | **Accepted** (2026-11-02) |
