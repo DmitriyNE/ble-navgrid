@@ -7,30 +7,77 @@
 //! - **Confirming:** a freshly swapped-in image confirms itself once the node is back in the mesh
 //!   (a fleet link up). One that isn't within 5 min restarts unconfirmed, and the bootloader puts
 //!   the previous image back.
+//! - **Passing it on:** the header of an installed update is kept ([`servable`]), so the node can
+//!   offer its image to neighbours (`update`).
+//!
+//! After boot the RRAM belongs to MPSL's timeslot driver ([`share_rram`]), shared by this and the
+//! update receiver. Its writes run in timeslots, clear of the radio. Written directly, a 4 KiB page
+//! takes tens of milliseconds, code fetched from RRAM waits meanwhile, and the SoftDevice
+//! Controller asserts (DEF-38).
 
 use core::cell::RefCell;
 
 use defmt::{info, warn};
-use embassy_boot::State;
+use embassy_boot::{FirmwareState, State};
 use embassy_boot_nrf::{BlockingFirmwareUpdater, FirmwareUpdaterConfig};
+use embassy_embedded_hal::flash::partition::Partition;
 use embassy_nrf::Peri;
 use embassy_nrf::peripherals::WDT0;
 use embassy_nrf::rramc::Nvmc;
 use embassy_nrf::wdt::{self, Watchdog};
-use embassy_sync::blocking_mutex::Mutex;
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
+use embassy_sync::blocking_mutex::raw::{NoopRawMutex, ThreadModeRawMutex};
+use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_storage::nor_flash::NorFlash;
-use navgrid_proto::layout::{STAGED_UPDATE, STAGED_UPDATE_LEN};
+use navgrid_proto::layout::{
+    ACTIVE_HEADER, ACTIVE_HEADER_LEN, BOOTLOADER_STATE, BOOTLOADER_STATE_LEN, STAGED_UPDATE, STAGED_UPDATE_LEN,
+};
 use navgrid_proto::{ProvisioningError, UPDATE_HEADER_LEN, UpdateHeader};
+use nrf_sdc::mpsl::Flash;
+use static_cell::StaticCell;
 
 use crate::status;
+
+/// The RRAM once boot is done.
+pub type Rram = Mutex<ThreadModeRawMutex, Flash<'static>>;
+
+/// Hands the RRAM over to MPSL's timeslot driver, after the boot-time writes.
+pub fn share_rram(flash: Flash<'static>) -> &'static Rram {
+    static RRAM: StaticCell<Rram> = StaticCell::new();
+    RRAM.init(Mutex::new(flash))
+}
+
+/// The bootloader's state, through the shared RRAM.
+fn bootloader_state<'a>(
+    rram: &'static Rram,
+    aligned: &'a mut [u8; 16],
+) -> FirmwareState<'a, Partition<'static, ThreadModeRawMutex, Flash<'static>>> {
+    FirmwareState::new(Partition::new(rram, BOOTLOADER_STATE, BOOTLOADER_STATE_LEN), aligned)
+}
+
+/// The header of the image this node runs, if it was installed from an update with this build:
+/// what it can offer its neighbours.
+pub fn servable() -> Option<UpdateHeader> {
+    // SAFETY: memory-mapped RRAM.
+    let page = unsafe { core::slice::from_raw_parts(ACTIVE_HEADER as *const u8, UPDATE_HEADER_LEN) };
+    UpdateHeader::decode(page)
+        .ok()
+        .filter(|h| h.firmware == crate::FIRMWARE)
+}
+
+/// Whether the running image is confirmed. Until it is, the update slot holds the image a revert
+/// would put back, so nothing may write it.
+pub async fn confirmed(rram: &'static Rram) -> bool {
+    let mut aligned = [0u8; 16];
+    matches!(bootloader_state(rram, &mut aligned).get_state().await, Ok(State::Boot))
+}
 
 const FEED_EVERY: Duration = Duration::from_secs(1);
 const CONFIRM_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 #[embassy_executor::task]
-pub async fn run(rram: Nvmc<'static>, wdt: Peri<'static, WDT0>) -> ! {
+pub async fn run(wdt: Peri<'static, WDT0>, rram: &'static Rram) -> ! {
     // Running only if the bootloader started it.
     let mut handle = match wdt::Config::try_new(&wdt).map(|config| Watchdog::try_new::<_, 1>(wdt, config)) {
         Some(Ok((_wdt, [handle]))) => Some(handle),
@@ -43,11 +90,9 @@ pub async fn run(rram: Nvmc<'static>, wdt: Peri<'static, WDT0>) -> ! {
             None
         }
     };
-    let flash = Mutex::<NoopRawMutex, _>::new(RefCell::new(rram));
-    let config = FirmwareUpdaterConfig::from_linkerfile_blocking(&flash, &flash);
     let mut aligned = [0u8; 16];
-    let mut updater = BlockingFirmwareUpdater::new(config, &mut aligned);
-    let mut unconfirmed = match updater.get_state() {
+    let mut state = bootloader_state(rram, &mut aligned);
+    let mut unconfirmed = match state.get_state().await {
         Ok(State::Swap) => {
             info!("firmware: new image, unconfirmed until a fleet link is up");
             true
@@ -55,7 +100,7 @@ pub async fn run(rram: Nvmc<'static>, wdt: Peri<'static, WDT0>) -> ! {
         Ok(State::Revert) => {
             // This image ran confirmed before the update, and updates wait for a confirmed one.
             warn!("firmware: reverted to the previous image");
-            if let Err(e) = updater.mark_booted() {
+            if let Err(e) = state.mark_booted().await {
                 warn!("firmware: confirm: {:?}", e);
             }
             false
@@ -74,7 +119,7 @@ pub async fn run(rram: Nvmc<'static>, wdt: Peri<'static, WDT0>) -> ! {
         if unconfirmed {
             if status::links() > 0 {
                 let t = Instant::now();
-                match updater.mark_booted() {
+                match state.mark_booted().await {
                     Ok(()) => info!(
                         "firmware: image confirmed ({=u64} ms to write)",
                         t.elapsed().as_millis()
@@ -114,7 +159,7 @@ pub fn apply_staged(rram: &mut Nvmc<'_>, signing_key: Option<[u8; 32]>) {
     };
     let t = Instant::now();
     let verified = {
-        let flash = Mutex::<NoopRawMutex, _>::new(RefCell::new(&mut *rram));
+        let flash = BlockingMutex::<NoopRawMutex, _>::new(RefCell::new(&mut *rram));
         let config = FirmwareUpdaterConfig::from_linkerfile_blocking(&flash, &flash);
         let mut aligned = [0u8; 16];
         let mut updater = BlockingFirmwareUpdater::new(config, &mut aligned);
@@ -123,6 +168,15 @@ pub fn apply_staged(rram: &mut Nvmc<'_>, signing_key: Option<[u8; 32]>) {
     discard(rram);
     match verified {
         Ok(()) => {
+            // Kept so the installed image can be passed on (`servable`).
+            let mut line = [0xffu8; 96];
+            line[..UPDATE_HEADER_LEN].copy_from_slice(&header.encode());
+            let kept = rram
+                .erase(ACTIVE_HEADER, ACTIVE_HEADER + ACTIVE_HEADER_LEN)
+                .and_then(|()| rram.write(ACTIVE_HEADER, &line));
+            if let Err(e) = kept {
+                warn!("update: keeping the header: {:?}", e);
+            }
             info!(
                 "update: {} verified in {=u64} ms, restarting into it",
                 header.firmware,

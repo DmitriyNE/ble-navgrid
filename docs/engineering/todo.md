@@ -102,21 +102,16 @@ Protocol follow-ups, in the simulator first:
 
 ## Firmware updates (FR-O2, architecture §13)
 
-Version tracking is done (log 2026-11-03). Next, before stage 3:
+Done (log 2026-11-03): version tracking, the bootloader
+([spike](spikes/2026-11-03-bootloader.md)), signing, and single-hop updates between TAGs
+([spike](spikes/2026-11-03-single-hop-update.md)). Left before stage 3:
 
-The embassy-boot spike is done ([spike](spikes/2026-11-03-bootloader.md)): the bootloader and the
-image at `0xB000` are in place on the TAGs.
-
-Signing is done too: `navgrid sign`, the key provisioned, checked at boot, and `navgrid update`
-stages an update through the probe (log 2026-11-03).
-
-1. [ ] **Single-hop update:**
-       - a bulk L2CAP channel (`0x0083`) into the update slot, with per-page CRCs and resume. The
-         RRAM writes have to keep clear of CS (DEF-38): measure first, then MPSL timeslots if
-         needed. A smaller slot, or buffered writes, shortens the 25 s swap;
-       - the receiver writes the image into the update slot and the header into the staging
-         page, then restarts into the existing check, swap and confirm;
-       - a DK, or the host through the sink, as the sender: `navgrid update FILE --node N001`.
+1. [ ] **The host as the sender, through the sink:** `navgrid update FILE --node N001`. The sink
+       DK needs reflashing and enrolling first (DEF-37).
+2. [ ] **Resume and retry** (DEF-39): pick up from the last page written after a dropout (`Want`
+       carries the offset), and offer again to a peer that declined while unconfirmed.
+3. [ ] **A shorter swap** (DEF-38): a slot closer to the image size, or buffered writes.
+4. [ ] **Test the 5-minute confirm timeout,** and a revert after an over-the-air update.
 
 After stage 4: the desired-firmware record, neighbour-to-neighbour spreading, canary rollout and
 version compatibility during rollouts.

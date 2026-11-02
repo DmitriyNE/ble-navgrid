@@ -4,6 +4,25 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Single-hop updates over the air** ([spike](spikes/2026-11-03-single-hop-update.md)).
+
+- **Built:** a node passes the update it was installed from to a peer over their fleet link, on
+  SPSM `0x0083` (`update.rs`). The peer writes it into its update slot and the staging page, then
+  restarts into the existing check, swap and confirm.
+- **On the bench:** N001 got 0.1.1 through the probe and passed it to N002 over their CS link:
+  500 KB in 67 s (7 KB/s). N002 verified, swapped and confirmed it, and ranging held 11.1/s
+  throughout the transfer. A peer already on the build declines it.
+- **Found on the way:**
+  - **RRAM writes during CS:** blocking 4 KiB page writes cost 7 % of the procedures, and once
+    tripped SoftDevice Controller assert `131:2004`. After boot, RRAM writes now go through MPSL
+    timeslots (`nrf_mpsl::Flash`). DEF-38 is now only the swap time.
+  - **Closing the channel too early:** the sender dropped it right after the last chunk, and the
+    receiver lost the tail. The receiver now acknowledges.
+  - **Updates on an unconfirmed node:** they would overwrite the image a revert needs, so such a
+    node declines them.
+- **Flashing:** `navgrid flash` now also blanks the kept and staged update headers, so a
+  probe-flashed image never offers itself under a stale header.
+
 **Signed updates.**
 
 - **Keys:** `navgrid fleet init` adds an Ed25519 signing key, and `navgrid provision` writes its

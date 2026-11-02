@@ -213,6 +213,80 @@ pub mod layout {
     /// checked.
     pub const STAGED_UPDATE: u32 = 0x0017_A000;
     pub const STAGED_UPDATE_LEN: u32 = 4096;
+    /// The header of the update this image was installed from, kept so the node can pass the
+    /// image on to its neighbours.
+    pub const ACTIVE_HEADER: u32 = 0x0017_9000;
+    pub const ACTIVE_HEADER_LEN: u32 = 4096;
+}
+
+/// L2CAP channel for firmware updates between neighbours (architecture §13).
+pub const UPDATE_SPSM: u16 = 0x0083;
+/// Image bytes per [`UpdateMsg::Data`]: one SDU (245 bytes) with its framing, and whole 16-byte
+/// RRAM lines.
+pub const UPDATE_CHUNK: usize = 224;
+
+/// One SDU of an update transfer. A node that runs an installed update offers it; a neighbour
+/// that wants it says where to start, and the sender streams the image to the end. The receiver
+/// answers `Done` once it has the image stored, and the sender keeps the channel open until then:
+/// closing it drops whatever the receiver hasn't read yet.
+///
+/// Fixed layout, little-endian: a tag byte, then `Offer` the encoded [`UpdateHeader`], `Want`
+/// the start offset, `Data` the offset and the bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateMsg<'a> {
+    Offer(UpdateHeader),
+    Want { from: u32 },
+    Decline,
+    Data { offset: u32, bytes: &'a [u8] },
+    Done,
+}
+
+impl<'a> UpdateMsg<'a> {
+    /// The encoded message; `buf` needs [`UPDATE_HEADER_LEN`] + 1 or [`UPDATE_CHUNK`] + 5 bytes.
+    pub fn encode<'b>(&self, buf: &'b mut [u8]) -> &'b [u8] {
+        let len = match *self {
+            Self::Offer(h) => {
+                buf[0] = 1;
+                buf[1..1 + UPDATE_HEADER_LEN].copy_from_slice(&h.encode());
+                1 + UPDATE_HEADER_LEN
+            }
+            Self::Want { from } => {
+                buf[0] = 2;
+                buf[1..5].copy_from_slice(&from.to_le_bytes());
+                5
+            }
+            Self::Decline => {
+                buf[0] = 3;
+                1
+            }
+            Self::Data { offset, bytes } => {
+                buf[0] = 4;
+                buf[1..5].copy_from_slice(&offset.to_le_bytes());
+                buf[5..5 + bytes.len()].copy_from_slice(bytes);
+                5 + bytes.len()
+            }
+            Self::Done => {
+                buf[0] = 5;
+                1
+            }
+        };
+        &buf[..len]
+    }
+
+    pub fn decode(b: &'a [u8]) -> Option<Self> {
+        let word = |i: usize| Some(u32::from_le_bytes(b.get(i..i + 4)?.try_into().ok()?));
+        Some(match *b.first()? {
+            1 => Self::Offer(UpdateHeader::decode(&b[1..]).ok()?),
+            2 => Self::Want { from: word(1)? },
+            3 => Self::Decline,
+            4 => Self::Data {
+                offset: word(1)?,
+                bytes: &b[5..],
+            },
+            5 => Self::Done,
+            _ => return None,
+        })
+    }
 }
 
 /// What a signed update says about its image (D-35). `navgrid sign` writes it in front of the
@@ -765,6 +839,32 @@ mod tests {
         bad[30] ^= 1;
         assert_eq!(UpdateHeader::decode(&bad), Err(ProvisioningError::Corrupt));
         assert_eq!(UpdateHeader::decode(&[0xff; 4096]), Err(ProvisioningError::Blank));
+    }
+
+    #[test]
+    fn update_messages_roundtrip() {
+        let header = UpdateHeader {
+            firmware: Firmware::new(0, 1, 1, 7, false),
+            len: 1000,
+            signature: [9; 64],
+        };
+        let data = [0x42u8; UPDATE_CHUNK];
+        let mut buf = [0u8; UPDATE_CHUNK + 5];
+        for msg in [
+            UpdateMsg::Offer(header),
+            UpdateMsg::Want { from: 4096 },
+            UpdateMsg::Decline,
+            UpdateMsg::Data {
+                offset: 224,
+                bytes: &data,
+            },
+            UpdateMsg::Done,
+        ] {
+            let encoded = msg.encode(&mut buf).to_vec();
+            assert!(encoded.len() <= 245);
+            assert_eq!(UpdateMsg::decode(&encoded), Some(msg));
+        }
+        assert_eq!(UpdateMsg::decode(&[9]), None);
     }
 
     #[test]

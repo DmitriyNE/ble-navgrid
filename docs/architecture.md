@@ -662,14 +662,21 @@ replica keeps a class whole or not at all.
 |---|---|---|
 | bootloader | 0x000000 | 32 KiB |
 | bootloader state | 0x008000 | 12 KiB (embassy-boot needs four 16-byte progress lines per page) |
-| active image | 0x00B000 | 720 KiB; today's image is 415 KiB |
+| active image | 0x00B000 | 720 KiB; today's image is 489 KiB |
 | update slot | 0x0BF000 | 724 KiB (one page more than active, for the swap) |
-| spare | 0x174000 | 24 KiB |
+| spare | 0x174000 | 20 KiB |
+| kept update header | 0x179000 | 4 KiB: the header of the update this image came from |
 | staged update header | 0x17A000 | 4 KiB |
 | provisioning, boot epoch | 0x17B000 | 4 + 4 KiB, as before |
 
 `navgrid_proto::layout` holds the same addresses. `navgrid flash --bootloader` writes the
-bootloader once per device, and every flash blanks the state region.
+bootloader once per device. Every flash blanks the state region and both update headers.
+
+**RRAM writes after boot** go through MPSL timeslots (`nrf_mpsl::Flash`), as in NCS. Written
+directly, a 4 KiB page keeps the RRAM busy for tens of milliseconds, and the radio's interrupts
+wait for it: ranging lost 7 % of its procedures, and once the controller asserted
+([spike](engineering/spikes/2026-11-03-single-hop-update.md)). Writes at boot, before MPSL
+starts, stay direct.
 
 **Signing (D-35, built).**
 - **Keys:** an Ed25519 key pair in the fleet directory (`signing.key`), separate from the fleet
@@ -681,18 +688,29 @@ bootloader once per device, and every flash blanks the state region.
   (embassy-boot's `verify_and_mark_updated`), at boot before the radio starts, in about 1.1 s.
   It takes nothing without a provisioned key, and a leaked fleet key still can't install firmware.
 - **Staging:** an update waits for the check with its image in the update slot and its header in
-  the staging page. `navgrid update FILE --probe P` stages one through the probe; the BLE
-  transfer will write the same two things.
+  the staging page. `navgrid update FILE --probe P` stages one through the probe, and the BLE
+  transfer writes the same two things.
 
-**Single hop first (D-36), before stage 3.**
-- **Transfer:** a DK, or the field tool, connects to a TAG over a fleet link. It pushes the image
-  page by page on a bulk L2CAP channel (SPSM `0x0083`) into the update slot, with a per-page CRC,
-  resuming where it left off after a dropout.
-- **Install:** the TAG checks the hash and signature, marks the update, and restarts. The new
-  image confirms itself only once it is back in the mesh (a fleet link encrypted within 5 min);
-  otherwise the bootloader reverts it.
-- **Why first:** at 100 kHz SWD (DEF-19), reflashing 20 TAGs takes about 2 min per probe,
-  probes and DK adapters are scarce, and an update over BLE takes seconds.
+**Single hop first (D-36), built.**
+- **Transfer** (`update.rs`): a node that runs an installed update offers it on its fleet links.
+  The header it was installed from is kept for that, at `0x179000`. A peer on another build asks
+  for it, and the image streams in 224-byte chunks on a bulk L2CAP channel (SPSM `0x0083`). The
+  receiver answers once it has stored it all, and only then does the sender close the channel.
+  Today the initiator offers on its CS link.
+- **Install:** the receiver writes the update slot and the staging page, then restarts into the
+  check at boot, the swap and the confirm, as for a probe-staged update. The new image confirms
+  itself only once it is back in the mesh (a fleet link encrypted within 5 min); otherwise the
+  bootloader reverts it.
+- **Declining:** a peer already on the offered build declines it. So does one whose image isn't
+  confirmed yet: its update slot still holds the image a revert would put back.
+- **Measured** ([spike](engineering/spikes/2026-11-03-single-hop-update.md)): about 7 KB/s, one
+  chunk per 30 ms connection event, so a 490 KB image takes 70 s. Ranging on the same link holds
+  11.1/s throughout. Ranging then stops for about 35 s while the receiver checks the image, swaps
+  it and reconnects.
+- **Not yet:** resuming after a dropout (`Want` carries the start offset for it), and the host
+  as the sender through the sink.
+- **Why first:** at 100 kHz SWD (DEF-19), reflashing 20 TAGs takes about 2 min per probe, and
+  probes and DK adapters are scarce.
 
 **Mesh-wide later (D-36), after stage 4.**
 - **Announce:** the controller writes a *desired firmware* record (ID, size, SHA-256, signature,

@@ -1259,6 +1259,7 @@ dependencies = [
  "embassy-boot-nrf",
  "embassy-crypto",
  "embassy-crypto-rustcrypto",
+ "embassy-embedded-hal",
  "embassy-executor",
  "embassy-futures",
  "embassy-nrf",

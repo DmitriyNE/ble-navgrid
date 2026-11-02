@@ -23,6 +23,7 @@ mod status;
 mod store;
 #[cfg(feature = "board-tag")]
 mod ui;
+mod update;
 
 use core::cell::Cell;
 
@@ -204,10 +205,11 @@ async fn main(spawner: Spawner) {
     // Priority 0 belongs to MPSL's radio scheduling (mpsl.h: MPSL_HIGH_IRQ_PRIORITY).
     config.time_interrupt_priority = embassy_nrf::interrupt::Priority::P2;
     config.gpiote_interrupt_priority = embassy_nrf::interrupt::Priority::P2;
-    let p = embassy_nrf::init(config);
+    let mut p = embassy_nrf::init(config);
 
-    // RRAM writes happen here, before MPSL starts, so none lands in radio activity.
-    let mut rram = Nvmc::new(p.RRAMC);
+    // RRAM writes happen here, before MPSL starts, so none lands in radio activity; MPSL's timeslot
+    // driver takes the RRAM after.
+    let mut rram = Nvmc::new(p.RRAMC.reborrow());
     #[cfg(feature = "board-tag")]
     let (mut led, mut button) = (ui::Led::new(p.P2_08, p.P2_10, p.P2_09), ui::button(p.P0_00));
     #[cfg(feature = "board-tag")]
@@ -244,7 +246,6 @@ async fn main(spawner: Spawner) {
     #[cfg(not(feature = "board-tag"))]
     let _ = corrupt;
     spawner.spawn(unwrap!(battery::run(p.SAADC)));
-    spawner.spawn(unwrap!(firmware::run(rram, p.WDT0)));
     let antennas = if node_cfg.diversity { board::ANTENNAS } else { 1 };
     #[cfg(feature = "board-tag")]
     board::antenna::init(p.P1_09, p.P1_10);
@@ -270,9 +271,18 @@ async fn main(spawner: Spawner) {
         accuracy_ppm: 50,
         skip_wait_lfclk_started: false,
     };
+    // One timeslot session: the RRAM driver's.
+    static SESSIONS: StaticCell<mpsl::SessionMem<1>> = StaticCell::new();
     static MPSL: StaticCell<MultiprotocolServiceLayer> = StaticCell::new();
-    let mpsl = MPSL.init(unwrap!(MultiprotocolServiceLayer::new(mpsl_p, Irqs, lfclk_cfg)));
-    spawner.spawn(unwrap!(mpsl_task(&*mpsl)));
+    let mpsl: &'static MultiprotocolServiceLayer = MPSL.init(unwrap!(MultiprotocolServiceLayer::with_timeslots(
+        mpsl_p,
+        Irqs,
+        lfclk_cfg,
+        SESSIONS.init(mpsl::SessionMem::new())
+    )));
+    spawner.spawn(unwrap!(mpsl_task(mpsl)));
+    let rram = firmware::share_rram(mpsl::Flash::take(mpsl, p.RRAMC));
+    spawner.spawn(unwrap!(firmware::run(p.WDT0, rram)));
 
     let sdc_p = sdc::Peripherals::new(
         p.PPI00_CH1,
@@ -339,6 +349,7 @@ async fn main(spawner: Spawner) {
     let stack = trouble_host::new(sdc, &mut resources)
         .set_random_address(Address::random(addr))
         .register_l2cap_spsm(navgrid_proto::TELEMETRY_SPSM)
+        .register_l2cap_spsm(navgrid_proto::UPDATE_SPSM)
         .build();
     let mut runner = stack.runner();
 
@@ -383,7 +394,7 @@ async fn main(spawner: Spawner) {
                 );
                 join(ranging, report::health(mpsl, node, FIRMWARE)).await;
             }
-            None => reflector(&stack, &fleet, &beacons, &adv_params).await,
+            None => reflector(&stack, &fleet, &beacons, &adv_params, rram).await,
         }
     };
     // The runner returns only on an error, e.g. an HCI event bt-hci can't parse; everything stops
@@ -405,6 +416,7 @@ async fn reflector(
     fleet: &keys::Fleet,
     beacons: &beacon::Beacons,
     params: &AdvertisementParameters,
+    rram: &'static firmware::Rram,
 ) {
     let mut peripheral = stack.peripheral();
     loop {
@@ -416,7 +428,7 @@ async fn reflector(
         if let Err(e) = cs::reflect(stack, conn.handle()).await {
             warn!("CS: {}", e);
         }
-        serve(stack, &conn, fleet).await;
+        select(serve(stack, &conn, fleet), update::listen(stack, &conn, rram)).await;
     }
 }
 
@@ -652,11 +664,14 @@ async fn ranging(
             Err(e) => warn!("CS: {}", e),
         }
         // Also catches a sink link that connected while this one was being set up.
-        if let Either::Second(()) = select(serve(stack, &conn, fleet), links.respace.wait()).await {
-            info!("CS link: reconnecting after the sink link (DEF-26)");
-            conn.disconnect();
-            serve(stack, &conn, fleet).await;
-        }
+        let serving = async {
+            if let Either::Second(()) = select(serve(stack, &conn, fleet), links.respace.wait()).await {
+                info!("CS link: reconnecting after the sink link (DEF-26)");
+                conn.disconnect();
+                serve(stack, &conn, fleet).await;
+            }
+        };
+        join(serving, update::offer(stack, &conn)).await;
         links.cs.set(false);
     }
 }

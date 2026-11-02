@@ -4,13 +4,16 @@
 //!
 //! Images run under the bootloader: `--bootloader` writes it too, which a device needs once.
 //! Every flash blanks the bootloader's state, so nothing left in the update slot gets swapped over
-//! the image just written.
+//! the image just written, and the staged and kept update headers: the image wasn't installed from
+//! an update, so it has none to offer its neighbours.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use navgrid_proto::NodeId;
-use navgrid_proto::layout::{BOOTLOADER_STATE, BOOTLOADER_STATE_LEN};
+use navgrid_proto::layout::{
+    ACTIVE_HEADER, ACTIVE_HEADER_LEN, BOOTLOADER_STATE, BOOTLOADER_STATE_LEN, STAGED_UPDATE, STAGED_UPDATE_LEN,
+};
 
 use crate::fleet::{Fleet, FleetArgs, label_name, today};
 use crate::probe;
@@ -51,18 +54,24 @@ pub fn run(args: &FlashArgs) -> Result<()> {
     let state = std::env::temp_dir().join(format!("navgrid-boot-state-{}.bin", std::process::id()));
     std::fs::write(&state, vec![0xffu8; BOOTLOADER_STATE_LEN as usize])
         .with_context(|| format!("writing {}", state.display()))?;
+    // And blank update headers, kept and staged, which sit next to each other.
+    assert_eq!(ACTIVE_HEADER + ACTIVE_HEADER_LEN, STAGED_UPDATE);
+    let headers = std::env::temp_dir().join(format!("navgrid-headers-{}.bin", std::process::id()));
+    std::fs::write(&headers, vec![0xffu8; (ACTIVE_HEADER_LEN + STAGED_UPDATE_LEN) as usize])
+        .with_context(|| format!("writing {}", headers.display()))?;
     let results: Vec<(String, Result<NodeId>)> = std::thread::scope(|s| {
         let jobs: Vec<_> = args
             .probes
             .iter()
             .map(|p| {
-                let (elf, bootloader, state) = (&args.elf, &args.bootloader, &state);
+                let (elf, bootloader, state, headers) = (&args.elf, &args.bootloader, &state, &headers);
                 s.spawn(move || {
                     let id = probe::read_id(Some(p))?;
                     if let Some(bootloader) = bootloader {
                         probe::download(Some(p), bootloader, None)?;
                     }
                     probe::download(Some(p), state, Some(BOOTLOADER_STATE))?;
+                    probe::download(Some(p), headers, Some(ACTIVE_HEADER))?;
                     probe::download(Some(p), elf, None)?;
                     probe::reset(Some(p))?;
                     Ok(id)
@@ -76,6 +85,7 @@ pub fn run(args: &FlashArgs) -> Result<()> {
             .collect()
     });
     let _ = std::fs::remove_file(&state);
+    let _ = std::fs::remove_file(&headers);
     let fleet = Fleet::open(&args.fleet).ok();
     let mut registry = fleet.as_ref().map(Fleet::registry).transpose()?;
     let mut failed = 0;
