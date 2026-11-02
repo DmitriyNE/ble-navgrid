@@ -42,3 +42,14 @@ cost in spread? The starting point was a 50 ms connection with a procedure every
   update after the capability exchange, since the path count is known only then.
 - **The median moved with the configuration** (3.33–3.91 m at one placement), so a calibration has
   to be keyed by timing configuration as well as by mode.
+
+## One path, after the 2.5 ms ACL events
+
+Firmware `1c72aa1` (2.5 ms ACL events, scheduled uplink) with diversity off. The initiator asked
+for a procedure every connection event. The SDC granted every 2 ("event interval 2"): 16.7/s, none
+empty, with the uplink up. Shorter ACL events don't lift the two-event minimum.
+
+33/s needs a 15 ms connection. There, a one-path CS event fills about 14 ms of every other 15 ms
+frame, and the free frames' parity is not under our control. That leaves no dependable room for a
+second link on the node: an uplink or another ranging link. A 15 ms connection suits a dedicated
+one-to-one link only.

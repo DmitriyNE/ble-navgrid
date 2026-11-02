@@ -40,8 +40,9 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       (the SDC rejects mixing the legacy and extended sets; DEF-17).
 - [ ] **Diversity evaluation** (DEF-25): per-path ranges at several placements against measured
       distances. Find out why path 3 is bad, and pick the path combiner on accuracy.
-- [ ] **One-path rate:** after the capability exchange, move one-path links to a 15 ms
-      connection (33 Hz instead of 16.7; spike 2026-11-02-cs-ranging-rate).
+- [ ] **One-path rate, opt-in:** a 15 ms connection gives one-path links 33/s instead of 16.7,
+      but leaves no room for a second link (spike 2026-11-02-cs-ranging-rate). Decide with
+      multi-link scheduling; candidate use: the dedicated final-approach link (D-20).
 - [ ] **Cross-check estimator:** compare against NCS v3.4.1 `ipt_*` / `ras_*` samples and `cs_de`
       on the same captures; settle sign and units (DEF-6).
 - [ ] **Energy per activity** with a power profiler on a TAG: advertising, idle link, CS per
