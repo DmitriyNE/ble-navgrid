@@ -34,7 +34,7 @@ embassy-crypto = { git = "https://github.com/embassy-rs/embassy.git", rev = "bd3
 embassy-crypto-rustcrypto = { git = "https://github.com/embassy-rs/embassy.git", rev = "bd35bd7a7d19147c8bcae9c2eda99b25e597294c", features = ["embassy-crypto-aes128-ecb", "embassy-crypto-aes128-cmac", "embassy-crypto-p256-ecdh"] }
 rand_chacha = { version = "0.9", default-features = false }
 # Under the bootloader (firmware.rs, ../bootloader).
-embassy-boot = { version = "0.7", features = ["defmt"] }
+embassy-boot = { version = "0.7", features = ["defmt", "ed25519-dalek"] }
 embassy-boot-nrf = { version = "0.12", features = ["defmt"] }
 # Fleet-key link keys (keys.rs) and RRAM storage (store.rs).
 aes = "0.9.3"

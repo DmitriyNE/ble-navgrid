@@ -98,6 +98,13 @@ pub fn run(args: &ProvisionArgs) -> Result<()> {
         .number
         .or_else(|| id.and_then(|id| registry.by_id(id)).map(|d| d.number))
         .or_else(|| id.map(|_| registry.next_number()));
+    let signing_key = match fleet.signing_key() {
+        Ok(k) => Some(k.verifying_key().to_bytes()),
+        Err(e) => {
+            println!("no signing key ({e:#}); the device will take no updates. `navgrid fleet init` makes one.");
+            None
+        }
+    };
     let p = Provisioning {
         config: NodeConfig {
             role: args.role.into(),
@@ -111,6 +118,7 @@ pub fn run(args: &ProvisionArgs) -> Result<()> {
         peer: args.peer,
         sink: args.sink,
         number,
+        signing_key,
     };
     let mut buf = [0u8; MAX_PROVISIONING_LEN];
     let page = navgrid_proto::encode_provisioning(&p, &mut buf)?;

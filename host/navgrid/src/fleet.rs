@@ -2,6 +2,8 @@
 //!
 //! ```text
 //! fleet.key       the fleet key, 32 hex digits; secret, never in git
+//! signing.key     the Ed25519 seed firmware updates are signed with (D-35), 64 hex digits;
+//!                 secret, never in git
 //! devices.json    every enrolled device: fleet number, node ID, role, enrolment date, status
 //! labels/         one SVG label per device: fleet number and a QR code of its ID
 //! ```
@@ -120,12 +122,14 @@ impl Fleet {
         let dir = args.dir()?;
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let fleet = Self { dir };
-        let key = fleet.dir.join("fleet.key");
-        if key.exists() {
-            println!("keeping the fleet key in {}", key.display());
-        } else {
-            new_key(&key)?;
-            println!("wrote a new fleet key to {}", key.display());
+        for (file, len, what) in [("fleet.key", 16, "fleet key"), ("signing.key", 32, "signing key")] {
+            let path = fleet.dir.join(file);
+            if path.exists() {
+                println!("keeping the {what} in {}", path.display());
+            } else {
+                new_key(&path, len)?;
+                println!("wrote a new {what} to {}", path.display());
+            }
         }
         if !fleet.registry_path().exists() {
             fleet.save(&Registry::default())?;
@@ -136,6 +140,12 @@ impl Fleet {
 
     pub fn key(&self) -> Result<[u8; 16]> {
         read_key(&self.dir.join("fleet.key"))
+    }
+
+    /// The key updates are signed with; `fleet init` creates it.
+    pub fn signing_key(&self) -> Result<ed25519_dalek::SigningKey> {
+        let seed: [u8; 32] = read_key(&self.dir.join("signing.key"))?;
+        Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
     }
 
     fn registry_path(&self) -> PathBuf {
@@ -200,24 +210,24 @@ pub fn label_svg(number: u16, id: NodeId) -> Result<String> {
     ))
 }
 
-/// Reads a fleet key file: 32 hex digits.
-fn read_key(path: &Path) -> Result<[u8; 16]> {
+/// Reads a key file: `N` bytes as hex.
+fn read_key<const N: usize>(path: &Path) -> Result<[u8; N]> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let hex = text.trim();
-    if hex.len() != 32 {
-        bail!("{}: a fleet key is 32 hex digits", path.display());
+    if hex.len() != 2 * N {
+        bail!("{}: expected {} hex digits", path.display(), 2 * N);
     }
-    let mut key = [0u8; 16];
+    let mut key = [0u8; N];
     for (i, b) in key.iter_mut().enumerate() {
         *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).with_context(|| format!("{}: not hex", path.display()))?;
     }
     Ok(key)
 }
 
-/// A new random fleet key, readable by its owner only.
-fn new_key(path: &Path) -> Result<()> {
+/// A new random key of `len` bytes, readable by its owner only.
+fn new_key(path: &Path, len: usize) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
-    let mut key = [0u8; 16];
+    let mut key = vec![0u8; len];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut key))
         .context("reading /dev/urandom")?;

@@ -277,7 +277,7 @@ Decided 2026-11-03 (firmware, architecture §13):
 | ID | Question | Decision |
 |---|---|---|
 | — | When over-the-air updates come | **Single hop soon**, before stage 3: the bootloader plus updates from a DK over one link, since stage 3 means reflashing many TAGs. Mesh-wide spreading after stage 4 (FR-O2). |
-| — | How images are authenticated | **A separate Ed25519 signing key** on the host; the bootloader holds the public key. A leaked fleet key can't install firmware. |
+| — | How images are authenticated | **A separate Ed25519 signing key** on the host; devices are provisioned with the public key and check every update against it. A leaked fleet key can't install firmware. |
 
 Open:
 

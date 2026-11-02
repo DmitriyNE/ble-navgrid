@@ -8,6 +8,7 @@ mod monitor;
 mod probe;
 mod provision;
 mod scenario;
+mod sign;
 mod track;
 
 use std::path::PathBuf;
@@ -65,6 +66,10 @@ enum Cmd {
     Provision(provision::ProvisionArgs),
     /// Flash firmware through one or more probes at once, and record the build in the registry.
     Flash(flash::FlashArgs),
+    /// Make a signed update file from a firmware ELF, with the fleet's signing key.
+    Sign(sign::SignArgs),
+    /// Stage a signed update on a device through its probe; it checks and installs it at boot.
+    Update(sign::UpdateArgs),
     /// The fleet directory: key, device registry, labels.
     #[command(subcommand)]
     Fleet(FleetCmd),
@@ -99,6 +104,8 @@ fn main() -> Result<()> {
         Cmd::MeshSim(args) => mesh_sim::run(&args),
         Cmd::Provision(args) => provision::run(&args),
         Cmd::Flash(args) => flash::run(&args),
+        Cmd::Sign(args) => sign::run_sign(&args),
+        Cmd::Update(args) => sign::run_update(&args),
         Cmd::Fleet(FleetCmd::Init(args)) => fleet::Fleet::init(&args).map(|_| ()),
         Cmd::Fleet(FleetCmd::List(args)) => fleet::list(&args),
     }

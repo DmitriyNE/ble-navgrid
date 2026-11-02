@@ -227,6 +227,8 @@ async fn main(spawner: Spawner) {
             (None, true)
         }
     };
+    // Before MPSL too: it writes RRAM, and may restart into an update.
+    firmware::apply_staged(&mut rram, provisioning.and_then(|p| p.signing_key));
     let node_cfg = provisioning.map_or_else(NodeConfig::default, |p| p.config);
     let number = provisioning.and_then(|p| p.number);
     status::set_identity(provisioning.is_some(), node_cfg.role == Role::Sink);

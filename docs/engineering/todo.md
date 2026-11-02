@@ -107,14 +107,16 @@ Version tracking is done (log 2026-11-03). Next, before stage 3:
 The embassy-boot spike is done ([spike](spikes/2026-11-03-bootloader.md)): the bootloader and the
 image at `0xB000` are in place on the TAGs.
 
-1. [ ] **Signing:** `navgrid sign` (an Ed25519 key in the fleet directory, kept apart from
-       `fleet.key`), and the public key built into the bootloader.
-2. [ ] **Single-hop update:**
+Signing is done too: `navgrid sign`, the key provisioned, checked at boot, and `navgrid update`
+stages an update through the probe (log 2026-11-03).
+
+1. [ ] **Single-hop update:**
        - a bulk L2CAP channel (`0x0083`) into the update slot, with per-page CRCs and resume. The
          RRAM writes have to keep clear of CS (DEF-38): measure first, then MPSL timeslots if
          needed. A smaller slot, or buffered writes, shortens the 25 s swap;
-       - verify, swap, and confirm once back in the mesh;
-       - a DK, or the host through the sink, as the sender: `navgrid update N001 image.bin`.
+       - the receiver writes the image into the update slot and the header into the staging
+         page, then restarts into the existing check, swap and confirm;
+       - a DK, or the host through the sink, as the sender: `navgrid update FILE --node N001`.
 
 After stage 4: the desired-firmware record, neighbour-to-neighbour spreading, canary rollout and
 version compatibility during rollouts.

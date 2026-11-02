@@ -92,6 +92,8 @@ cargo run -p navgrid -- flash firmware/target/thumbv8m.main-none-eabihf/release/
     --probe <A> --probe <B>                                # firmware onto several devices at once, recorded
     # add --bootloader firmware/bootloader/target/thumbv8m.main-none-eabihf/release/navgrid-bootloader
     # once per device (build it with `cd firmware/bootloader && cargo build --release`)
+cargo run -p navgrid -- sign firmware/target/thumbv8m.main-none-eabihf/release/navgrid-node --out fw.nup
+cargo run -p navgrid -- update fw.nup --probe <A>      # signed update: checked on the device, swapped in
 cd firmware && cargo tag                                    # each board; note "navgrid node <id>"
 ```
 

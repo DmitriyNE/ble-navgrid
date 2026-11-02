@@ -664,15 +664,25 @@ replica keeps a class whole or not at all.
 | bootloader state | 0x008000 | 12 KiB (embassy-boot needs four 16-byte progress lines per page) |
 | active image | 0x00B000 | 720 KiB; today's image is 415 KiB |
 | update slot | 0x0BF000 | 724 KiB (one page more than active, for the swap) |
-| spare | 0x174000 | 28 KiB |
+| spare | 0x174000 | 24 KiB |
+| staged update header | 0x17A000 | 4 KiB |
 | provisioning, boot epoch | 0x17B000 | 4 + 4 KiB, as before |
 
 `navgrid_proto::layout` holds the same addresses. `navgrid flash --bootloader` writes the
 bootloader once per device, and every flash blanks the state region.
 
-**Signing (D-35).** An Ed25519 key pair on the host, separate from the fleet key; the
-bootloader holds the public key. `navgrid sign` makes an update image: a header (firmware ID, size,
-SHA-256) and a signature. A leaked fleet key still can't install firmware.
+**Signing (D-35, built).**
+- **Keys:** an Ed25519 key pair in the fleet directory (`signing.key`), separate from the fleet
+  key. `navgrid provision` writes the public key into the device's provisioning page.
+- **Update files:** `navgrid sign ELF --out FILE` makes one: an 88-byte `UpdateHeader` (build,
+  length, a signature over the image's SHA-512 digest, CRC), then the raw image for the active
+  slot.
+- **Verification:** the running firmware checks an update before handing it to the bootloader
+  (embassy-boot's `verify_and_mark_updated`), at boot before the radio starts, in about 1.1 s.
+  It takes nothing without a provisioned key, and a leaked fleet key still can't install firmware.
+- **Staging:** an update waits for the check with its image in the update slot and its header in
+  the staging page. `navgrid update FILE --probe P` stages one through the probe; the BLE
+  transfer will write the same two things.
 
 **Single hop first (D-36), before stage 3.**
 - **Transfer:** a DK, or the field tool, connects to a TAG over a fleet link. It pushes the image
@@ -776,5 +786,5 @@ The DK sink shows host link and connected nodes on its four LEDs.
 | D-32 | Every operation works through the host and the mesh; a field tool (laptop + DK as a portable sink) does the same in seconds on site (§13). | **Accepted** (2026-11-02) |
 | D-33 | Every build carries its version, commit and dirty flag, reported at boot, in Health and in node records; `navgrid flash` records what each device got (§13). | **Accepted** (built 2026-11-03) |
 | D-34 | The bootloader is embassy-boot: active and update slots in RRAM, swap with rollback (§13). | **Accepted** (spike 2026-11-03) |
-| D-35 | Firmware images are signed with an Ed25519 key separate from the fleet key; the bootloader verifies them (§13). | **Accepted** (2026-11-03) |
+| D-35 | Firmware images are signed with an Ed25519 key separate from the fleet key, whose public part is provisioned; the running firmware verifies an update before the bootloader takes it (§13). | **Accepted** (built 2026-11-03) |
 | D-36 | Over-the-air updates come single hop first (before stage 3), then spread mesh-wide over a bulk channel with controller-scheduled, canary-first rollout (after stage 4) (§13). | **Accepted** (2026-11-03) |

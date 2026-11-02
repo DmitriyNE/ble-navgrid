@@ -173,6 +173,19 @@ pub struct Provisioning {
     pub sink: Option<NodeId>,
     /// The fleet number on its label (`N042`), assigned at enrolment (D-31).
     pub number: Option<u16>,
+    /// The Ed25519 public key that firmware updates must be signed with (D-35). Without one the
+    /// device takes no updates.
+    pub signing_key: Option<[u8; 32]>,
+}
+
+/// Format 2 of the page, before the signing key.
+#[derive(Deserialize)]
+struct ProvisioningV2 {
+    config: NodeConfig,
+    fleet_key: [u8; 16],
+    peer: Option<NodeId>,
+    sink: Option<NodeId>,
+    number: Option<u16>,
 }
 
 /// Format 1 of the page, before fleet numbers.
@@ -196,6 +209,73 @@ pub mod layout {
     /// Where an update waits for the bootloader to swap it in.
     pub const DFU: u32 = 0x000B_F000;
     pub const DFU_LEN: u32 = 724 * 1024;
+    /// The [`UpdateHeader`](crate::UpdateHeader) of an update written to [`DFU`] but not yet
+    /// checked.
+    pub const STAGED_UPDATE: u32 = 0x0017_A000;
+    pub const STAGED_UPDATE_LEN: u32 = 4096;
+}
+
+/// What a signed update says about its image (D-35). `navgrid sign` writes it in front of the
+/// image; a device keeps it in [`layout::STAGED_UPDATE`] until it has checked the image in the
+/// update slot.
+///
+/// Fixed layout, little-endian: magic `ngup`, format (1), flags (bit 0 dirty), 2 reserved bytes,
+/// version, commit, image length, the 64-byte Ed25519 signature over the image's SHA-512 digest
+/// (as embassy-boot verifies it), and a CRC-32 of everything before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UpdateHeader {
+    pub firmware: Firmware,
+    pub len: u32,
+    pub signature: [u8; 64],
+}
+
+pub const UPDATE_HEADER_LEN: usize = 88;
+const UPDATE_MAGIC: [u8; 4] = *b"ngup";
+const UPDATE_FORMAT: u8 = 1;
+
+impl UpdateHeader {
+    pub fn encode(&self) -> [u8; UPDATE_HEADER_LEN] {
+        let mut b = [0u8; UPDATE_HEADER_LEN];
+        b[..4].copy_from_slice(&UPDATE_MAGIC);
+        b[4] = UPDATE_FORMAT;
+        b[5] = u8::from(self.firmware.dirty);
+        b[8..12].copy_from_slice(&self.firmware.version.to_le_bytes());
+        b[12..16].copy_from_slice(&self.firmware.commit.to_le_bytes());
+        b[16..20].copy_from_slice(&self.len.to_le_bytes());
+        b[20..84].copy_from_slice(&self.signature);
+        let crc = crc32(&b[..84]);
+        b[84..88].copy_from_slice(&crc.to_le_bytes());
+        b
+    }
+
+    /// Decodes a header, as `navgrid sign` writes it or as read from the staging page.
+    pub fn decode(b: &[u8]) -> Result<Self, ProvisioningError> {
+        let b = b.get(..UPDATE_HEADER_LEN).ok_or(ProvisioningError::Corrupt)?;
+        if b.iter().all(|&x| x == 0xff) {
+            return Err(ProvisioningError::Blank);
+        }
+        if b[..4] != UPDATE_MAGIC {
+            return Err(ProvisioningError::Corrupt);
+        }
+        if b[4] != UPDATE_FORMAT {
+            return Err(ProvisioningError::Format(b[4]));
+        }
+        let word = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        if crc32(&b[..84]) != word(84) {
+            return Err(ProvisioningError::Corrupt);
+        }
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&b[20..84]);
+        Ok(Self {
+            firmware: Firmware {
+                version: word(8),
+                commit: word(12),
+                dirty: b[5] & 1 != 0,
+            },
+            len: word(16),
+            signature,
+        })
+    }
 }
 
 /// Where the [`Provisioning`] page lives in RRAM: the second-to-last 4 KiB, which the firmware's
@@ -203,7 +283,7 @@ pub mod layout {
 pub const PROVISIONING_ADDRESS: u32 = 0x0017_B000;
 /// The provisioning page's header: magic, format, payload length, CRC-32 of the payload.
 const PROVISIONING_MAGIC: [u8; 4] = *b"ngpv";
-const PROVISIONING_FORMAT: u8 = 2;
+const PROVISIONING_FORMAT: u8 = 3;
 const PROVISIONING_HEADER: usize = 12;
 /// Upper bound for an encoded provisioning page.
 pub const MAX_PROVISIONING_LEN: usize = 128;
@@ -263,6 +343,18 @@ pub fn decode_provisioning(page: &[u8]) -> Result<Provisioning, ProvisioningErro
             peer: v1.peer,
             sink: v1.sink,
             number: None,
+            signing_key: None,
+        });
+    }
+    if format == 2 {
+        let v2: ProvisioningV2 = postcard::from_bytes(payload).map_err(|_| ProvisioningError::Corrupt)?;
+        return Ok(Provisioning {
+            config: v2.config,
+            fleet_key: v2.fleet_key,
+            peer: v2.peer,
+            sink: v2.sink,
+            number: v2.number,
+            signing_key: None,
         });
     }
     postcard::from_bytes(payload).map_err(|_| ProvisioningError::Corrupt)
@@ -597,6 +689,7 @@ mod tests {
             peer: Some(NodeId(0xc0ff_ee12_3456)),
             sink: None,
             number: Some(42),
+            signing_key: Some([0x5a; 32]),
         };
         let mut buf = [0u8; MAX_PROVISIONING_LEN];
         let page = encode_provisioning(&p, &mut buf).unwrap().to_vec();
@@ -610,8 +703,8 @@ mod tests {
         assert_eq!(decode_provisioning(&flipped), Err(ProvisioningError::Corrupt));
         assert_eq!(decode_provisioning(&[0xff; 64]), Err(ProvisioningError::Blank));
         let mut newer = page.clone();
-        newer[4] = 3;
-        assert_eq!(decode_provisioning(&newer), Err(ProvisioningError::Format(3)));
+        newer[4] = 4;
+        assert_eq!(decode_provisioning(&newer), Err(ProvisioningError::Format(4)));
         assert_eq!(
             decode_provisioning(&page[..page.len() - 1]),
             Err(ProvisioningError::Corrupt)
@@ -657,6 +750,21 @@ mod tests {
         let fw = Firmware::new(0, 1, 2, 0x1950_d45d, true);
         assert_eq!(std::format!("{fw}"), "0.1.2+1950d45d-dirty");
         assert_eq!(fw.semver(), (0, 1, 2));
+    }
+
+    #[test]
+    fn update_header_roundtrips_and_rejects_damage() {
+        let h = UpdateHeader {
+            firmware: Firmware::new(0, 1, 1, 0x0cf9_80a7, false),
+            len: 415_144,
+            signature: [0x3c; 64],
+        };
+        let b = h.encode();
+        assert_eq!(UpdateHeader::decode(&b), Ok(h));
+        let mut bad = b;
+        bad[30] ^= 1;
+        assert_eq!(UpdateHeader::decode(&bad), Err(ProvisioningError::Corrupt));
+        assert_eq!(UpdateHeader::decode(&[0xff; 4096]), Err(ProvisioningError::Blank));
     }
 
     #[test]

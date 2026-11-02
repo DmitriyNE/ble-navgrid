@@ -4,6 +4,22 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Signed updates.**
+
+- **Keys:** `navgrid fleet init` adds an Ed25519 signing key, and `navgrid provision` writes its
+  public half onto the device (provisioning format 3).
+- **Update files:** `navgrid sign` makes a signed update file: a header, then the image for the
+  active slot. `navgrid update FILE --probe P` stages it: the image into the update slot, the
+  header into a staging page.
+- **The check:** the device checks the signature at boot, before the radio starts, then has the
+  bootloader swap the update in.
+- **On N002:**
+  - **Signed 0.1.1:** verified in 1.13 s, swapped in, and confirmed.
+  - **A byte flipped in the image:** rejected.
+  - **Signed with another fleet's key:** rejected.
+  - **Rejections:** both left the running image and the confirmed state alone.
+- **Cost:** ed25519-dalek and SHA-512 add 60 KB to the image, now 475 KB of the 720 KiB slot.
+
 **DEF-26 fixed again.** Spacing a sink link that connects second never kept its events off the
 CS subevents. At 26 ms or 27.5 ms after the CS link's anchor, every fourth procedure stayed empty
 (8.3/s). Only the sink link first, with the CS link 2.5 ms after it, holds. So when the sink link
