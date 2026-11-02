@@ -101,7 +101,7 @@ pub fn differing<'a>(a: &'a [Summary], b: &'a [Summary]) -> impl Iterator<Item =
 
 #[cfg(test)]
 mod tests {
-    use navgrid_proto::{PointMm, Role};
+    use navgrid_proto::{Firmware, PointMm, Role};
 
     use super::*;
     use crate::*;
@@ -147,7 +147,7 @@ mod tests {
             Sync::Record(record(Body::Node(NodeInfo {
                 role: Role::Person,
                 number: Some(u16::MAX),
-                firmware: u32::MAX,
+                firmware: Firmware::new(u8::MAX, u8::MAX, u8::MAX, u32::MAX, true),
                 config: u32::MAX,
                 hops: u8::MAX,
                 frame: u16::MAX,

@@ -634,6 +634,61 @@ replica keeps a class whole or not at all.
 - **Without it,** every operation still works through the permanent sinks and the host, at mesh
   latency. The field tool is a shortcut, not a dependency.
 
+### Firmware: versions and updates (FR-O2)
+
+**Versions (D-33, built).**
+- **Identity:** every build carries its version, the first 32 bits of its git commit, and whether
+  tracked files had uncommitted changes (`navgrid_proto::Firmware`, shown as
+  `0.1.0+1950d455-dirty`). `build.rs` stamps it, and the image embeds the same as text
+  (`navgrid-firmware 0.1.0+…`).
+- **Reporting:** the device logs it at boot and reports it in Health, in the sink's Hello and in
+  its mesh node record.
+- **Recording:** `navgrid flash ELF --probe A --probe B …` flashes several devices at once (about
+  2 min whatever the count) and records each one's build and date in `devices.json`.
+  `fleet list` shows them.
+- **Checking:** the monitor marks a device whose reported build differs from the registry's, so
+  one that missed an update stands out.
+
+**Image layout with a bootloader (D-34, planned).** embassy-boot: a Rust bootloader built on
+`NorFlash`, which embassy-nrf's RRAM driver implements on the nRF54L15. It swaps an update slot
+into the active one, verifies Ed25519 signatures, and reverts an image that doesn't confirm itself.
+
+| Region | Start | Size |
+|---|---|---|
+| bootloader | 0x000000 | 32 KiB |
+| bootloader state | 0x008000 | 4 KiB |
+| active image | 0x009000 | 720 KiB; today's image is 401 KiB |
+| update slot | 0x0BD000 | 724 KiB (one page more than active, for the swap) |
+| spare | 0x172000 | 36 KiB |
+| provisioning, boot epoch | 0x17B000 | 4 + 4 KiB, as now |
+
+**Signing (D-35).** An Ed25519 key pair on the host, separate from the fleet key; the
+bootloader holds the public key. `navgrid sign` makes an update image: a header (firmware ID, size,
+SHA-256) and a signature. A leaked fleet key still can't install firmware.
+
+**Single hop first (D-36), before stage 3.**
+- **Transfer:** a DK, or the field tool, connects to a TAG over a fleet link. It pushes the image
+  page by page on a bulk L2CAP channel (SPSM `0x0083`) into the update slot, with a per-page CRC,
+  resuming where it left off after a dropout.
+- **Install:** the TAG checks the hash and signature, marks the update, and restarts. The new
+  image confirms itself only once it is back in the mesh (a fleet link encrypted within 5 min);
+  otherwise the bootloader reverts it.
+- **Why first:** at 100 kHz SWD (DEF-19), reflashing 20 TAGs takes about 2 min per probe,
+  probes and DK adapters are scarce, and an update over BLE takes seconds.
+
+**Mesh-wide later (D-36), after stage 4.**
+- **Announce:** the controller writes a *desired firmware* record (ID, size, SHA-256, signature,
+  rollout group), which spreads to every node like the frame (Global class, §12).
+- **Spread:** a node that lacks the image pulls missing pages from a neighbour whose node record
+  says it holds it, over the bulk channel, outside the 2 KB sync budget, which would take hours
+  per hop. Each finished node then serves its neighbours, and sinks get the image from the host.
+- **Install:** at the controller's time, canary nodes first and the rest once the canaries report
+  the new build healthy. Rollout shows in node records.
+- **Compatibility:** while a rollout runs, versions N and N−1 must interoperate on the air: mesh
+  records and sync frames change compatibly, or in two steps.
+- **Cost:** about 400 KB received per node and a little more sent, a few µAh. Time is hops ×
+  (wait for a contact + about 10 s per transfer).
+
 ### LED and button (FR-O7)
 
 The TAG has one RGB LED (P2.08–P2.10, active low) and one button (P0.00). The second LED and
@@ -711,3 +766,7 @@ The DK sink shows host link and connected nodes on its four LEDs.
 | D-30 | One shared fleet key; a lost device means re-enrolling the fleet. Revisit before production deployments (§13, DEF-33). | **Accepted** (2026-11-02) |
 | D-31 | Devices are labelled with a sequential fleet number, stored on the device and in the host registry (§13). | **Accepted** (2026-11-02) |
 | D-32 | Every operation works through the host and the mesh; a field tool (laptop + DK as a portable sink) does the same in seconds on site (§13). | **Accepted** (2026-11-02) |
+| D-33 | Every build carries its version, commit and dirty flag, reported at boot, in Health and in node records; `navgrid flash` records what each device got (§13). | **Accepted** (built 2026-11-03) |
+| D-34 | The bootloader is embassy-boot: active and update slots in RRAM, swap with rollback (§13). | Proposed (spike first) |
+| D-35 | Firmware images are signed with an Ed25519 key separate from the fleet key; the bootloader verifies them (§13). | **Accepted** (2026-11-03) |
+| D-36 | Over-the-air updates come single hop first (before stage 3), then spread mesh-wide over a bulk channel with controller-scheduled, canary-first rollout (after stage 4) (§13). | **Accepted** (2026-11-03) |

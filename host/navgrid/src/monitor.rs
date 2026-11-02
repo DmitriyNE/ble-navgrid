@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use navgrid_proto::{BATTERY_CRITICAL_MV, BATTERY_GOOD_MV, BATTERY_LOW_MV, Health, Message, NodeId};
+use navgrid_proto::{BATTERY_CRITICAL_MV, BATTERY_GOOD_MV, BATTERY_LOW_MV, Firmware, Health, Message, NodeId};
 
 use crate::calibration::Calibration;
 use crate::fleet::{Registry, label_name};
@@ -88,18 +88,31 @@ impl View {
             (Message::Health(h), Some(b)) => {
                 let days = b.days_left.map_or(String::new(), |d| format!(", ≈ {d:.0} days to low"));
                 format!(
-                    "{} health: battery {} mV {}{days}, {:.2} °C, up {} s, firmware {}.{}.{}, {} queued",
+                    "{} health: battery {} mV {}{days}, {:.2} °C, up {} s, firmware {}{}, {} queued",
                     self.name(h.node),
                     h.battery_mv,
                     b.level,
                     f64::from(h.temperature_cdeg) / 100.0,
                     h.uptime_s,
-                    h.firmware >> 16,
-                    (h.firmware >> 8) & 0xff,
-                    h.firmware & 0xff,
+                    h.firmware,
+                    self.firmware_note(h.node, &h.firmware),
                     h.queued
                 )
             }
+            (
+                Message::Hello {
+                    node,
+                    role,
+                    protocol,
+                    firmware,
+                    antennas,
+                },
+                _,
+            ) => format!(
+                "{} hello: {role:?}, protocol {protocol}, firmware {firmware}{}, {antennas} antenna(s)",
+                self.name(*node),
+                self.firmware_note(*node, firmware)
+            ),
             _ => {
                 let prefix = node.map_or(String::new(), |n| format!("{}: ", self.name(n)));
                 match calibrated {
@@ -108,6 +121,19 @@ impl View {
                 }
             }
         })
+    }
+
+    /// ` (registry: …)` when the device reports another build than the one last flashed.
+    fn firmware_note(&self, id: NodeId, firmware: &Firmware) -> String {
+        let flashed = self
+            .registry
+            .as_ref()
+            .and_then(|r| r.by_id(id))
+            .and_then(|d| d.firmware.as_ref());
+        match flashed {
+            Some(f) if *f != firmware.to_string() => format!(" (registry: {f})"),
+            _ => String::new(),
+        }
     }
 
     fn battery(&mut self, h: &Health, now: f64) -> Battery {
@@ -261,6 +287,8 @@ mod tests {
                 role: navgrid_proto::Role::Node,
                 enrolled: "2026-11-02".into(),
                 status: Status::Enrolled,
+                firmware: Some("0.1.0+00000001".into()),
+                flashed: Some("2026-11-02".into()),
             }],
         };
         let msg = Message::Health(Health {
@@ -268,13 +296,17 @@ mod tests {
             uptime_s: 60,
             battery_mv: 2700,
             temperature_cdeg: 2475,
-            firmware: 0x00_01_00,
+            firmware: navgrid_proto::Firmware::new(0, 1, 0, 0x1950_d45d, false),
             queued: 0,
         });
         let mut view = View::new(None, Some(registry));
         let line = view.render(&frame(&msg), false).unwrap();
         assert!(
             line.starts_with("N042 ce36dfcc4c2d health: battery 2700 mV fine"),
+            "{line}"
+        );
+        assert!(
+            line.contains("firmware 0.1.0+1950d45d (registry: 0.1.0+00000001)"),
             "{line}"
         );
         let json: serde_json::Value = serde_json::from_str(&view.render(&frame(&msg), true).unwrap()).unwrap();

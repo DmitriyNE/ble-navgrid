@@ -1,9 +1,11 @@
 mod calibration;
 mod capture;
 mod fix;
+mod flash;
 mod fleet;
 mod mesh_sim;
 mod monitor;
+mod probe;
 mod provision;
 mod scenario;
 mod track;
@@ -61,6 +63,8 @@ enum Cmd {
     MeshSim(mesh_sim::MeshSimArgs),
     /// Enrol a device through its probe: fleet key, fleet number, role, bring-up peer and sink.
     Provision(provision::ProvisionArgs),
+    /// Flash firmware through one or more probes at once, and record the build in the registry.
+    Flash(flash::FlashArgs),
     /// The fleet directory: key, device registry, labels.
     #[command(subcommand)]
     Fleet(FleetCmd),
@@ -94,6 +98,7 @@ fn main() -> Result<()> {
         Cmd::Calibrate(args) => calibration::run(&args),
         Cmd::MeshSim(args) => mesh_sim::run(&args),
         Cmd::Provision(args) => provision::run(&args),
+        Cmd::Flash(args) => flash::run(&args),
         Cmd::Fleet(FleetCmd::Init(args)) => fleet::Fleet::init(&args).map(|_| ()),
         Cmd::Fleet(FleetCmd::List(args)) => fleet::list(&args),
     }

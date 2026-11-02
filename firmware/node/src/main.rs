@@ -36,7 +36,7 @@ use embassy_nrf::{bind_interrupts, config, cracen, pac};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer, with_timeout};
-use navgrid_proto::{NodeConfig, NodeId, ProvisioningError, Role};
+use navgrid_proto::{Firmware, NodeConfig, NodeId, ProvisioningError, Role};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, SoftdeviceController, mpsl};
 use static_cell::StaticCell;
@@ -132,17 +132,38 @@ fn node_id_from_ficr() -> NodeId {
     NodeId::from_ficr([ficr.deviceaddr(0).read(), ficr.deviceaddr(1).read()])
 }
 
-/// Firmware version for Health reports: major, minor and patch in the low three bytes.
-const FIRMWARE: u32 = (parse_u8(env!("CARGO_PKG_VERSION_MAJOR")) << 16)
-    | (parse_u8(env!("CARGO_PKG_VERSION_MINOR")) << 8)
-    | parse_u8(env!("CARGO_PKG_VERSION_PATCH"));
+/// This build (`build.rs` stamps the commit), for the boot log, Health reports and the sink's Hello.
+const FIRMWARE: Firmware = Firmware::new(
+    parse(env!("CARGO_PKG_VERSION_MAJOR"), 10) as u8,
+    parse(env!("CARGO_PKG_VERSION_MINOR"), 10) as u8,
+    parse(env!("CARGO_PKG_VERSION_PATCH"), 10) as u8,
+    parse(env!("NAVGRID_COMMIT"), 16),
+    !env!("NAVGRID_DIRTY").is_empty(),
+);
 
-const fn parse_u8(s: &str) -> u32 {
+/// The same as text in the image, where `navgrid flash` finds it: `navgrid-firmware 0.1.0+1950d45d`.
+#[used]
+static FIRMWARE_TAG: &[u8] = concat!(
+    "navgrid-firmware ",
+    env!("CARGO_PKG_VERSION"),
+    "+",
+    env!("NAVGRID_COMMIT"),
+    env!("NAVGRID_DIRTY"),
+    "\0"
+)
+.as_bytes();
+
+const fn parse(s: &str, radix: u32) -> u32 {
     let b = s.as_bytes();
     let mut i = 0;
     let mut v = 0;
     while i < b.len() {
-        v = v * 10 + (b[i] - b'0') as u32;
+        let digit = match b[i] {
+            c @ b'0'..=b'9' => c - b'0',
+            c @ b'a'..=b'f' => c - b'a' + 10,
+            _ => 0,
+        };
+        v = v * radix + digit as u32;
         i += 1;
     }
     v
@@ -282,17 +303,19 @@ async fn main(spawner: Spawner) {
     let addr = node.address();
     match number {
         Some(n) => info!(
-            "navgrid node N{=u16:03} {=u64:012x} on {}, boot {=u32}, {}",
+            "navgrid node N{=u16:03} {=u64:012x} on {}, firmware {}, boot {=u32}, {}",
             n,
             node.0,
             board::NAME,
+            FIRMWARE,
             epoch,
             node_cfg
         ),
         None => info!(
-            "navgrid node {=u64:012x} on {}, boot {=u32}, {}",
+            "navgrid node {=u64:012x} on {}, firmware {}, boot {=u32}, {}",
             node.0,
             board::NAME,
+            FIRMWARE,
             epoch,
             node_cfg
         ),

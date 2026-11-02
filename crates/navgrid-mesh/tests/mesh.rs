@@ -10,7 +10,7 @@ fn info() -> NodeInfo {
     NodeInfo {
         role: Role::Node,
         number: None,
-        firmware: 1,
+        firmware: navgrid_proto::Firmware::new(0, 1, 0, 0, false),
         config: 0,
         hops: 0,
         frame: 0,

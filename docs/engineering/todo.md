@@ -100,6 +100,24 @@ Protocol follow-ups, in the simulator first:
 - [ ] **Fleet key at rest** (DEF-33): APPROTECT on provisioned devices, and the key in the KMU.
 - [ ] **Simulate link loss and mid-session drops,** and reboots (new epochs).
 
+## Firmware updates (FR-O2, architecture §13)
+
+Version tracking is done (log 2026-11-03). Next, before stage 3:
+
+1. [ ] **Spike: embassy-boot on the TAG.**
+       - the bootloader with RRAM as `NorFlash`;
+       - a swap and a rollback by hand, with the image moved to 0x9000;
+       - check MPSL and the SDC under the bootloader's vector table.
+2. [ ] **Signing:** `navgrid sign` (an Ed25519 key in the fleet directory, kept apart from
+       `fleet.key`), and the public key built into the bootloader.
+3. [ ] **Single-hop update:**
+       - a bulk L2CAP channel (`0x0083`) into the update slot, with per-page CRCs and resume;
+       - verify, swap, and confirm once back in the mesh;
+       - a DK, or the host through the sink, as the sender: `navgrid update N001 image.bin`.
+
+After stage 4: the desired-firmware record, neighbour-to-neighbour spreading, canary rollout and
+version compatibility during rollouts.
+
 ## Operations (FR-O, architecture §13)
 
 Each item works through the host and the mesh first; the field tool shortens it.
@@ -110,7 +128,7 @@ Items 1–3 are done (log 2026-11-02):
 - battery readings.
 
 Left over from them:
-- enrol the sink DK, so it has a number;
+- reflash the sink DK and enrol it, so it has a number and protocol 2;
 - check that a phone scans the label QR;
 - try the factory reset on a TAG;
 - bring in install mode on the long press (item 7).

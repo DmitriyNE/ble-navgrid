@@ -6,10 +6,13 @@
 
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change to [`Message`].
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Upper bound for one encoded frame, including COBS overhead and the `0x00` terminator.
 pub const MAX_FRAME_LEN: usize = 64;
@@ -36,6 +39,63 @@ impl NodeId {
         let mut addr = [0u8; 6];
         addr.copy_from_slice(&self.0.to_le_bytes()[..6]);
         addr
+    }
+}
+
+/// A firmware build: its version, the git commit it was built from, and whether the tree had
+/// uncommitted changes. Shown as `0.1.0+1950d45d-dirty`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Firmware {
+    /// Major, minor and patch in the low three bytes.
+    pub version: u32,
+    /// The first 32 bits of the commit hash.
+    pub commit: u32,
+    pub dirty: bool,
+}
+
+impl Firmware {
+    pub const fn new(major: u8, minor: u8, patch: u8, commit: u32, dirty: bool) -> Self {
+        Self {
+            version: ((major as u32) << 16) | ((minor as u32) << 8) | patch as u32,
+            commit,
+            dirty,
+        }
+    }
+
+    pub fn semver(&self) -> (u8, u8, u8) {
+        (
+            (self.version >> 16) as u8,
+            (self.version >> 8) as u8,
+            self.version as u8,
+        )
+    }
+}
+
+impl core::fmt::Display for Firmware {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let (major, minor, patch) = self.semver();
+        write!(f, "{major}.{minor}.{patch}+{:08x}", self.commit)?;
+        if self.dirty {
+            f.write_str("-dirty")?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl defmt::Format for Firmware {
+    fn format(&self, f: defmt::Formatter) {
+        let (major, minor, patch) = self.semver();
+        let dirty = if self.dirty { "-dirty" } else { "" };
+        defmt::write!(
+            f,
+            "{=u8}.{=u8}.{=u8}+{=u32:08x}{=str}",
+            major,
+            minor,
+            patch,
+            self.commit,
+            dirty
+        );
     }
 }
 
@@ -370,7 +430,7 @@ pub struct Health {
     pub battery_mv: u16,
     /// Die temperature, 0.01 °C.
     pub temperature_cdeg: i16,
-    pub firmware: u32,
+    pub firmware: Firmware,
     /// Telemetry records waiting for a contact toward a sink.
     pub queued: u16,
 }
@@ -412,6 +472,7 @@ pub enum Message {
         node: NodeId,
         role: Role,
         protocol: u16,
+        firmware: Firmware,
         /// Antennas in use for Channel Sounding (1 when diversity is off).
         antennas: u8,
     },
@@ -445,6 +506,7 @@ mod tests {
                 node: id,
                 role: Role::Person,
                 protocol: u16::MAX,
+                firmware: Firmware::new(u8::MAX, u8::MAX, u8::MAX, u32::MAX, true),
                 antennas: u8::MAX,
             },
             Message::Range(Range {
@@ -474,7 +536,7 @@ mod tests {
                 uptime_s: u32::MAX,
                 battery_mv: u16::MAX,
                 temperature_cdeg: i16::MIN,
-                firmware: u32::MAX,
+                firmware: Firmware::new(u8::MAX, u8::MAX, u8::MAX, u32::MAX, true),
                 queued: u16::MAX,
             }),
             Message::Environment(Environment {
@@ -574,6 +636,13 @@ mod tests {
         let id = NodeId::from_ficr([0xdfcc_4c2d, 0xd1ae_ce36]);
         assert_eq!(id, NodeId(0xce36_dfcc_4c2d));
         assert_eq!(id.address(), [0x2d, 0x4c, 0xcc, 0xdf, 0x36, 0xce]);
+    }
+
+    #[test]
+    fn firmware_displays_as_semver_plus_commit() {
+        let fw = Firmware::new(0, 1, 2, 0x1950_d45d, true);
+        assert_eq!(std::format!("{fw}"), "0.1.2+1950d45d-dirty");
+        assert_eq!(fw.semver(), (0, 1, 2));
     }
 
     #[test]

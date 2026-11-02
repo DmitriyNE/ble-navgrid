@@ -2,6 +2,23 @@
 
 Newest first. Conventions: [README](README.md).
 
+## 2026-11-03
+
+**Firmware versions tracked; updates designed (FR-O2, architecture §13).**
+
+- **Identity:** every build carries its version, commit and dirty flag (`0.1.0+1950d455-dirty`),
+  stamped by `build.rs` and embedded as text in the image.
+- **Reporting:** devices log it at boot, and report it in Health, the sink's Hello and node
+  records (protocol version 2).
+- **Recording:** `navgrid flash ELF --probe A --probe B` flashed both TAGs in parallel in
+  2 min 19 s and recorded each device's build in the registry. The monitor shows the build and
+  marks a mismatch with the registry.
+- **Decided:**
+  - updates over the air come single hop before stage 3, and mesh-wide after stage 4 (D-36);
+  - images are signed with their own Ed25519 key (D-35);
+  - the bootloader is to be embassy-boot (D-34), which supports the nRF54L15. A spike comes
+    first.
+
 ## 2026-11-02
 
 **Operations items 1–3: fleet numbers, LED and button, battery.**

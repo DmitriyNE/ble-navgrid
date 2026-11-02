@@ -3,16 +3,13 @@
 //! [`PROVISIONING_ADDRESS`], resets the device, and writes its label. Flashing firmware leaves
 //! the page alone.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use navgrid_proto::{MAX_PROVISIONING_LEN, NodeConfig, NodeId, PROVISIONING_ADDRESS, PointMm, Provisioning, Role};
 
 use crate::fleet::{Fleet, FleetArgs, label_name, today};
-
-/// FICR `DEVICEADDR[0]`, the first of the two words the node ID comes from.
-const FICR_DEVICEADDR: u32 = 0x00ff_c3a4;
+use crate::probe;
 
 #[derive(clap::Args)]
 pub struct ProvisionArgs {
@@ -95,7 +92,7 @@ pub fn run(args: &ProvisionArgs) -> Result<()> {
     let mut registry = fleet.registry()?;
     let id = match &args.out {
         Some(_) => None,
-        None => Some(read_id(args.probe.as_deref())?),
+        None => Some(probe::read_id(args.probe.as_deref())?),
     };
     let number = args
         .number
@@ -142,7 +139,8 @@ pub fn run(args: &ProvisionArgs) -> Result<()> {
     // probe-rs reads the page from a file; it holds the fleet key, so it doesn't stay.
     let file = std::env::temp_dir().join(format!("navgrid-provision-{}.bin", std::process::id()));
     std::fs::write(&file, page).with_context(|| format!("writing {}", file.display()))?;
-    let flashed = flash(args.probe.as_deref(), &file);
+    let probe = args.probe.as_deref();
+    let flashed = probe::download(probe, &file, Some(PROVISIONING_ADDRESS)).and_then(|()| probe::reset(probe));
     let _ = std::fs::remove_file(&file);
     flashed?;
     fleet.save(&registry)?;
@@ -151,80 +149,12 @@ pub fn run(args: &ProvisionArgs) -> Result<()> {
     Ok(())
 }
 
-/// The device's node ID, from its FICR through the probe.
-fn read_id(probe: Option<&str>) -> Result<NodeId> {
-    let mut read = Command::new("probe-rs");
-    read.arg("read").args(["--chip", "nRF54L15"]);
-    if let Some(p) = probe {
-        read.args(["--probe", p]);
-    }
-    read.args(["b32", &format!("{FICR_DEVICEADDR:#x}"), "2"]);
-    let out = read.output().context("running probe-rs")?;
-    if !out.status.success() {
-        bail!("probe-rs read failed: {}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    parse_read(&String::from_utf8_lossy(&out.stdout))
-}
-
-/// `00ffc3a4: dfcc4c2d d1aece36` → the node ID.
-fn parse_read(text: &str) -> Result<NodeId> {
-    let line = text
-        .lines()
-        .find(|l| l.contains(':'))
-        .context("no words in probe-rs output")?;
-    let words: Vec<u32> = line
-        .split(':')
-        .nth(1)
-        .unwrap_or("")
-        .split_whitespace()
-        .map(|w| u32::from_str_radix(w, 16))
-        .collect::<Result<_, _>>()
-        .context("unexpected probe-rs output")?;
-    let [w0, w1] = words[..] else {
-        bail!("expected two words from probe-rs, got {line:?}");
-    };
-    Ok(NodeId::from_ficr([w0, w1]))
-}
-
-/// Writes the page and resets the device, at the firmware runner's settings (DEF-16, DEF-19).
-fn flash(probe: Option<&str>, file: &Path) -> Result<()> {
-    let probe_args = |cmd: &mut Command| {
-        cmd.args(["--chip", "nRF54L15"]);
-        if let Some(p) = probe {
-            cmd.args(["--probe", p]);
-        }
-    };
-    let mut download = Command::new("probe-rs");
-    download.arg("download");
-    probe_args(&mut download);
-    download
-        .args(["--speed", "100", "--disable-double-buffering", "--verify"])
-        .args(["--binary-format", "bin", "--base-address"])
-        .arg(format!("{PROVISIONING_ADDRESS:#x}"))
-        .arg(file);
-    run_cmd(&mut download)?;
-    let mut reset = Command::new("probe-rs");
-    reset.arg("reset");
-    probe_args(&mut reset);
-    run_cmd(&mut reset)?;
-    println!("provisioned and reset");
-    Ok(())
-}
-
-fn run_cmd(cmd: &mut Command) -> Result<()> {
-    let status = cmd.status().context("running probe-rs")?;
-    if !status.success() {
-        bail!("probe-rs failed: {status}");
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parses_ids_pins_and_probe_output() {
+    fn parses_ids_and_pins() {
         assert_eq!(parse_node("df96e04a5900"), Ok(NodeId(0xdf96_e04a_5900)));
         assert!(parse_node("df96e04a59").is_err());
         assert_eq!(
@@ -236,10 +166,5 @@ mod tests {
             })
         );
         assert!(parse_pin("1,2").is_err());
-        assert_eq!(
-            parse_read("00ffc3a4: dfcc4c2d d1aece36\n").unwrap(),
-            NodeId(0xce36_dfcc_4c2d)
-        );
-        assert!(parse_read("00ffc3a4: dfcc4c2d\n").is_err());
     }
 }

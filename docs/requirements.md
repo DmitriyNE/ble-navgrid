@@ -166,7 +166,10 @@ A self-surveyed mesh knows its shape, not its orientation, handedness or origin.
 ### Operations (O)
 
 - **FR-O1** **Enrolment** at a bench through the debug probe: firmware, fleet key, fleet number, role and defaults. The fleet key never travels over the air.
-- **FR-O2** OTA firmware update over BLE (P3).
+- **FR-O2** **Firmware versions and updates:**
+  - **Reporting:** every device reports its build (version, commit, uncommitted changes) at boot, in its Health reports and in its node record.
+  - **Registry:** it records what was flashed onto each device.
+  - **Over the air:** images are signed with a key of their own and roll back if the new image fails. Single hop from a DK or the host comes first, then mesh-wide with a controller-scheduled rollout.
 - **FR-O3** Observability: `defmt` over RTT in development; per-link counters (procedures, failures, quality) in the field.
 - **FR-O4** **Lifecycle**, all but enrolment over the air:
   - **Commission:** an enrolled device that joins shows up as *unplaced*; the operator gives it a name, room, and position or pin.
@@ -268,6 +271,13 @@ Decided 2026-11-02 (operations, architecture §13):
 | — | Lost or stolen devices | **One shared fleet key**; re-enrol the fleet if a key is lost (DEF-33). No production deployments for now; revisit with provisioning. |
 | — | Where commissioning happens | **Both**: everything through the host and the mesh, and faster with a field tool (FR-O6). |
 | — | Labels | **Fleet numbers** (`N042`), assigned at enrolment and stored on the device (FR-O5). |
+
+Decided 2026-11-03 (firmware, architecture §13):
+
+| ID | Question | Decision |
+|---|---|---|
+| — | When over-the-air updates come | **Single hop soon**, before stage 3: the bootloader plus updates from a DK over one link, since stage 3 means reflashing many TAGs. Mesh-wide spreading after stage 4 (FR-O2). |
+| — | How images are authenticated | **A separate Ed25519 signing key** on the host; the bootloader holds the public key. A leaked fleet key can't install firmware. |
 
 Open:
 

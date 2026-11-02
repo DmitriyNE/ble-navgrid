@@ -47,6 +47,11 @@ pub struct Device {
     /// UTC date of the last enrolment.
     pub enrolled: String,
     pub status: Status,
+    /// The build `navgrid flash` last wrote, and when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flashed: Option<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -70,16 +75,22 @@ impl Registry {
         if let Some(other) = self.devices.iter().find(|d| d.number == number && d.id != id) {
             bail!("{} already belongs to {:012x}", label_name(number), other.id.0);
         }
-        let device = Device {
-            number,
-            id,
-            role,
-            enrolled: date,
-            status: Status::Enrolled,
-        };
         match self.devices.iter_mut().find(|d| d.id == id) {
-            Some(d) => *d = device,
-            None => self.devices.push(device),
+            Some(d) => {
+                d.number = number;
+                d.role = role;
+                d.enrolled = date;
+                d.status = Status::Enrolled;
+            }
+            None => self.devices.push(Device {
+                number,
+                id,
+                role,
+                enrolled: date,
+                status: Status::Enrolled,
+                firmware: None,
+                flashed: None,
+            }),
         }
         self.devices.sort_by_key(|d| d.number);
         Ok(())
@@ -249,8 +260,12 @@ pub fn list(args: &FleetArgs) -> Result<()> {
         println!("no devices enrolled in {}", fleet.dir.display());
     }
     for d in &registry.devices {
+        let firmware = match (&d.firmware, &d.flashed) {
+            (Some(f), Some(on)) => format!("{f} (flashed {on})"),
+            _ => "firmware unknown".into(),
+        };
         println!(
-            "{}  {:012x}  {:<6}  {:<8}  enrolment {}",
+            "{}  {:012x}  {:<6}  {:<8}  enrolment {}  {firmware}",
             label_name(d.number),
             d.id.0,
             format!("{:?}", d.role),

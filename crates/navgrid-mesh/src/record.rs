@@ -2,7 +2,7 @@
 //! milliseconds, as in `navgrid-proto`.
 
 use heapless::Vec;
-use navgrid_proto::{NodeId, PointMm, Role};
+use navgrid_proto::{Firmware, NodeId, PointMm, Role};
 use serde::{Deserialize, Serialize};
 
 /// Neighbours a node lists in its [`NodeInfo`]: its mesh-link budget (architecture §5).
@@ -218,7 +218,7 @@ pub struct NodeInfo {
     pub role: Role,
     /// Its fleet number (`N042`, D-31), so the host's registry can be rebuilt from the mesh.
     pub number: Option<u16>,
-    pub firmware: u32,
+    pub firmware: Firmware,
     /// Hash of the node's `NodeConfig`, so the controller sees what it runs.
     pub config: u32,
     /// Hops to the nearest sink: 0 at a sink, [`UNREACHABLE`](crate::UNREACHABLE) with no path.

@@ -83,6 +83,8 @@ cargo run -p navgrid -- fleet init                         # once: key, registry
 cargo run -p navgrid -- provision --probe <A>              # board A: reflector; gets N001 and a label
 cargo run -p navgrid -- provision --probe <B> --peer <id of A>
 cargo run -p navgrid -- fleet list
+cargo run -p navgrid -- flash firmware/target/thumbv8m.main-none-eabihf/release/navgrid-node \
+    --probe <A> --probe <B>                                # firmware onto several devices at once, recorded
 cd firmware && cargo tag                                    # each board; note "navgrid node <id>"
 ```
 

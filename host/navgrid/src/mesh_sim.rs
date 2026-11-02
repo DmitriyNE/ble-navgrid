@@ -288,7 +288,7 @@ impl<'a> Sim<'a> {
                 let info = NodeInfo {
                     role: if sink { Role::Sink } else { Role::Node },
                     number: Some(i as u16 + 1),
-                    firmware: 1,
+                    firmware: navgrid_proto::Firmware::new(0, 1, 0, 0, false),
                     config: 0,
                     hops: 0,
                     frame: 0,

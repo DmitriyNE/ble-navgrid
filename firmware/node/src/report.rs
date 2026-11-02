@@ -13,7 +13,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Instant, Timer};
-use navgrid_proto::{Health, MAX_FRAME_LEN, Message, NodeId, Range, RangeMethod};
+use navgrid_proto::{Firmware, Health, MAX_FRAME_LEN, Message, NodeId, Range, RangeMethod};
 use navgrid_ranging::{PhaseSlope, range_quality, range_sigma_m};
 use nrf_sdc::SoftdeviceController;
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
@@ -56,7 +56,7 @@ pub fn push(est: &PhaseSlope, paths: usize) {
 }
 
 /// Queues this node's health once a minute while the uplink is up (FR-S2).
-pub async fn health(mpsl: &MultiprotocolServiceLayer<'_>, node: NodeId, firmware: u32) -> ! {
+pub async fn health(mpsl: &MultiprotocolServiceLayer<'_>, node: NodeId, firmware: Firmware) -> ! {
     loop {
         Timer::after(HEALTH_PERIOD).await;
         if LINK.lock(Cell::get).is_none() {
@@ -111,6 +111,7 @@ pub async fn serve_sink(
         node,
         role: navgrid_proto::Role::Sink,
         protocol: navgrid_proto::PROTOCOL_VERSION,
+        firmware: crate::FIRMWARE,
         antennas: 1,
     };
     if let Ok(frame) = navgrid_proto::encode(&hello, &mut buf)
