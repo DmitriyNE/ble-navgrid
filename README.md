@@ -53,15 +53,20 @@ size is wrong, the log prints the exact number needed; set `SDC_MEM` in `node/sr
 
 - **Connection:** the TAG plugs into the DK's `DEBUG OUT` header. The DK's onboard J-Link then
   debugs the TAG instead of the DK's own chip.
-- **Power:** a CR2032 **or** 3.3 V on the DK's `VDD SWD0` pin (jumper from a `VDDIO` pin), never
-  both. Use 3.3 V for CS work: with CS running on a coin cell the probe keeps losing the TAG
-  (DEF-19).
+- **Power:** a CR2032 **or** the DK, never both. For DK power:
+  - set the DK's VDD to 3.0–3.3 V in Board Configurator (nRF Connect for Desktop); the default is
+    1.8 V. If it times out talking to the board controller, replug the DK's USB;
+  - jumper any `VDD:IO` pin of the GPIO headers to `VDD SWD0`, one pin of the 3-pin header P5
+    right of `DEBUG OUT`. To find it, measure with a cell in: it reads the cell voltage, the other
+    two read 0 V.
 - **Probe:** with more than one probe attached, set `PROBE_RS_PROBE=<VID:PID:serial>` from
   `probe-rs list`.
 - **Autodetect:** `probe-rs info` fails to autodetect the chip (its memory APs have no ROM
   table), but `--chip nRF54L15`, which the runner passes, works.
 - **Flashing:** the runner disables probe-rs's double buffering, which corrupts a word in most
-  pages on the TAG (DEF-16), and verifies every flash.
+  pages on the TAG (DEF-16), and verifies every flash. It runs SWD at 100 kHz, because at the
+  default 400 kHz the probe loses the TAG within seconds of CS starting (DEF-19). A flash takes
+  about 2 minutes.
 
 ### Two-board Channel Sounding (P0 bring-up)
 
@@ -76,7 +81,7 @@ NAVGRID_ROLE=initiator NAVGRID_PEER=<id of A> cargo tag      # board B: initiato
 With two probes attached, pick one per build with `probe-rs list` and probe-rs's probe selector.
 
 - **The initiator** connects at 50 ms, runs the feature exchange (the SDC needs it before CS),
-  moves the link to 2M, pairs (LE Secure Connections, Just Works), then configures CS and starts
+  moves the link to 2M with 251-byte packets, pairs (LE Secure Connections, Just Works), then configures CS and starts
   procedures: mode 2, all 72 channels, 1×1 antennas, 2M PHY, 16 ms subevents, every 10
   connection events.
 - **Both boards** log each CS subevent as one line:

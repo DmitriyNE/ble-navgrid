@@ -19,15 +19,13 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **Standalone J-Link Pro** doesn't connect to the TAG at all; the SWD adapter may be bad.
 - [ ] **After first boot:** check the antenna-switch default and callback, and boot a DK (DEF-2,
       DEF-3).
-- [ ] **Lab session with external power** (DEF-18, DEF-19): run both TAGs from 3.3 V (no coin
-      cells). Run the 50 ms initiator build. If subevents still abort, try in this order:
-      - data length update to 251 bytes;
-      - a longer interval (100 ms);
-      - CS event length equal to the subevent length;
-      - sub mode 1 as in Nordic's sample;
-      - a DK pair, to rule out the TAGs.
-
-      Capture both sides.
+- [ ] **Nordic's samples on our TAGs** (DEF-18): build NCS v3.4.1 `ras_initiator` and
+      `ras_reflector` for `nrf54l15tag/nrf54l15/cpuapp` (RTT console snippet) and run them on
+      `ce36dfcc4c2d` / `df96e04a5900`. If they range, capture their HCI traffic and diff it with
+      ours; if they abort too, take it to Nordic with their samples as the reproduction. Untried
+      from the old list: sub mode 1, a DK pair.
+- [ ] **embassy-nrf** (DEF-22): make the GRTC time driver's compare channel configurable, or move
+      it off CC[7]–[11], which MPSL owns on the nRF54L.
 - [ ] **nrf-sdc fork:** bind `sdc_hci_cmd_vs_cs_params_set` (CS event length, T_PM, board distance
       offset) and drop the raw FFI in `cs.rs`.
 - [ ] **bt-hci + TrouBLE** (DEF-20): parse the CS capabilities complete v2 event (`0x38`), and

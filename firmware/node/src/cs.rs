@@ -43,8 +43,11 @@ pub const ACL_INTERVAL_MS: u64 = 50;
 const ACL_INTERVAL_0625: u16 = (ACL_INTERVAL_MS * 1000 / 625) as u16;
 /// A CS procedure every this many connection events.
 const PROCEDURE_INTERVAL: u16 = 10;
-/// NCS's default time set aside per CS event (one subevent per event here).
-const CS_EVENT_LENGTH_US: u32 = 5000;
+/// Time the SDC sets aside per CS event. With one subevent per event the SDC docs make it equal to
+/// the subevent length; NCS's default is 5 ms.
+const CS_EVENT_LENGTH_US: u32 = SUBEVENT_LENGTH_US;
+/// Length of each CS subevent, as in Nordic's sample.
+const SUBEVENT_LENGTH_US: u32 = 16_000;
 /// How long to wait for an asynchronous CS command to complete.
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -215,9 +218,9 @@ pub async fn exchange_features(stack: &Stack<'_, '_>, handle: ConnHandle) {
     }
 }
 
-/// Sets the time the SDC sets aside for each CS event, as NCS does after enabling the controller
-/// (`CONFIG_BT_CTLR_SDC_CS_EVENT_LEN_DEFAULT`). Call once, after the SDC is built and before any
-/// CS configuration.
+/// Sets the time the SDC sets aside for each CS event, at the point NCS does
+/// (`CONFIG_BT_CTLR_SDC_CS_EVENT_LEN_DEFAULT`), but to [`CS_EVENT_LENGTH_US`]. Call once, after the
+/// SDC is built and before any CS configuration.
 pub fn set_event_length() -> Result<(), Status> {
     use nrf_sdc::raw::{
         SDC_HCI_VS_CS_PARAM_TYPE_CS_EVENT_LENGTH_SET, sdc_hci_cmd_vs_cs_params_set, sdc_hci_cmd_vs_cs_params_set_t,
@@ -229,6 +232,24 @@ pub fn set_event_length() -> Result<(), Status> {
             cs_event_length_params: sdc_hci_vs_cs_event_length_params_t {
                 cs_event_length_us: CS_EVENT_LENGTH_US,
             },
+        },
+    };
+    // SAFETY: a plain synchronous SDC call with a valid, fully initialised parameter struct.
+    let status = Status::from(unsafe { sdc_hci_cmd_vs_cs_params_set(&params) });
+    status.to_result().map_err(|_| status)
+}
+
+/// Sets the preferred CS tone length (T_PM) to 10 us, as NCS does after enabling the controller
+/// (`CONFIG_BT_CTLR_SDC_CS_T_PM_LEN_DEFAULT`). Call once, before any CS configuration.
+pub fn set_tone_length() -> Result<(), Status> {
+    use nrf_sdc::raw::{
+        SDC_HCI_VS_CS_PARAM_TYPE_CS_T_PM_SET, sdc_hci_cmd_vs_cs_params_set, sdc_hci_cmd_vs_cs_params_set_t,
+        sdc_hci_cmd_vs_cs_params_set_t__bindgen_ty_1, sdc_hci_vs_cs_t_pm_params_t,
+    };
+    let params = sdc_hci_cmd_vs_cs_params_set_t {
+        cs_param_type: SDC_HCI_VS_CS_PARAM_TYPE_CS_T_PM_SET as u8,
+        cs_param_data: sdc_hci_cmd_vs_cs_params_set_t__bindgen_ty_1 {
+            cs_t_pm_params: sdc_hci_vs_cs_t_pm_params_t { cs_t_pm_length_us: 10 },
         },
     };
     // SAFETY: a plain synchronous SDC call with a valid, fully initialised parameter struct.
@@ -323,8 +344,8 @@ pub async fn initiate(stack: &Stack<'_, '_>, handle: ConnHandle) -> Result<(), C
             PROCEDURE_INTERVAL, // min, in connection events
             PROCEDURE_INTERVAL, // max
             0,                  // procedure count: until disabled
-            ExtDuration::from_u32(16_000),
-            ExtDuration::from_u32(16_000),
+            ExtDuration::from_u32(SUBEVENT_LENGTH_US),
+            ExtDuration::from_u32(SUBEVENT_LENGTH_US),
             0, // antenna configuration index 0: 1×1
             PhyKind::Le2M,
             i8::MIN, // tx power delta: no recommendation

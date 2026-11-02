@@ -4,6 +4,23 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-02
 
+**Lab session: probe dropouts fixed, subevents still abort (DEF-18, DEF-19).** Both TAGs on DK power
+at 3.3 V, each logged by its own DK at the same time. Details: [spike](spikes/2026-11-02-cs-subevent-aborts.md).
+
+- **DEF-19 fixed:** the probe lost the TAG on DK power too, so it was never the coin cell. At
+  100 kHz SWD (probe-rs defaults to 400 kHz) no probe dropped in about 20 minutes of CS. The
+  runner now passes `--speed 100`; a flash takes about 2 minutes.
+- **DEF-18 unchanged:** every subevent still aborts with reason 0x3. Eight runs ruled out:
+  - the 100 ms interval and data length 251;
+  - a 16 ms CS event length and NCS's controller setup (roles, mode-3, link count, 10 µs tones);
+  - one antenna, MPSL owning the HFXO, and moving embassy's timer off GRTC CC[11].
+- **Kept from the runs:** data length 251 on connect, CS event length equal to the subevent length
+  (as the SDC docs say), and T_PM 10 µs (as NCS sets).
+- **Found on the way:** embassy's GRTC timer shares CC[11] with MPSL (DEF-22). A DK's board
+  controller can time out until its USB is replugged. nrfutil can read the DK's VDD without
+  Board Configurator.
+- **Next:** Nordic's RAS samples on the same TAGs. NCS v3.4.1 is installing.
+
 **Host capture parser (DEF-15).** `navgrid cs <files>` turns raw CS captures into one distance per
 procedure.
 

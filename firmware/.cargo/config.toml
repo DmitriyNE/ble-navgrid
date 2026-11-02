@@ -1,7 +1,8 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
 # Double buffering corrupts one word near the start of most pages on the TAG (DEF-16); --verify
-# catches anything else.
-runner = "probe-rs run --chip nRF54L15 --disable-double-buffering --verify"
+# catches anything else. At probe-rs's default 400 kHz SWD clock the DK's J-Link loses a TAG within
+# seconds of CS starting (DEF-19); 100 kHz holds, at the cost of a ~2 min flash.
+runner = "probe-rs run --chip nRF54L15 --speed 100 --disable-double-buffering --verify"
 
 [build]
 target = "thumbv8m.main-none-eabihf"

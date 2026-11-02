@@ -210,6 +210,7 @@ async fn main(spawner: Spawner) {
     let mut sdc_mem = sdc::Mem::<SDC_MEM>::new();
     let sdc = unwrap!(build_sdc(sdc_p, &mut rng, mpsl, &mut sdc_mem, antennas));
     unwrap!(cs::set_event_length(), "CS event length");
+    unwrap!(cs::set_tone_length(), "CS tone length");
 
     let addr = static_address();
     let mut id = [0u8; 8];
@@ -326,6 +327,10 @@ async fn initiator(stack: &Host<'_, '_>, peer: [u8; 6]) {
         if let Err(e) = conn.set_phy(stack, PhyKind::Le2M).await {
             warn!("set PHY: {:?}", e);
         }
+        // And to the largest data length (BT_AUTO_DATA_LEN_UPDATE): 251 octets, 2120 us.
+        if let Err(e) = conn.update_data_length(stack, 251, 2120).await {
+            warn!("data length: {:?}", e);
+        }
         if let Err(e) = conn.request_security() {
             warn!("request security: {:?}", e);
         }
@@ -365,6 +370,17 @@ async fn encrypted(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacketPool
                     warn!("connection parameters: {:?}", e);
                 }
             }
+            ConnectionEvent::DataLengthUpdated {
+                max_tx_octets,
+                max_tx_time,
+                max_rx_octets,
+                max_rx_time,
+            } => {
+                info!(
+                    "data length: tx {} B {} us, rx {} B {} us",
+                    max_tx_octets, max_tx_time, max_rx_octets, max_rx_time
+                )
+            }
             _ => {}
         }
     }
@@ -383,6 +399,17 @@ async fn serve(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacketPool>) {
                 if let Err(e) = req.accept(None, stack).await {
                     warn!("connection parameters: {:?}", e);
                 }
+            }
+            ConnectionEvent::DataLengthUpdated {
+                max_tx_octets,
+                max_tx_time,
+                max_rx_octets,
+                max_rx_time,
+            } => {
+                info!(
+                    "data length: tx {} B {} us, rx {} B {} us",
+                    max_tx_octets, max_tx_time, max_rx_octets, max_rx_time
+                )
             }
             _ => {}
         }
