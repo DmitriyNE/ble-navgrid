@@ -81,3 +81,8 @@ is unconfirmed, but it confirms on its first fleet link, and ranging had resumed
   500 KB image. The host's upload, about 70 s, isn't the bottleneck.
 - **A receiver must not restart before its `Done` has left.** It now waits for the sender to
   close the channel, and on the 120 ms sink link that `Done` arrived.
+
+## Follow-up: N002's build
+
+With N002 back on a probe, its tag reads `navgrid-firmware 0.1.2+51eed786-dirty` and its
+bootloader state `0xD0`: it runs B2, confirmed, received from N001 without a probe.
