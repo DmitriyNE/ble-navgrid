@@ -6,6 +6,8 @@
 
 - `chairs-<d>.jsonl.gz`: N005 and N004 flat on wooden chair seats, 0.45 m up, same side up,
   `d` metres apart. The two `-phase-only` files are from the firmware before the RTT referee.
+- `sweep-<d>.jsonl.gz`: the chair sweep, both pucks on the seats 0.45 m up, same side up, `d`
+  metres apart in 25 cm steps from 0.50 to 4.00 m, 60 s each (the 0.50 m file runs longer).
 - `high-<x>.jsonl.gz`: N004 flat on top of a wardrobe at 2.30 m, N005 flat on the floor `x` metres
   sideways from directly below it; `high-3-flipped` is the 3 m point with N005 the other side up.
 

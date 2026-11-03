@@ -230,3 +230,31 @@ is true plus the offset. That is the on-and-off pattern of both nights' low rows
 puck (its polarization against the floor) moving a point by 1.5 m. With one end at 2.3 m the floor
 bounce at the tag merges with the direct path and nothing else is as short. To check: raise one of
 two low pucks to about 1 m, which should un-pin the chair row.
+
+## After midnight: the chair sweep, 0.50 to 4.00 m in 25 cm steps
+
+Same chairs, same pucks, same side up, 0.45 m up, 60 s a point, N005–N004. Phase slope median,
+RTT mean (per-pair bias included), data in `captures/2026-11-03-home/night2/sweep-*`:
+
+| True (m) | 0.50 | 0.75 | 1.00 | 1.25 | 1.50 | 1.75 | 2.00 | 2.25 | 2.50 | 2.75 | 3.00 | 3.25 | 3.50 | 3.75 | 4.00 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Phase slope | 2.21 | 1.95 | 2.39 | 2.95 | 3.17 | 3.79 | 4.05 | 4.20 | 4.17 | 4.70 | 6.62 | 7.42 | 7.86 | 6.98 | 7.22 |
+| Over true | 1.7 | 1.2 | 1.4 | 1.7 | 1.7 | 2.0 | 2.0 | 2.0 | 1.7 | 2.0 | 3.6 | 4.2 | 4.4 | 3.2 | 3.2 |
+| RTT | 11.7 | 11.7 | 12.4 | 12.3 | 13.0 | 13.7 | 13.7 | 13.7 | 13.7 | 13.9 | 17.4 | 16.1 | 17.3 | 16.8 | 16.6 |
+| Procedures with a phase estimate | 415 | 414 | 436 | 450 | 428 | 445 | 447 | 442 | 431 | 433 | 450 | 329 | 98 | 425 | 428 |
+
+- **Clean to 2.75 m:** true + 1.2–2.0 m by phase, and the RTT rose 2.2 m over 2.25 m of
+  true distance. Every point tight.
+- **A step at 3.00 m** of +1.9 m by phase and +3.5 m by RTT for a 25 cm move, and from there
+  to 4.00 m both sit 3.2–4.4 m over true. The same 3 m edge as the two earlier rows tonight and
+  last night's (0.35 m up: pinned 3–5 m, back to true + 2.2 at 6 m).
+- **At 3.50 m only 98 of about 430 procedures produced a phase estimate**, the rest having too
+  few usable tones; the RTT, which needs only the packets, kept reporting. The deepest point of
+  the fade thins the tones out, a sign the device could use.
+- **The two-ray reading.** At 0.45 m the floor bounce is 2h²/d longer than the direct path:
+  one wavelength at 3.3 m, where the inverted reflection cancels the direct path, and the
+  ratio then falls slowly (0.8 λ at 4 m, 0.65 at 5, 0.55 at 6), so the fade is wide and
+  recovers toward 6 m; the second-order fade near 1.65 m is narrow and shallow because at that
+  range the direct path outweighs any room bounce by far more. That is the shape of the row:
+  clean to 2.75 m, a wide fade from 3 m, and (last night) recovery by 6 m. The floor's reflection
+  phase, polarization and what the pucks sit on move the edges by tens of centimetres.

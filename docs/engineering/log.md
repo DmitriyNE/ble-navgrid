@@ -2,6 +2,15 @@
 
 Newest first. Conventions: [README](README.md).
 
+## 2026-11-04
+
+**After midnight: the chair sweep** ([spike](spikes/2026-11-03-four-tags-proximity.md), last
+section). N005–N004 on chair seats 0.45 m up, 0.50 to 4.00 m in 25 cm steps: true + 1.2–2.0 m up to
+2.75 m with the RTT rising alongside, then a step of 2–3.5 m at 3.00 m that holds to 4.00 m, and at
+3.50 m three procedures in four had too few tones for an estimate. The 3 m edge is the floor
+reflection's first-order fade at this height (2h²/d = λ at 3.3 m), wide because the path ratio then
+changes slowly, matching last night's pinned 3–5 m and recovery at 6 m.
+
 ## 2026-11-03
 
 **Late night: a node high over a tag on the floor ranges**
