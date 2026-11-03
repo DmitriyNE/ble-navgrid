@@ -58,8 +58,6 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **Single antenna path:** N001 provisioned `--no-diversity` gave no ranges in 90 s; check
       with a probe on it.
 - [ ] **Battery forecast** (DEF-52): ignore the first hour's sag, or fit from the settled part.
-- [ ] **Monitor names:** re-read the registry when a device enrols, or on a boot report from an
-      unknown ID, instead of only at start.
 - [ ] **Energy per activity** with a power profiler on a TAG: advertising, idle link, CS per
       antenna-path count, BMI270 gyro, BME688. Also measure CR2032 sag during CS (R-9).
 - [ ] **BME688 driver** and pressure-noise characterisation: two TAGs side by side, then known
@@ -148,7 +146,6 @@ Items 1–3 are done (log 2026-11-02):
 - battery readings.
 
 Left over from them:
-- the registry: learn what a device runs from its Hello and Health (DEF-44);
 - check that a phone scans the label QR;
 - try the factory reset on a TAG;
 - bring in install mode on the long press (item 7).
