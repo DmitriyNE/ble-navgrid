@@ -15,6 +15,12 @@ compile_error!("select a board: --features board-dk or --features board-tag");
 mod consts {
     pub const NAME: &str = "nRF54L15 DK";
     pub const BOARD: navgrid_proto::Board = navgrid_proto::Board::Dk;
+    /// More than the crystal's datasheet allows, for its links' sake: a peer widens its receive
+    /// window by both sides' figures. With 50 ppm on both, a reflector's 1 s sink link lost sync
+    /// after its first packet every time; with 250 it held. Which crystal drifts is unmeasured
+    /// (DEF-2). On the TAGs, as CS initiators, 250 broke the sink link's spacing (DEF-26), so the
+    /// sink, which runs no CS, carries the margin for both.
+    pub const LFXO_ACCURACY_PPM: u16 = 250;
     pub const LFXO_LOAD_FF: u32 = 17_000;
     pub const HFXO_LOAD_FF: u32 = 15_000;
     pub const ANTENNAS: u8 = 1;
@@ -25,6 +31,8 @@ mod consts {
 mod consts {
     pub const NAME: &str = "nRF54L15 TAG";
     pub const BOARD: navgrid_proto::Board = navgrid_proto::Board::Tag;
+    /// See the DK's.
+    pub const LFXO_ACCURACY_PPM: u16 = 50;
     pub const LFXO_LOAD_FF: u32 = 9_000;
     pub const HFXO_LOAD_FF: u32 = 8_000;
     pub const ANTENNAS: u8 = 2;

@@ -1,6 +1,10 @@
 //! The FR-M4 beacon in this node's advertisements (`navgrid_proto::Beacon`), rebuilt from the
 //! node's status whenever advertising starts. A button press restarts advertising, fast for the
 //! attention period, so a field tool nearby sees it at once (architecture §13).
+//!
+//! Advertising uses the extended commands, as connecting and scanning do: the SDC refuses to mix
+//! legacy and extended ones (DEF-50), and a reflector or a sink also connects as central. The
+//! set is connectable and not scannable, so the beacon carries no name.
 
 use defmt::unwrap;
 use embassy_futures::select::{Either, select};
@@ -17,24 +21,11 @@ pub struct Beacons {
     cfg: NodeConfig,
     number: Option<u16>,
     max_links: u8,
-    scan_data: [u8; 31],
-    scan_len: usize,
 }
 
 impl Beacons {
     pub fn new(cfg: NodeConfig, number: Option<u16>, max_links: u8) -> Self {
-        let mut scan_data = [0; 31];
-        let scan_len = unwrap!(AdStructure::encode_slice(
-            &[AdStructure::CompleteLocalName(b"navgrid")],
-            &mut scan_data[..]
-        ));
-        Self {
-            cfg,
-            number,
-            max_links,
-            scan_data,
-            scan_len,
-        }
+        Self { cfg, number, max_links }
     }
 
     /// The beacon as of now. Until the mesh state runs on devices only a sink knows its hop
@@ -86,17 +77,15 @@ impl Beacons {
             };
             let params = if attention > 0 { &fast } else { slow };
             status::BEACON_CHANGED.reset();
-            let advertiser = unwrap!(
-                peripheral
-                    .advertise(
-                        params,
-                        Advertisement::ConnectableScannableUndirected {
-                            adv_data: &adv_data[..adv_len],
-                            scan_data: &self.scan_data[..self.scan_len],
-                        },
-                    )
-                    .await
-            );
+            let sets = [AdvertisementSet {
+                params: *params,
+                data: Advertisement::ExtConnectableNonscannableUndirected {
+                    adv_data: &adv_data[..adv_len],
+                },
+                address: None,
+            }];
+            let mut handles = AdvertisementSet::handles(&sets);
+            let advertiser = unwrap!(peripheral.advertise_ext(&sets, &mut handles).await);
             let changed = async {
                 if attention > 0 {
                     select(status::BEACON_CHANGED.wait(), Timer::after_secs(u64::from(attention))).await;

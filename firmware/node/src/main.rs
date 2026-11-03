@@ -280,7 +280,7 @@ async fn main(spawner: Spawner) {
         source: mpsl::raw::MPSL_CLOCK_LF_SRC_XTAL as u8,
         rc_ctiv: 0,
         rc_temp_ctiv: 0,
-        accuracy_ppm: 50,
+        accuracy_ppm: board::LFXO_ACCURACY_PPM,
         skip_wait_lfclk_started: false,
     };
     // One timeslot session: the RRAM driver's.
@@ -512,13 +512,25 @@ async fn initiator(
     listen(&mut central).await;
     let central = Mutex::<CriticalSectionRawMutex, _>::new(central);
     let links = Links::default();
-    report::set_link(node, node_id(peer));
     let report = async {
         if let Some(sink) = sink {
-            report_to_sink(stack, fleet, &central, &links, sink, rram).await;
+            let to = SinkLink {
+                sink,
+                interval_ms: SINK_INTERVAL_MS,
+                ranges: Some((node, node_id(peer))),
+            };
+            report_to_sink(stack, fleet, &central, &links, to, rram).await;
         }
     };
     join(ranging(stack, fleet, &central, &links, peer, antennas, rram), report).await;
+}
+
+/// A node's link to its sink.
+struct SinkLink {
+    sink: [u8; 6],
+    interval_ms: u64,
+    /// The initiator's CS link, whose ranges go over it too.
+    ranges: Option<(NodeId, NodeId)>,
 }
 
 /// Keeps a link to the sink and sends the telemetry outbox over it, reconnecting 5 s after it
@@ -528,12 +540,16 @@ async fn report_to_sink<'a>(
     fleet: &keys::Fleet,
     central: &Mutex<CriticalSectionRawMutex, Central<'a, SoftdeviceController<'_>, DefaultPacketPool>>,
     links: &Links,
-    sink: [u8; 6],
+    to: SinkLink,
     rram: &'static firmware::Rram,
 ) -> ! {
     loop {
-        if let Some((conn, mut channel)) = uplink(stack, fleet, central, links, sink).await {
+        if let Some((conn, mut channel)) = uplink(stack, fleet, central, links, to.sink, to.interval_ms).await {
             let _link = status::Link::up(true);
+            // A failed send stops them; each new uplink starts them again.
+            if let Some((initiator, reflector)) = to.ranges {
+                report::set_link(initiator, reflector);
+            }
             select(
                 report::run(stack, &mut channel),
                 update::listen(stack, &conn, rram, true),
@@ -560,7 +576,12 @@ async fn reflector_report(
         warn!("ACL event length: {:?}", e);
     }
     let central = Mutex::<CriticalSectionRawMutex, _>::new(stack.central());
-    report_to_sink(stack, fleet, &central, &Links::default(), sink, rram).await
+    let to = SinkLink {
+        sink,
+        interval_ms: REFLECTOR_SINK_INTERVAL_MS,
+        ranges: None,
+    };
+    report_to_sink(stack, fleet, &central, &Links::default(), to, rram).await
 }
 
 /// Scans for a few seconds; the event handler logs the beacons it hears (FR-M4). Neighbour
@@ -588,6 +609,11 @@ const CS_FOOTPRINT_US: u32 = 30_000 - ACL_EVENT_LENGTH_US;
 /// The sink link's interval: a multiple of the CS link's 30 ms keeps its events at a fixed offset
 /// from the CS link's, so they never drift onto a CS subevent.
 const SINK_INTERVAL_MS: u64 = 120;
+/// A reflector's sink link: long, as it carries little, and no multiple of 30 ms. The reflector
+/// can't place it clear of the CS procedures its peer schedules, so it drifts across them: 10 ms
+/// further into the 90 ms procedure cycle each event, about one event in four on a procedure. At
+/// 120 ms it sat on two procedures in four, every time (DEF-50).
+const REFLECTOR_SINK_INTERVAL_MS: u64 = 1000;
 
 #[derive(Clone, Copy)]
 enum Link {
@@ -642,13 +668,15 @@ async fn uplink<'a>(
     central: &Mutex<CriticalSectionRawMutex, Central<'a, SoftdeviceController<'_>, DefaultPacketPool>>,
     links: &Links,
     sink: [u8; 6],
+    interval_ms: u64,
 ) -> Option<(Connection<'a, DefaultPacketPool>, L2capChannel<'a, DefaultPacketPool>)> {
     let target = Address::random(sink);
     let config = ConnectConfig {
         connect_params: RequestedConnParams {
-            min_connection_interval: Duration::from_millis(SINK_INTERVAL_MS),
-            max_connection_interval: Duration::from_millis(SINK_INTERVAL_MS),
-            supervision_timeout: Duration::from_secs(4),
+            min_connection_interval: Duration::from_millis(interval_ms),
+            max_connection_interval: Duration::from_millis(interval_ms),
+            // At least 8 events: a long interval leaves few chances before the link times out.
+            supervision_timeout: Duration::from_millis((interval_ms * 8).max(4_000)),
             ..Default::default()
         },
         scan_config: ScanConfig {

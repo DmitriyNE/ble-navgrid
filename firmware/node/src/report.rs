@@ -6,6 +6,7 @@
 //! the host on the same port and offers the ones it carries to the node on its link (`update`).
 
 use core::cell::Cell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::warn;
 #[cfg(feature = "board-dk")]
@@ -64,6 +65,8 @@ const HEALTH_PERIOD: Duration = Duration::from_secs(60);
 
 /// The CS link the ranges belong to, once the uplink is up: (initiator, reflector).
 static LINK: Mutex<CriticalSectionRawMutex, Cell<Option<(NodeId, NodeId)>>> = Mutex::new(Cell::new(None));
+/// Whether an uplink is up to carry Health: a reflector's too, which has no CS link to report.
+static UPLINK: AtomicBool = AtomicBool::new(false);
 
 /// Starts reporting ranges of the CS link between `initiator` and `reflector`.
 pub fn set_link(initiator: NodeId, reflector: NodeId) {
@@ -93,7 +96,7 @@ pub fn push(est: &PhaseSlope, paths: usize) {
 pub async fn health(mpsl: &MultiprotocolServiceLayer<'_>, node: NodeId, firmware: Firmware) -> ! {
     loop {
         Timer::after(HEALTH_PERIOD).await;
-        if LINK.lock(Cell::get).is_none() {
+        if !UPLINK.load(Ordering::Relaxed) {
             continue;
         }
         let t = mpsl.get_temperature();
@@ -111,6 +114,7 @@ pub async fn health(mpsl: &MultiprotocolServiceLayer<'_>, node: NodeId, firmware
 
 /// Sends queued messages over `channel` until it fails.
 pub async fn run(stack: &Stack<'_, '_>, channel: &mut L2capChannel<'_, DefaultPacketPool>) {
+    UPLINK.store(true, Ordering::Relaxed);
     let mut buf = [0u8; MAX_FRAME_LEN];
     loop {
         let msg = OUTBOX.receive().await;
@@ -124,6 +128,7 @@ pub async fn run(stack: &Stack<'_, '_>, channel: &mut L2capChannel<'_, DefaultPa
         if let Err(e) = channel.send(stack, frame).await {
             warn!("uplink: {:?}", e);
             LINK.lock(|l| l.set(None));
+            UPLINK.store(false, Ordering::Relaxed);
             return;
         }
         // TrouBLE's per-link send lock goes to whichever future asks first. With a backlog this
