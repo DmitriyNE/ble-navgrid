@@ -47,7 +47,7 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       on the floor won't range with it. Captures (`NAVGRID_LOG_STEPS`, both boards) from a bad
       placement first: two TAGs flat on the floor 1.5 m apart, and 0.5 m from a DK. Then an
       IFFT or super-resolution estimator on the host, as NCS's `cs_de`, compared on those
-      captures and the 40 cm one (`scratchpad` of 2026-11-03; keep copies under `docs/`).
+      captures and the 40 cm one (`docs/engineering/captures/2026-11-03-40cm/`).
 - [ ] **Cross-check estimator:** compare against NCS v3.4.1 `ipt_*` / `ras_*` samples and `cs_de`
       on the same captures; settle sign and units (DEF-6).
 - [ ] **Inline PCT transfer** (D-4) is described as on by default, but the firmware doesn't use
