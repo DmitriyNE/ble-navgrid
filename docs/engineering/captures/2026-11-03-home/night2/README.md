@@ -10,6 +10,9 @@
   metres apart in 25 cm steps from 0.50 to 4.00 m, 60 s each (the 0.50 m file runs longer).
 - `vertical-<d>.jsonl.gz`: the same chairs with both pucks standing on edge in a fixture (their two
   chip antennas, 120° apart on the board, each about 60° from the horizon), 0.50 to 4.00 m.
+- `tones-<edge|flat>-<d>.jsonl.gz`: 2 min each with the raw-tones firmware (`Tones` records, one
+  antenna path a second, plus the ranges), pucks on edge or flat on the chairs at 3.0 and 3.5 m.
+  `navgrid tones FILE` runs the host estimators on them.
 - `high-<x>.jsonl.gz`: N004 flat on top of a wardrobe at 2.30 m, N005 flat on the floor `x` metres
   sideways from directly below it; `high-3-flipped` is the 3 m point with N005 the other side up.
 

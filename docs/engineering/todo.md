@@ -171,8 +171,11 @@ Left over from them:
       a node variant with a vertical antenna (the flat TAG is horizontally polarized, and on edge
       the 3–4 m fade halved). Test node-to-node under a ceiling at two depths before fixing the
       mount.
-- [ ] **Per-antenna-path ranges over the air**, so a polarization or diversity split can be seen
-      without cables (today only the combined estimate is reported).
+- [ ] **Tones over the air, follow-ups:** rebalance the outbox (phase ranges are dropped before
+      RTT ones when tones are on); make the tones rate and the combiner provisioning settings;
+      explain the harmonic ladder (3.65 / 7.15 / 10.5 m) seen on one path at 3.5 m on edge from
+      the PCT values in `night2/tones-edge-3.5`; try a matrix-pencil estimator on the captures
+      next to the OMP one.
 - [ ] **RTT as a real range** (DEF-55): send the reflector's mode-1 ToD−ToA to the initiator over
       the CS link (what RAS does), subtract it, drop the 100 m report offset, and try the
       sounding-sequence RTT types for precision. Then check the per-pair bias against the pair's

@@ -283,3 +283,46 @@ pair, 60 s a point, a coarse sweep with the fade filled in (`night2/vertical-*`)
 - **Below 2.5 m both sweeps read true + 1.3–2.0 m,** the edge-on one a little lower.
 - Polarization is a real lever, worth a node variant with a properly vertical antenna, but it
   doesn't replace placement: a metre below the ceiling and unequal node heights do more.
+
+## After midnight: raw tones over the air, and the four antenna paths
+
+To look inside the fade without cables, the initiator now sends one antenna path's raw tones a
+second through the sink (`Message::Tones`, three chunks of 33 channels; commit 46cabaf), and
+`navgrid tones` runs the host estimators on a monitor log: the phase slope, the first-path
+estimator and the delay profile's peaks (what an IFFT shows), per procedure and antenna path.
+Four 2-minute captures on the chairs, N005–N004 (`night2/tones-*`):
+
+| Placement | Device range | Host phase slope | Strongest peak | Per path, coherent medians | Shortest coherent path |
+|---|---|---|---|---|---|
+| 3.0 m on edge | 5.14 | 5.05 | 5.0 | 5.07 / 5.94 / 4.95 / 4.76 | 4.79 |
+| 3.5 m on edge | 6.76 | 6.88 | 5.4 (p10 3.45) | 7.04 / 6.85 / 6.89 / 6.62 | 6.63 |
+| 3.5 m flat | 6.47 (p90 19) | 6.81 | 7.05 (p10 5.05) | 6.83 / **5.10** / 6.88 / 5.75 | **5.13** |
+| 3.0 m flat | 4.45 | 4.51 | 4.4 | 4.49 / 3.88 / 4.77 / 4.23 | 4.21 |
+
+(True + the usual offset: 4.5 at 3.0 m, 5.0 at 3.5 m.)
+
+- **The host reads the device's tones the same way the device does** (phase slopes within
+  0.1–0.3 m), so the pipeline is sound and the captures are the real thing.
+- **At 3.5 m flat one antenna path still saw the direct path.** Path 1 read 5.10 m with
+  coherence 0.98 while the other three read 6.8–9.2 m, and the residual-weighted blend gave
+  6.47. The four paths do not fade together: the two chips sit 120° apart and a few centimetres
+  from each other, enough to change the floor reflection's phase. A bounce is never shorter
+  than the direct path, so **the shortest coherent path** is the better combiner: 5.13 here,
+  4.79 at 3.0 m on edge, no worse elsewhere. It is now the device's and the host tools' default
+  (`Combine::ShortestCoherent`, coherence ≥ 0.95, commit 770ae73).
+- **No hidden direct path where all four paths read long.** At 3.5 m on edge the profile is one
+  merged peak per path with nothing earlier above a tenth; the first-path estimator's
+  earlier "components" there have strengths of 0.01, noise. Super-resolution has nothing to
+  separate when the direct pair itself has faded; it would matter where a weak direct path
+  survives in front of a stronger bounce, which these captures don't show.
+- **A ladder at 3.5 m on edge.** On one path the profile shows peaks at 3.65, 7.15 and 10.5 m,
+  equally spaced, strongest first: the first rung at the true distance with no offset. Two
+  real paths 3.5 m apart would give 3.65, 5.4 (their cross term in the squared round-trip
+  response) and 7.15, not 10.5; a harmonic ladder suggests something periodic in the phase
+  (quantization, or the inline-PCT application) and is unexplained. Worth a look with the
+  PCT values themselves, which the captures hold.
+- **3.0 m flat was clean this time** (4.45 against 6.62 in the sweep an hour earlier): the fade's
+  edge moves by tens of centimetres with the exact spot and the pucks' pose.
+- The telemetry budget is tight with tones on: the outbox keeps 4 slots free for them and
+  drops ranges beyond 12 queued, and the RTT range is queued before the phase one, so phase
+  ranges are the ones dropped first (N001 kept 32 of ~500 one minute). To rebalance.

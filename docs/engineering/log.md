@@ -4,6 +4,16 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**After midnight: raw tones over the air, and the shortest coherent path**
+([spike](spikes/2026-11-03-four-tags-proximity.md), last section). Initiators send one antenna
+path's raw tones a second through the sink (`Tones`, protocol 5) and `navgrid tones` runs the host
+estimators on them. Four captures on the chairs at 3.0 and 3.5 m, on edge and flat: the host
+reproduces the device's phase slope; at 3.5 m flat one of the four antenna paths still read the
+direct path (5.1 m) while the blend gave 6.5, so the device now combines paths by the shortest
+coherent one (commit 770ae73); where all four paths read long the profile holds no earlier path for
+a super-resolution estimator to find. An unexplained harmonic ladder (3.65, 7.15, 10.5 m) on one path
+at 3.5 m on edge.
+
 **After midnight, later: the chairs with the pucks on edge** ([spike](spikes/2026-11-03-four-tags-proximity.md),
 last section). Three quarters vertical by power (the two chips sit 120° apart, each 60° from the
 horizon on edge): the 3–4 m fade is shallower (3.2 m over true at worst against 4.4 flat, the RTT's
