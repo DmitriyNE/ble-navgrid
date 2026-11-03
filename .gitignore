@@ -1,3 +1,4 @@
 target/
 *.navcap
 .DS_Store
+__pycache__/

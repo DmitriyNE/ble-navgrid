@@ -4,6 +4,17 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Morning after: the estimators on the raw tones** ([spike](spikes/2026-11-03-four-tags-proximity.md),
+last section). Phase slope, windowed delay profile, matrix pencil and root-MUSIC side by side on the
+four tone captures (`scripts/tones_estimators.py`, `scripts/tones_components.py`). The 3–3.5 m
+responses are three or four components: a weakened direct-plus-floor pair, a ceiling bounce about
+2.2 m longer, something at 10–12 m. The pencil at the singular-value order recovers the direct
+component on every path at 3.5 m on edge and on two of four at 3.5 m flat, 0.3–1.2 m short against
+the slope's 1.6–2 m long, but is 1–2 m noisy procedure to procedure and no better outside the fade,
+so the shortest-coherent slope plus geometry stays the plan and the pencil is a host diagnostic. The
+"harmonic ladder" was three components inside one Hann lobe. The desk pair's 1.3–1.9 m offset is
+the same by every estimator: a real delay, per antenna path (DEF-6).
+
 **After midnight: raw tones over the air, and the shortest coherent path**
 ([spike](spikes/2026-11-03-four-tags-proximity.md), last section). Initiators send one antenna
 path's raw tones a second through the sink (`Tones`, protocol 5) and `navgrid tones` runs the host

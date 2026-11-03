@@ -326,3 +326,92 @@ Four 2-minute captures on the chairs, N005–N004 (`night2/tones-*`):
 - The telemetry budget is tight with tones on: the outbox keeps 4 slots free for them and
   drops ranges beyond 12 queued, and the RTT range is queued before the phase one, so phase
   ranges are the ones dropped first (N001 kept 32 of ~500 one minute). To rebalance.
+
+## Morning after: the estimators on the raw tones
+
+**Question.** With raw tones in hand, does a super-resolution estimator (an IFFT or CIR view,
+MUSIC, Prony-type) see a direct path where the phase slope reads long, and would it make a
+better range for the proof of concept?
+
+**Method.** `scripts/tones_estimators.py` (numpy, offline) rebuilds each (node, procedure,
+antenna path) response from the `Tones` records of the four 2-minute captures
+`night2/tones-{edge,flat}-{3.0,3.5}` (N005 initiating with N004 on the chairs; N001–N002 on the
+desk a hand apart as the reference) and runs: the device's phase slope; the delay profile
+(matched filter on a 5 cm grid, Hann window: what an IFFT shows); the matrix pencil (Hua and
+Sarkar) and root-MUSIC with forward–backward smoothing, at model orders 2–5 and at an order taken
+from the singular values (those above a tenth of the largest, 2 to 5). About ten of the 72
+channels in every procedure carry a mode-1 RTT step instead of a tone, at random positions, so the
+75-slot vector is completed first by Cadzow iterations (rank 4; ranks 2–10 give the same
+components). A pencil or MUSIC component has a least-squares amplitude and a pole radius; it
+counts as a path when its amplitude is at least a quarter of the strongest (a quarter to 0.4 makes
+no difference), its pole radius is within 0.1 of 1, and it lies beyond 1.2 m (nothing can read
+below the device offset). "Shortest" is the shortest such component, "strongest" the strongest;
+medians over the ~27 procedures per antenna path. A synthetic self-test (paths at 5 and 9 m,
+amplitudes 1 and 0.5, ten channels missing) returns 5.00 and 9.00 from both estimators where the
+Hann profile shows one peak at 5.1. `scripts/tones_components.py` prints the amplitude-weighted
+histogram of pencil components per path: a super-resolved profile over the two minutes.
+
+**Results.** Expected = true + the pair's offset (1.45 m from the clean 3.0 m flat point): 4.5 at
+3.0 m, 5.0 at 3.5 m. Medians per antenna path 0 / 1 / 2 / 3:
+
+| Capture | Expected | Phase slope | Profile, strongest | Pencil (auto order), shortest | Pencil, strongest | MUSIC (order 2), shortest |
+|---|---|---|---|---|---|---|
+| 3.0 m on edge | 4.5 | 5.07 / 5.94 / 4.97 / 4.77 | 4.95 / 6.10 / 5.10 / 4.85 | 4.52 / 5.55 / 4.13 / 4.35 | 4.60 / 7.23 / 4.15 / 4.35 | 4.94 / 5.26 / 4.88 / 4.66 |
+| 3.5 m on edge | 5.0 | 7.03 / 6.82 / 6.89 / 6.58 | 3.50 / 5.90 / 3.80 / 6.60 | 4.38 / 4.47 / 4.20 / 3.85 | 4.38 / 4.47 / 4.30 / 3.97 | 3.97 / 5.61 / 4.33 / 4.23 |
+| 3.0 m flat | 4.5 | 4.50 / 3.91 / 4.77 / 4.23 | 4.75 / 3.35 / 4.60 / 4.00 | 5.22 / 3.20 / 4.58 / 3.96 | 5.37 / 5.77 / 9.58 / 7.06 | 4.46 / 3.66 / 4.27 / 4.08 |
+| 3.5 m flat | 5.0 | 6.85 / 5.12 / 6.87 / 5.81 | 7.00 / 5.10 / 7.15 / 9.20 | 4.95 / 4.72 / 6.73 / 6.20 | 6.93 / 7.69 / 6.76 / 6.20 | 6.96 / 4.95 / 6.96 / 5.97 |
+| Desk pair (N001), in the first capture | offset | 1.78 / 1.60 / 1.40 / 1.33 | 1.90 / 1.65 / 1.35 / 1.30 | 1.75 / 1.62 / 1.38 / 1.34 | same | 1.76 / 1.62 / 1.37 / 1.32 |
+
+Shortest over the four paths (what the device's combiner would pick): slope 4.77 / 6.58 / 3.91 /
+5.12 against the pencil's 4.13 / 3.85 / 3.20 / 4.72, expected 4.5 / 5.0 / 4.5 / 5.0.
+
+Singular values of the completed Hankel matrix, medians per path after the largest: 3.0 m on edge
+0.11–0.18 then ≤ 0.10 (one component and a weak second); 3.5 m on edge 0.57 / 0.35 / 0.17 on
+path 0, 0.49 / 0.25 / 0.13 on path 2, 0.42 / 0.25 / 0.14 on path 3, then a floor at 0.03–0.05
+(four components); 3.5 m flat 0.68 / 0.25 / 0.20 on path 0 and 0.69 / 0.15 / 0.12 on path 1
+(three or four); the desk pair 0.09 then 0.02 (one).
+
+What the super-resolved profiles show:
+
+- **3.5 m on edge, every path:** components at 3.9–4.6 m (the strongest on paths 0 and 2),
+  6.4–7.0 m, 9.9–12 m, and a weak one at 0.8–1.0 m on paths 0 and 2 (a fifth of the strongest,
+  present at every completion rank). The profile's "ladder" at 3.45 / 7.3 / 10.6 on path 0 is
+  these three components, 2.5–3 m apart, interfering inside a Hann main lobe 4 m wide: not
+  harmonic, not periodic, nothing in the PCT values. (The middle one sits at the mean of the
+  outer two, where the squared round-trip response puts their cross term, but the amplitudes do
+  not fit a pure square.)
+- **3.5 m flat:** paths 0 and 1 hold the direct path at 4.75–5.0 m at a third to a half of the
+  strongest component (6.9 and 7.6 m); paths 2 and 3 have nothing before 6.0–6.5 m. The extra
+  2.0–2.6 m fits the ceiling: with the pucks 0.45 m up under a 2.7 m ceiling the ceiling bounce
+  at 3.5 m is 2.2 m longer than the direct path (2.4 m at 3.0 m).
+- **The floor bounce is 13 cm longer than the direct path** and no estimator at 75 MHz of
+  bandwidth separates it. "Direct" above means the direct-plus-floor pair; in the fade its two
+  near-equal phasors sum to a phase that is no longer linear in frequency, so the pair's apparent
+  delay moves. That is why the pencil's component sits at 4.0–4.6 m rather than 5.0 on edge, and
+  why the slope on path 1 at 3.0 m flat reads 3.9 (components at 3.9 and 4.6).
+- **Errors.** In the fades the pencil's shortest path is 0.3–1.2 m short where the slope is
+  1.6–2.0 m long (3.5 m on edge), and reads 4.95 / 4.72 on the two 3.5 m flat paths that keep a
+  direct component (slope 6.85 / 5.12) but 6.2–6.7 on the other two. Outside the fade (3.0 m
+  flat) it is no better than the slope and far noisier: p10–p90 of 1–2 m per path against
+  0.3 m. Taking the shortest over the four paths halves the worst error (3.85 against 6.58 at
+  3.5 m on edge) but is short everywhere: the minimum of noisy values picks the noise.
+- **Root-MUSIC** matches the pencil at order 2 and is noisier at every higher order (wider
+  spreads, more outliers); it finds nothing the pencil does not.
+- **The offset is a delay, not a slope artefact.** The desk pair reads 1.3–1.9 m by every
+  estimator, each path the same across estimators; the spread across paths (and between the two
+  captures 40 min apart, pucks untouched) is itself 0.5 m and belongs to the calibration (DEF-6).
+
+**Conclusion.** Super-resolution sees inside the fade: at 3–3.5 m on the chairs the response is
+three or four components (a weakened direct-plus-floor pair, a ceiling bounce about 2.2 m longer,
+something at 10–12 m), which the slope averages and the windowed profile smears, and the matrix
+pencil at the singular-value order recovers the direct component on all paths at 3.5 m on edge
+and on two of four at 3.5 m flat, with 0.3–1.2 m of error against the slope's 1.6–2 m. It is not
+a better range for the proof of concept: it needs a model order per procedure, an amplitude
+threshold and a pole-radius filter, it is 1–2 m noisy procedure to procedure where the slope is
+0.3 m, and the fade's distortion of the direct-plus-floor pair is below the resolution of any
+estimator at this bandwidth. The shortest-coherent slope over antenna paths plus geometry (a node
+high, unequal heights) stays the plan; the pencil is worth keeping on the host as a diagnostic of
+what is in the channel, not on the device. The harmonic ladder is explained. The scripts are
+offline analysis in Python next to the captures; a Rust port into `navgrid tones` is a todo if the
+diagnostic earns its keep.
+

@@ -173,9 +173,10 @@ Left over from them:
       mount.
 - [ ] **Tones over the air, follow-ups:** rebalance the outbox (phase ranges are dropped before
       RTT ones when tones are on); make the tones rate and the combiner provisioning settings;
-      explain the harmonic ladder (3.65 / 7.15 / 10.5 m) seen on one path at 3.5 m on edge from
-      the PCT values in `night2/tones-edge-3.5`; try a matrix-pencil estimator on the captures
-      next to the OMP one.
+      port the matrix pencil (Cadzow completion, singular-value order, amplitude and pole-radius
+      filters, as in `scripts/tones_estimators.py`) into `navgrid tones` as a host diagnostic if
+      the raw tones stay; check the ceiling-bounce reading (a component 2.2 m past the direct
+      path at 3.5 m on 0.45 m chairs) with the pucks at another height or under a lower ceiling.
 - [ ] **RTT as a real range** (DEF-55): send the reflector's mode-1 ToD−ToA to the initiator over
       the CS link (what RAS does), subtract it, drop the 100 m report offset, and try the
       sounding-sequence RTT types for precision. Then check the per-pair bias against the pair's
@@ -193,7 +194,6 @@ Left over from them:
 - [ ] **Host asset registry and pointer** (FR-F1, FR-F3) in the host view.
 - [ ] **Final approach:** direct person↔asset ranging and synthetic-aperture bearing (D-20).
       Optional: asset LED blink.
-- [ ] **Spike:** first-path IFFT / super-resolution estimator vs phase slope.
 - [ ] **Simulator:** full-fix vs single-range tracking side by side; GDOP/battery-aware node
       selection; a find-my-keys scenario with pointer-error statistics.
 
