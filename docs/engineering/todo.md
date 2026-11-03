@@ -8,7 +8,9 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
       - bt-hci: step parsing;
       - nrf-sdc: CS bindings, the nRF54L critical-section fix (DEF-23), RRAM standby;
       - TrouBLE: the CS feature, the `iso` import fix and the connection-parameter-update
-        identifier fix (drop the blank-line commit first).
+        identifier fix (drop the blank-line commit first). Also an issue: the per-link ACL
+        send lock goes to whichever sender asks first, so a busy one starves the rest (DEF-41,
+        worked around).
 - [ ] **nrf-sdc fork docs:** say on `cs_count` / `cs_cfg` that they must follow the `support_*`
       calls and `cs_antenna_switch_callback` (the SDC ignores or rejects them otherwise).
 - [ ] **nrf-sdc optional follow-up:**
@@ -104,19 +106,17 @@ Protocol follow-ups, in the simulator first:
 
 Done (log 2026-11-03): version tracking, the bootloader
 ([spike](spikes/2026-11-03-bootloader.md)), signing, and single-hop updates between TAGs
-([spike](spikes/2026-11-03-single-hop-update.md)). Left before stage 3:
+([spike](spikes/2026-11-03-single-hop-update.md)), and updates from the host through the sink
+([spike](spikes/2026-11-03-updates-through-the-sink.md)). Left before stage 3:
 
-1. [ ] **The sink's offer to its nodes** (DEF-41): the host's upload to the sink works, the
-       sink's transfer to N001 over the sink link doesn't. Next: TrouBLE's debug log on both
-       ends, to see where the channel request and the last chunks go.
-2. [ ] **The sink link's packet length** (DEF-42): one exchange per event caps the uplink at
+1. [ ] **The sink link's packet length** (DEF-42): one exchange per event caps the uplink at
        8.3 frames/s. Full-length packets only during a transfer, or a shorter sink interval.
-3. [ ] **The sink's UART receive** (DEF-43): a buffered UARTE, which re-arms in its interrupt
+2. [ ] **The sink's UART receive** (DEF-43): a buffered UARTE, which re-arms in its interrupt
        handler, instead of `read_until_idle`.
-4. [ ] **Resume and retry** (DEF-39): pick up from the last page written after a dropout (`Want`
+3. [ ] **Resume and retry** (DEF-39): pick up from the last page written after a dropout (`Want`
        carries the offset), and offer again to a peer that declined while unconfirmed.
-5. [ ] **A shorter swap** (DEF-38): a slot closer to the image size, or buffered writes.
-6. [ ] **Test the 5-minute confirm timeout,** and a revert after an over-the-air update.
+4. [ ] **A shorter swap** (DEF-38): a slot closer to the image size, or buffered writes.
+5. [ ] **Test the 5-minute confirm timeout,** and a revert after an over-the-air update.
 
 After stage 4: the desired-firmware record, neighbour-to-neighbour spreading, canary rollout and
 version compatibility during rollouts.

@@ -4,6 +4,19 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Updates from the host through the sink, working**
+([spike](spikes/2026-11-03-updates-through-the-sink.md)).
+
+- **On the bench:** `navgrid update b2.nup --sink` sent 0.1.2 to the sink in 71 s. The sink
+  passed it to N001 over the sink link in 273 s; N001 checked, swapped and confirmed it (tag
+  `0.1.2`, state `0xD0`), then passed it to N002 over the CS link in about 70 s. N002 restarted
+  into it (a 34.6 s ranging gap) and declined it on the next offer.
+- **The cause of DEF-41:** N001's telemetry sender kept TrouBLE's per-link send lock to itself.
+  Its outbox is always full on the sink link (DEF-42), so each time it released the lock it took
+  it again, and the update channel's accept and returned credits never went out. It now yields
+  after each frame.
+- **Still open:** the uplink cap itself (DEF-42) and the UART framing errors (DEF-43).
+
 **Updates from the host through the sink, first half.**
 
 - **The sink DK:** reflashed under the bootloader and enrolled as N003, on the current protocol.

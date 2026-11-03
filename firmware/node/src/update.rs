@@ -43,6 +43,7 @@ pub async fn offer(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPoo
     let Some((header, at)) = firmware::servable() else {
         return;
     };
+    info!("update: offering {}", header.firmware);
     let mut channel = match L2capChannel::create(stack, conn, UPDATE_SPSM, &Default::default()).await {
         Ok(channel) => channel,
         Err(e) => {
@@ -123,6 +124,7 @@ pub async fn listen(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPo
             Ok(channel) => channel,
             Err(_) => core::future::pending().await,
         };
+        info!("update: channel {=u16:#06x} opened by the peer", channel.spsm());
         if channel.spsm() == UPDATE_SPSM {
             receive(stack, &mut channel, rram).await;
         }

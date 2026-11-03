@@ -714,7 +714,10 @@ starts, stay direct.
   a time: the sink answers each chunk with where to go on from, and the host resends any that
   gets no answer within 1 s. The sink checks the signature, then installs an update for its own
   board, or keeps one for the TAGs in its update slot and offers it to the nodes on its links.
-  The host's upload takes about 70 s. The sink's offer to a node does not work yet (DEF-41).
+  The host's upload takes about 70 s, and the sink's transfer to a node about 4.5 min, at one
+  224-byte chunk per 120 ms sink-link event
+  ([spike](engineering/spikes/2026-11-03-updates-through-the-sink.md)). From there the node
+  passes it on as above.
 - **Not yet:** resuming after a dropout (`Want` carries the start offset for it).
 - **Why first:** at 100 kHz SWD (DEF-19), reflashing 20 TAGs takes about 2 min per probe, and
   probes and DK adapters are scarce.

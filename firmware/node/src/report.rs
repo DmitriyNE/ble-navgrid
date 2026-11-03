@@ -93,6 +93,10 @@ pub async fn run(stack: &Stack<'_, '_>, channel: &mut L2capChannel<'_, DefaultPa
             LINK.lock(|l| l.set(None));
             return;
         }
+        // TrouBLE's per-link send lock goes to whichever future asks first. With a backlog this
+        // one would take it again at once, and the update channel on the same link (its credits,
+        // its accept) would never send (DEF-41).
+        embassy_futures::yield_now().await;
     }
 }
 
