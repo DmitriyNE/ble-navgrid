@@ -52,7 +52,8 @@ pub struct Device {
     /// UTC date of the last enrolment.
     pub enrolled: String,
     pub status: Status,
-    /// The build `navgrid flash` last wrote, and when.
+    /// The build `navgrid flash` or `navgrid update` last wrote, or the device last reported to
+    /// the monitor, and when.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -101,8 +101,8 @@ fn main() -> Result<()> {
             let fleet = fleet::Fleet::open(&fleet).ok();
             let registry = fleet.as_ref().map(|f| f.registry()).transpose()?;
             let mut view = monitor::View::new(cal, registry);
-            if let Some(fleet) = &fleet {
-                view = view.with_builds(builds::Builds::new(fleet.builds_dir()));
+            if let Some(fleet) = fleet {
+                view = view.with_fleet(fleet);
             }
             monitor::monitor(&port, baud, json, view)
         }

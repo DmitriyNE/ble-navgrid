@@ -16,7 +16,7 @@ use navgrid_proto::{
 
 use crate::builds::Builds;
 use crate::calibration::Calibration;
-use crate::fleet::{Registry, label_name};
+use crate::fleet::{Fleet, Registry, label_name};
 
 /// A day-count estimate needs readings spanning at least this long.
 const TREND_MIN_SPAN_S: f64 = 3600.0;
@@ -25,6 +25,8 @@ const TREND_WINDOW_S: f64 = 24.0 * 3600.0;
 pub struct View {
     cal: Option<Calibration>,
     registry: Option<Registry>,
+    /// The fleet the registry came from, to save what devices report and to re-read it.
+    fleet: Option<Fleet>,
     builds: Option<Builds>,
     batteries: HashMap<NodeId, Vec<(f64, f64)>>,
     start: Instant,
@@ -35,18 +37,51 @@ impl View {
         Self {
             cal,
             registry,
+            fleet: None,
             builds: None,
             batteries: HashMap::new(),
             start: Instant::now(),
         }
     }
 
-    /// Decodes log frames and crash addresses with the builds kept in the fleet directory.
-    pub fn with_builds(self, builds: Builds) -> Self {
+    /// With the fleet directory: decodes log frames and crash addresses with the builds kept
+    /// there, records the build each device reports in the registry, and re-reads the registry
+    /// when an unknown device reports, which an enrolment since the start would explain.
+    pub fn with_fleet(self, fleet: Fleet) -> Self {
         Self {
-            builds: Some(builds),
+            builds: Some(Builds::new(fleet.builds_dir())),
+            fleet: Some(fleet),
             ..self
         }
+    }
+
+    /// Records in the registry that `id` runs `firmware`, if the registry thought otherwise;
+    /// returns whether it changed. An unknown `id` makes it re-read the registry first.
+    fn learn(&mut self, id: NodeId, firmware: &Firmware) -> bool {
+        let Some(fleet) = &self.fleet else {
+            return false;
+        };
+        if self.registry.as_ref().is_none_or(|r| r.by_id(id).is_none())
+            && let Ok(fresh) = fleet.registry()
+        {
+            self.registry = Some(fresh);
+        }
+        let Some(registry) = self.registry.as_mut() else {
+            return false;
+        };
+        let Some(device) = registry.devices.iter_mut().find(|d| d.id == id) else {
+            return false;
+        };
+        let reported = firmware.to_string();
+        if device.firmware.as_deref() == Some(reported.as_str()) {
+            return false;
+        }
+        device.firmware = Some(reported);
+        device.flashed = Some(crate::fleet::today());
+        if let Err(e) = fleet.save(registry) {
+            eprintln!("registry: {e:#}");
+        }
+        true
     }
 
     /// `N042 ce36dfcc4c2d`, or just the ID for a device the registry doesn't know.
@@ -80,6 +115,20 @@ impl View {
             Message::Boot(b) => Some(b.node),
             Message::Log(l) => Some(l.node),
         };
+        // Note the mismatch before learning, so the line still shows what the registry had.
+        let firmware_note = match &msg {
+            Message::Hello { node, firmware, .. } => Some(self.firmware_note(*node, firmware)),
+            Message::Health(h) => Some(self.firmware_note(h.node, &h.firmware)),
+            Message::Boot(b) => Some(self.firmware_note(b.node, &b.firmware)),
+            _ => None,
+        };
+        match &msg {
+            Message::Hello { node, firmware, .. } => drop(self.learn(*node, firmware)),
+            Message::Health(h) => drop(self.learn(h.node, &h.firmware)),
+            Message::Boot(b) => drop(self.learn(b.node, &b.firmware)),
+            _ => {}
+        }
+        let firmware_note = firmware_note.unwrap_or_default();
         let builds = self.builds.as_mut();
         let decoded = match (&msg, builds) {
             (Message::Log(l), Some(b)) => b.log_line(&l.firmware, l.board, &l.frame),
@@ -121,14 +170,13 @@ impl View {
             (Message::Health(h), Some(b)) => {
                 let days = b.days_left.map_or(String::new(), |d| format!(", ≈ {d:.0} days to low"));
                 format!(
-                    "{} health: battery {} mV {}{days}, {:.2} °C, up {} s, firmware {}{}, {} queued",
+                    "{} health: battery {} mV {}{days}, {:.2} °C, up {} s, firmware {}{firmware_note}, {} queued",
                     self.name(h.node),
                     h.battery_mv,
                     b.level,
                     f64::from(h.temperature_cdeg) / 100.0,
                     h.uptime_s,
                     h.firmware,
-                    self.firmware_note(h.node, &h.firmware),
                     h.queued
                 )
             }
@@ -142,16 +190,10 @@ impl View {
                 },
                 _,
             ) => format!(
-                "{} hello: {role:?}, protocol {protocol}, firmware {firmware}{}, {antennas} antenna(s)",
+                "{} hello: {role:?}, protocol {protocol}, firmware {firmware}{firmware_note}, {antennas} antenna(s)",
                 self.name(*node),
-                self.firmware_note(*node, firmware)
             ),
-            (Message::Boot(b), _) => boot_line(
-                &self.name(b.node),
-                b,
-                &self.firmware_note(b.node, &b.firmware),
-                decoded.as_deref(),
-            ),
+            (Message::Boot(b), _) => boot_line(&self.name(b.node), b, &firmware_note, decoded.as_deref()),
             (Message::Log(l), _) => match &decoded {
                 Some(text) => format!("{} log: {text}", self.name(l.node)),
                 None => format!(
