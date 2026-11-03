@@ -3,8 +3,9 @@
 //! attention period, so a field tool nearby sees it at once (architecture §13).
 //!
 //! Advertising uses the extended commands, as connecting and scanning do: the SDC refuses to mix
-//! legacy and extended ones (DEF-50), and a reflector or a sink also connects as central. The
-//! set is connectable and not scannable, so the beacon carries no name.
+//! legacy and extended ones (DEF-50), and a reflector also connects as central. The set sends
+//! legacy PDUs, though: a central that connects from them can space the link from its others
+//! (DEF-26); from extended advertising the SDC placed it anywhere.
 
 use defmt::unwrap;
 use embassy_futures::select::{Either, select};
@@ -21,11 +22,24 @@ pub struct Beacons {
     cfg: NodeConfig,
     number: Option<u16>,
     max_links: u8,
+    scan_data: [u8; 31],
+    scan_len: usize,
 }
 
 impl Beacons {
     pub fn new(cfg: NodeConfig, number: Option<u16>, max_links: u8) -> Self {
-        Self { cfg, number, max_links }
+        let mut scan_data = [0; 31];
+        let scan_len = unwrap!(AdStructure::encode_slice(
+            &[AdStructure::CompleteLocalName(b"navgrid")],
+            &mut scan_data[..]
+        ));
+        Self {
+            cfg,
+            number,
+            max_links,
+            scan_data,
+            scan_len,
+        }
     }
 
     /// The beacon as of now. Until the mesh state runs on devices only a sink knows its hop
@@ -79,8 +93,9 @@ impl Beacons {
             status::BEACON_CHANGED.reset();
             let sets = [AdvertisementSet {
                 params: *params,
-                data: Advertisement::ExtConnectableNonscannableUndirected {
+                data: Advertisement::ConnectableScannableUndirected {
                     adv_data: &adv_data[..adv_len],
+                    scan_data: &self.scan_data[..self.scan_len],
                 },
                 address: None,
             }];

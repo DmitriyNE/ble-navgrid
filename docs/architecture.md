@@ -776,9 +776,17 @@ themselves.
 - **The cost of a dev level:** a link that stalls sends one warning per CS procedure, 11 a
   second, until it drops. The queues bound it.
 - **Reach:** a device's reports go where its telemetry goes: a node with a direct sink link,
-  of up to 4 the sink serves at once. A reflector opens its own sink link when provisioned with a
-  sink, once beacons advertise with the extended commands (DEF-50). Beyond the sink's range,
-  reports travel with the mesh sync (stage 4).
+  of up to 4 the sink serves at once. Beyond the sink's range, reports travel with the mesh sync
+  (stage 4).
+- **A reflector's own sink link:** opened when it's provisioned with a sink.
+  - **At 1 s,** no multiple of 30 ms. The reflector can't place it clear of the CS procedures its
+    peer schedules, so it drifts across them, costing the peer's CS 2–3 %. At 120 ms it sat on 2
+    procedures in 4.
+  - **Beacons advertise through the extended commands with legacy PDUs.** The extended commands
+    let a reflector connect as central at all: the SDC refuses to mix the two kinds. Legacy PDUs
+    keep the initiator's link spacing (DEF-26), which the SDC doesn't apply to connections made
+    from extended advertising.
+  - **The sink declares 250 ppm** for its sleep clock, as the 1 s link needs (DEF-2).
 
 ### LED and button (FR-O7)
 

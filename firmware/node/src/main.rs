@@ -546,6 +546,7 @@ async fn report_to_sink<'a>(
     loop {
         if let Some((conn, mut channel)) = uplink(stack, fleet, central, links, to.sink, to.interval_ms).await {
             let _link = status::Link::up(true);
+            info!("uplink: interval {=u64} ms", conn.params().conn_interval.as_millis());
             // A failed send stops them; each new uplink starts them again.
             if let Some((initiator, reflector)) = to.ranges {
                 report::set_link(initiator, reflector);
@@ -561,20 +562,14 @@ async fn report_to_sink<'a>(
     }
 }
 
-/// A reflector's own link to the sink, when it has one, for its health and logs: as an
-/// initiator's, with the same short events, beside the CS link it serves as peripheral.
+/// A reflector's own link to the sink, when it has one, for its health and logs, beside the CS
+/// link it serves as peripheral.
 async fn reflector_report(
     stack: &Host<'_, '_>,
     fleet: &keys::Fleet,
     sink: [u8; 6],
     rram: &'static firmware::Rram,
 ) -> ! {
-    if let Err(e) = stack
-        .command(sdc::vendor::NordicEventLengthSet::new(ACL_EVENT_LENGTH_US))
-        .await
-    {
-        warn!("ACL event length: {:?}", e);
-    }
     let central = Mutex::<CriticalSectionRawMutex, _>::new(stack.central());
     let to = SinkLink {
         sink,

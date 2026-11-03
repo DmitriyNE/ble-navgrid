@@ -38,8 +38,6 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **bt-hci + TrouBLE** (DEF-20): parse the CS capabilities complete v2 event (`0x38`), and
       make TrouBLE log rather than panic on an LE event it can't parse. Also propose running the
       feature exchange on connect, which the SDC needs before CS (log 2026-11-02).
-- [ ] **Move all advertising and scanning to the extended commands** once a node does both roles
-      (the SDC rejects mixing the legacy and extended sets; DEF-17).
 - [ ] **Diversity evaluation** (DEF-25): per-path ranges at several placements against measured
       distances. Find out why path 3 is bad, and pick the path combiner on accuracy.
 - [ ] **One-path rate, opt-in:** a 15 ms connection gives one-path links 33/s instead of 16.7,
@@ -124,12 +122,10 @@ version compatibility during rollouts.
 
 Each item works through the host and the mesh first; the field tool shortens it.
 
-**Diagnostics over the air** (architecture §13), before more TAGs go up without probes. Boot and
-crash reports, logs at a configured level and a sink that serves 4 nodes are done (log
-2026-11-03). Next:
-1. [ ] **Reflectors report** (DEF-50): extended advertising for the beacons (the P0 item above),
-       so a reflector can open its sink link; then find whether its link or its 2.5 ms event
-       length costs the CS link procedures, and test the sink with two nodes at once.
+**Diagnostics over the air** (architecture §13) are done (log 2026-11-03): boot and crash
+reports, logs at a configured level, a sink serving 4 nodes, and reflectors' own sink links.
+Left from them: measure the TAG and DK 32 kHz crystals against a reference and declare their
+real accuracy (DEF-2), and find what wedges the sink's uploads (DEF-46).
 
 Items 1–3 are done (log 2026-11-02):
 - fleet numbers, the registry and labels;

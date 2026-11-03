@@ -387,15 +387,26 @@ async fn write(rram: &Rram, at: u32, bytes: &[u8]) -> bool {
 async fn stage(rram: &Rram, header: &UpdateHeader) -> bool {
     let mut line = [0xffu8; 96];
     line[..UPDATE_HEADER_LEN].copy_from_slice(&header.encode());
-    let mut rram = rram.lock().await;
-    let staged = match rram.erase(STAGED_UPDATE, STAGED_UPDATE + STAGED_UPDATE_LEN).await {
-        Ok(()) => rram.write(STAGED_UPDATE, &line).await,
-        Err(e) => Err(e),
-    };
-    if let Err(e) = staged {
-        warn!("update: staging the header: {:?}", e);
+    let staged = with_timeout(WRITE_WITHIN, async {
+        let mut rram = rram.lock().await;
+        rram.erase(STAGED_UPDATE, STAGED_UPDATE + STAGED_UPDATE_LEN).await?;
+        rram.write(STAGED_UPDATE, &line).await
+    })
+    .await;
+    match staged {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            warn!("update: staging the header: {:?}", e);
+            false
+        }
+        Err(_) => {
+            warn!(
+                "update: staging the header: not done within {=u64} s",
+                WRITE_WITHIN.as_secs()
+            );
+            false
+        }
     }
-    staged.is_ok()
 }
 
 /// The sink's side: updates from the host.
@@ -596,14 +607,26 @@ mod sink {
 
     /// Clears the staging page, before the update slot is written again.
     async fn unstage(rram: &Rram) -> bool {
-        let cleared = rram
-            .lock()
-            .await
-            .erase(STAGED_UPDATE, STAGED_UPDATE + STAGED_UPDATE_LEN)
-            .await;
-        if let Err(e) = cleared {
-            warn!("update: clearing the staging page: {:?}", e);
+        let cleared = with_timeout(WRITE_WITHIN, async {
+            rram.lock()
+                .await
+                .erase(STAGED_UPDATE, STAGED_UPDATE + STAGED_UPDATE_LEN)
+                .await
+        })
+        .await;
+        match cleared {
+            Ok(Ok(())) => true,
+            Ok(Err(e)) => {
+                warn!("update: clearing the staging page: {:?}", e);
+                false
+            }
+            Err(_) => {
+                warn!(
+                    "update: clearing the staging page: not done within {=u64} s",
+                    WRITE_WITHIN.as_secs()
+                );
+                false
+            }
         }
-        cleared.is_ok()
     }
 }

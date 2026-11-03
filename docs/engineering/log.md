@@ -4,6 +4,27 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Reflectors report, through extended advertising with legacy PDUs** (DEF-50).
+
+- **N002 reports:** its own sink link runs beside its CS link; the sink served N001 and N002 at
+  once, Health from both every minute.
+- **What it took:**
+  - **Extended commands for the beacons:** the SDC refuses an extended connect after legacy
+    advertising.
+  - **Legacy PDUs, though:** with extended PDUs N001's CS link landed anywhere relative to its
+    sink link, and 5 fresh boots of 5 lost every 4th procedure. The SDC's ACL event spacing
+    (DEF-26) doesn't apply to connections made from extended advertising. With legacy PDUs
+    through the extended set: 3 fresh boots, 11.0/s.
+  - **A 1 s interval for a reflector's sink link:** at 120 ms, a multiple of the CS link's 30 ms,
+    it sat on 2 procedures in 4. At 1 s it drifts across them, 14–22 empty procedures a minute.
+  - **250 ppm declared for the sink's sleep clock:** at 1 s with 50 on both sides the link lost
+    sync after its first packet (DEF-2). On the TAGs 250 changed nothing; it was ruled out on the
+    way.
+- **Also:** Health no longer waits for a CS link's IDs, so reflectors send it. An initiator now
+  sets them again on each uplink: after the first drop it had stopped sending ranges for good,
+  a bug from this morning's refactor. The sink's uploads stuck again (DEF-46); its erase and
+  header writes now have deadlines, and the host waits 15 s.
+
 **A sink for several nodes, and reflectors' reports (blocked).**
 
 - **The sink** serves up to 4 nodes: one future advertises and hands each connection to a free

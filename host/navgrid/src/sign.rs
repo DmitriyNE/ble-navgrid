@@ -215,8 +215,9 @@ fn stage(args: &UpdateArgs, probe: &str, header: &UpdateHeader, image: &[u8]) ->
 const SINK_ANSWER_WITHIN: Duration = Duration::from_secs(1);
 /// And `Done`: it checks the image's signature first.
 const SINK_CHECK_WITHIN: Duration = Duration::from_secs(20);
-/// Sends of one message before giving up.
-const SINK_TRIES: u32 = 5;
+/// Sends of one message before giving up: together longer than the sink's 10 s deadline for a
+/// write, so a slow one ends in its decline rather than in silence.
+const SINK_TRIES: u32 = 15;
 
 /// Sends the update to the sink on `port`, a page per message, each after the sink has stored the
 /// last.
