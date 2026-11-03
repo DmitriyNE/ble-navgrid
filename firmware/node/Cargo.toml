@@ -48,3 +48,6 @@ embedded-storage = "0.3.2"
 # Exactly one board. `cargo tag` / `cargo dk` (see .cargo/config.toml) pick it for you.
 board-dk = []
 board-tag = []
+# Test aid: the image never confirms itself, so the bootloader puts the previous one back after
+# 5 min (architecture §13).
+never-confirm = []

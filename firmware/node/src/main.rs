@@ -402,7 +402,7 @@ async fn main(spawner: Spawner) {
                 }
             };
             join(
-                report::serve_sink(&stack, &fleet, &uart, node, &beacons, &sink_params),
+                report::serve_sink(&stack, &fleet, &uart, node, &beacons, &sink_params, rram),
                 update::from_host(&mut from_host, &uart, rram, provisioning.and_then(|p| p.signing_key)),
             )
             .await;
@@ -500,7 +500,7 @@ async fn initiator(
             Timer::after(Duration::from_secs(5)).await;
         }
     };
-    join(ranging(stack, fleet, &central, &links, peer, antennas), report).await;
+    join(ranging(stack, fleet, &central, &links, peer, antennas, rram), report).await;
 }
 
 /// Scans for a few seconds; the event handler logs the beacons it hears (FR-M4). Neighbour
@@ -646,6 +646,7 @@ async fn ranging(
     links: &Links,
     peer: [u8; 6],
     antennas: u8,
+    rram: &'static firmware::Rram,
 ) {
     let target = Address::random(peer);
     // A 4 s supervision timeout, as Nordic's sample uses.
@@ -708,7 +709,7 @@ async fn ranging(
                 serve(stack, &conn, fleet).await;
             }
         };
-        join(serving, update::offer(stack, &conn)).await;
+        join(serving, update::offer(stack, &conn, rram)).await;
         links.cs.set(false);
     }
 }

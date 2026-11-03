@@ -8,7 +8,8 @@
 //!   (a fleet link up). One that isn't within 5 min restarts unconfirmed, and the bootloader puts
 //!   the previous image back.
 //! - **Passing it on:** the header of an installed update is kept ([`servable`]), so the node can
-//!   offer its image to neighbours (`update`). A staged update for another board isn't installed:
+//!   offer its image to neighbours (`update`) once it has confirmed it. After a revert the kept
+//!   header names the build that failed, and the node declines it ([`reverted_from`]). A staged update for another board isn't installed:
 //!   a sink carries it for the nodes ([`carried`]).
 //!
 //! After boot the RRAM belongs to MPSL's timeslot driver ([`share_rram`]), shared by this and the
@@ -35,7 +36,7 @@ use navgrid_proto::layout::{
     ACTIVE, ACTIVE_HEADER, ACTIVE_HEADER_LEN, BOOTLOADER_STATE, BOOTLOADER_STATE_LEN, DFU, STAGED_UPDATE,
     STAGED_UPDATE_LEN,
 };
-use navgrid_proto::{ProvisioningError, UPDATE_HEADER_LEN, UpdateHeader};
+use navgrid_proto::{Firmware, ProvisioningError, UPDATE_HEADER_LEN, UpdateHeader};
 use nrf_sdc::mpsl::Flash;
 use static_cell::StaticCell;
 
@@ -68,6 +69,14 @@ pub fn servable() -> Option<(UpdateHeader, u32)> {
     header_at(ACTIVE_HEADER)
         .filter(|h| h.firmware == crate::FIRMWARE && h.board == BOARD)
         .map(|h| (h, ACTIVE))
+}
+
+/// The build this node last reverted from: the kept header still names it, as nothing has
+/// installed since. Offers of it are declined, or a bad build would come back at every offer.
+pub fn reverted_from() -> Option<Firmware> {
+    header_at(ACTIVE_HEADER)
+        .filter(|h| h.board == BOARD && h.firmware != crate::FIRMWARE)
+        .map(|h| h.firmware)
 }
 
 /// An update for another board, staged in the update slot to pass on (a sink's, from the host).
@@ -114,7 +123,10 @@ pub async fn run(wdt: Peri<'static, WDT0>, rram: &'static Rram) -> ! {
         }
         Ok(State::Revert) => {
             // This image ran confirmed before the update, and updates wait for a confirmed one.
-            warn!("firmware: reverted to the previous image");
+            match reverted_from() {
+                Some(failed) => warn!("firmware: reverted from {}", failed),
+                None => warn!("firmware: reverted to the previous image"),
+            }
             if let Err(e) = state.mark_booted().await {
                 warn!("firmware: confirm: {:?}", e);
             }
@@ -132,7 +144,8 @@ pub async fn run(wdt: Peri<'static, WDT0>, rram: &'static Rram) -> ! {
             h.pet();
         }
         if unconfirmed {
-            if status::links() > 0 {
+            // A test image may hold off, so the bootloader reverts it.
+            if status::links() > 0 && !cfg!(feature = "never-confirm") {
                 let t = Instant::now();
                 match state.mark_booted().await {
                     Ok(()) => info!(

@@ -116,7 +116,6 @@ Done (log 2026-11-03): version tracking, the bootloader
 3. [ ] **Resume and retry** (DEF-39): pick up from the last page written after a dropout (`Want`
        carries the offset), and offer again to a peer that declined while unconfirmed.
 4. [ ] **A shorter swap** (DEF-38): a slot closer to the image size, or buffered writes.
-5. [ ] **Test the 5-minute confirm timeout,** and a revert after an over-the-air update.
 
 After stage 4: the desired-firmware record, neighbour-to-neighbour spreading, canary rollout and
 version compatibility during rollouts.

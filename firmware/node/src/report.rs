@@ -128,6 +128,7 @@ pub async fn serve_sink(
     node: NodeId,
     beacons: &crate::beacon::Beacons,
     params: &AdvertisementParameters,
+    rram: &'static crate::firmware::Rram,
 ) -> ! {
     let hello = Message::Hello {
         node,
@@ -189,7 +190,7 @@ pub async fn serve_sink(
             // The node listens for updates once its telemetry channel is up.
             let offering = async {
                 loop {
-                    crate::update::offer(stack, &conn).await;
+                    crate::update::offer(stack, &conn, rram).await;
                     crate::update::CARRYING.wait().await;
                 }
             };

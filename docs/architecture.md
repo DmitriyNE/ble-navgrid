@@ -702,7 +702,12 @@ starts, stay direct.
   itself only once it is back in the mesh (a fleet link encrypted within 5 min); otherwise the
   bootloader reverts it.
 - **Declining:** a peer already on the offered build declines it. So does one whose image isn't
-  confirmed yet: its update slot still holds the image a revert would put back.
+  confirmed yet: its update slot still holds the image a revert would put back. And so does one
+  that reverted from that build: the kept header still names it until another update installs.
+- **Only confirmed images spread:** a node offers its image only once it has confirmed it, so a
+  bad image stays on the node it reached and reverts there. Measured
+  ([spike](engineering/spikes/2026-11-03-revert-after-ota.md)): an image that never confirms is
+  gone about 5.5 min after it starts, the previous one confirmed again.
 - **Measured** ([spike](engineering/spikes/2026-11-03-single-hop-update.md)): about 7 KB/s, one
   chunk per 30 ms connection event, so a 490 KB image takes 70 s. Ranging on the same link holds
   11.1/s throughout. Ranging then stops for about 35 s while the receiver checks the image, swaps

@@ -11,7 +11,7 @@
 
 use defmt::{info, warn};
 use embassy_time::{Duration, Instant, with_timeout};
-use navgrid_proto::layout::{ACTIVE_LEN, DFU, STAGED_UPDATE, STAGED_UPDATE_LEN};
+use navgrid_proto::layout::{ACTIVE, ACTIVE_LEN, DFU, STAGED_UPDATE, STAGED_UPDATE_LEN};
 use navgrid_proto::{UPDATE_CHUNK, UPDATE_HEADER_LEN, UPDATE_SPSM, UpdateHeader, UpdateMsg};
 use nrf_sdc::SoftdeviceController;
 use trouble_host::prelude::*;
@@ -38,11 +38,16 @@ const SLOW_WRITE_MS: u64 = 500;
 const STALL_AFTER: Duration = Duration::from_secs(5);
 
 /// Offers what this node can pass on, if anything, to the peer on `conn`, and streams it if the
-/// peer wants it.
-pub async fn offer(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPool>) {
+/// peer wants it. An image the node runs goes out only once it's confirmed here: a bad one would
+/// otherwise spread before the bootloader reverts it.
+pub async fn offer(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPool>, rram: &'static Rram) {
     let Some((header, at)) = firmware::servable() else {
         return;
     };
+    if at == ACTIVE && !firmware::confirmed(rram).await {
+        info!("update: not offering {}: not confirmed here yet", header.firmware);
+        return;
+    }
     info!("update: offering {}", header.firmware);
     let mut channel = match L2capChannel::create(stack, conn, UPDATE_SPSM, &Default::default()).await {
         Ok(channel) => channel,
@@ -183,7 +188,8 @@ async fn answer(
     let Some(UpdateMsg::Offer(header)) = UpdateMsg::decode(&rx[..n]) else {
         return None;
     };
-    let wanted = header.board == BOARD && header.firmware != crate::FIRMWARE && takes(&header, rram).await;
+    let wanted =
+        header.board == BOARD && header.firmware != crate::FIRMWARE && !reverted(&header) && takes(&header, rram).await;
     if !wanted {
         let _ = channel.send(stack, UpdateMsg::Decline.encode(&mut tx)).await;
         return None;
@@ -260,6 +266,15 @@ async fn receive(
     // can take a while; restarting first would lose it.
     let _ = with_timeout(ANSWER_WITHIN, channel.receive(stack, &mut rx)).await;
     cortex_m::peripheral::SCB::sys_reset();
+}
+
+/// Whether this node reverted from `header`'s build, saying so.
+fn reverted(header: &UpdateHeader) -> bool {
+    let reverted = firmware::reverted_from() == Some(header.firmware);
+    if reverted {
+        info!("update: declining {}: this node reverted from it", header.firmware);
+    }
+    reverted
 }
 
 /// Whether this node may write its update slot for `header`, saying why not.
@@ -453,7 +468,7 @@ mod sink {
             UpdateMsg::Offer(header) => {
                 *transfer = None;
                 let new = if header.board == BOARD {
-                    header.firmware != crate::FIRMWARE
+                    header.firmware != crate::FIRMWARE && !reverted(&header)
                 } else {
                     firmware::carried() != Some(header)
                 };

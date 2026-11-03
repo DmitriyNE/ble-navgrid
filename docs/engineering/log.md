@@ -4,6 +4,17 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Revert after an update over the air** ([spike](spikes/2026-11-03-revert-after-ota.md)).
+
+- **On the bench:** a test image that never confirms (`never-confirm`) went from the host through
+  the sink to N001. N001 ran it, restarted at the 5-minute deadline, and the bootloader put the
+  previous image back, confirmed.
+- **Two policy changes, both seen working:**
+  - a node offers its installed image only once confirmed, so N002 never got the bad one;
+  - a node declines a build it reverted from, so the sink's next offer of it was turned down.
+- **Left open:** the sink, as the carrier, doesn't learn that a build failed, and kept offering
+  it until the host sent another.
+
 **The sink link's packet length** (DEF-42,
 [spike](spikes/2026-11-03-updates-through-the-sink.md#follow-up-the-sink-links-packet-length-def-42)).
 
