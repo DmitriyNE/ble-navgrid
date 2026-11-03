@@ -12,7 +12,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail, ensure};
 use navgrid_ranging::steps::{self, Role, Step, ToneQuality, Tones};
-use navgrid_ranging::{ChannelResponse, Combine, PhaseSlope, combine_paths, phase_slope, rtt_distance_m};
+use navgrid_ranging::{
+    ChannelResponse, Combine, FIRST_PATH_THRESHOLD, FirstPath, PhaseSlope, Window, combine_paths, first_path,
+    phase_slope, rtt_distance_m,
+};
 use serde_json::{Value, json};
 
 use crate::scenario::CombineArg;
@@ -301,6 +304,9 @@ struct Estimate {
     channels: usize,
     paths: Vec<PhaseSlope>,
     combined: Option<PhaseSlope>,
+    /// The first-path estimator per antenna path, and the median of those distances.
+    first_paths: Vec<FirstPath>,
+    first_path_m: Option<f32>,
     rtt_m: Option<f32>,
     /// Why there is no distance, when there isn't.
     note: Option<String>,
@@ -330,6 +336,8 @@ fn estimate(procedure: u16, sides: &[Option<Side>; 2], min_pairs: u8, how: Combi
         channels: 0,
         paths: Vec::new(),
         combined: None,
+        first_paths: Vec::new(),
+        first_path_m: None,
         rtt_m: None,
         note: None,
     };
@@ -393,6 +401,13 @@ fn finish(mut e: Estimate, resp: &[ChannelResponse], paths: u8, min_pairs: u8, h
     }
     e.paths = resp.iter().filter_map(|r| phase_slope(r, min_pairs)).collect();
     e.combined = combine_paths(&e.paths, how);
+    e.first_paths = resp
+        .iter()
+        .filter_map(|r| first_path(r, Window::Hann, FIRST_PATH_THRESHOLD, usize::from(min_pairs)))
+        .collect();
+    let mut ds: Vec<f32> = e.first_paths.iter().map(|f| f.distance_m).collect();
+    ds.sort_by(f32::total_cmp);
+    e.first_path_m = ds.get(ds.len() / 2).copied();
     if e.combined.is_none() {
         e.note = Some(format!("{} usable channels, too few adjacent pairs", e.channels));
     }
@@ -478,6 +493,13 @@ impl Estimate {
             "procedure": self.procedure,
             "estimate": self.combined.as_ref().map(slope),
             "paths": self.paths.iter().map(slope).collect::<Vec<_>>(),
+            "first_paths": self.first_paths.iter().map(|f| json!({
+                "distance_m": round(f.distance_m, 4),
+                "strength": round(f.strength, 4),
+                "strongest_m": round(f.strongest_m, 4),
+                "peaks": f.peaks,
+            })).collect::<Vec<_>>(),
+            "first_path_m": self.first_path_m.map(|d| round(d, 4)),
             "channels": self.channels,
             "rtt_m": self.rtt_m.map(|v| round(v, 3)),
             "initiator": side(&self.sides[0]),

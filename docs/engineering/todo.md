@@ -43,11 +43,13 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **One-path rate, opt-in:** a 15 ms connection gives one-path links 33/s instead of 16.7,
       but leaves no room for a second link (spike 2026-11-02-cs-ranging-rate). Decide with
       multi-link scheduling; candidate use: the dedicated final-approach link (D-20).
-- [ ] **A first-path estimator** (DEF-51): the phase slope has no multipath rejection, and keys
-      on the floor won't range with it. Captures (`NAVGRID_LOG_STEPS`, both boards) from a bad
-      placement first: two TAGs flat on the floor 1.5 m apart, and 0.5 m from a DK. Then an
-      IFFT or super-resolution estimator on the host, as NCS's `cs_de`, compared on those
-      captures and the 40 cm one (`docs/engineering/captures/2026-11-03-40cm/`).
+- [ ] **The first-path estimator on real multipath** (DEF-51): `navgrid_ranging::first_path`
+      is built and reported by `navgrid cs` beside the phase slope. Captures from a bad
+      placement next (`NAVGRID_LOG_STEPS`, both boards): two TAGs flat on the floor 1.5 m apart,
+      and one 0.5 m from a DK; then judge it against the phase slope on those and on the 40 cm
+      one (`docs/engineering/captures/2026-11-03-40cm/`), tune the threshold and the gain
+      guard, and port it to the device (no allocation; the grid scan costs about 100 k complex
+      MACs per antenna path per search).
 - [ ] **Cross-check estimator:** compare against NCS v3.4.1 `ipt_*` / `ras_*` samples and `cs_de`
       on the same captures; settle sign and units (DEF-6).
 - [ ] **Inline PCT transfer** (D-4) is described as on by default, but the firmware doesn't use

@@ -104,8 +104,18 @@ Every device runs on a CR2032 (budget in §5): no radio stays busy without a rea
      biases the range by +1.8 m while coherence stays at 0.9998. The fit residual catches it.
    - **RTT** (implemented, units to be verified on hardware): coarse, multipath-robust, and
      relay-attack-resistant.
-   - **IFFT / super-resolution** (P0/P1): resolves the first path under multipath. The bench
-     showed what the phase slope does without it
+   - **First path** (`first_path`, built on the host, not yet on the device): a windowed matched
+     filter over a 5 cm distance grid finds the strongest round-trip component; the components
+     found so far are fitted jointly by least squares, each refined against the joint residual,
+     and the next one searched in what's left, up to four (orthogonal matching pursuit). The
+     earliest is the distance. It separates components closer than the 4 m main lobe, which a
+     plain IFFT can't. The round-trip response is the one-way channel squared, so two one-way
+     paths give three components, the cross term at their mean; a direct path 10 dB below a
+     reflection is 20 dB down here, hence a −25 dB threshold with a residual-gain guard. In
+     simulation it finds a direct path at 1.5 m under a 10 dB stronger bounce at 6 m, the floor
+     case, within 0.3 m; on the 40 cm capture it agrees with the phase slope (1.81 against 1.96
+     m), taking a weak earlier component in about one procedure in ten. Untested on a capture
+     with real multipath yet. The bench showed what the phase slope does without it
      ([spike](engineering/spikes/2026-11-03-four-tags-proximity.md), DEF-51): a board or object
      within about 0.5 m of a TAG scatters its readings or makes them tightly wrong; two TAGs flat
      on the floor 1.5 m apart read 7–10 m, the floor reflection cancelling the direct path; 6.1 m

@@ -4,6 +4,20 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**A first-path estimator, on the host** (DEF-51).
+
+- **Built:** `navgrid_ranging::first_path`, orthogonal matching pursuit over a windowed delay
+  profile: strongest component first, joint least-squares amplitudes, each distance refined
+  against the joint residual, up to four components; the earliest is the distance. No
+  allocation, so it can go on the device.
+- **Learned on the way:** the round-trip response is the one-way channel squared, so a weak
+  direct path beside a strong reflection is 20 dB down, not 10, and there's a cross term at the
+  two paths' mean. A plain profile merges components closer than 4 m; subtract-and-search
+  leaves artefacts from a 10 cm error on the strong one; the joint fit with refinement is what
+  made the floor case pass in simulation (1.5 m under a 10 dB stronger 6 m bounce, within 0.3 m).
+- **On the 40 cm capture:** median 1.81 m against the phase slope's 1.96 m; a weak earlier
+  component taken in about one procedure in ten. `navgrid cs` now reports both.
+
 **Four TAGs: two CS pairs, and what placement does to ranging**
 ([spike](spikes/2026-11-03-four-tags-proximity.md)).
 
