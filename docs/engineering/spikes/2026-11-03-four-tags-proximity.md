@@ -120,3 +120,29 @@ The same to 4 cm. Nothing today changed what the radios measure. The 2.0–2.3 m
 the readings were tight again, where flat on the desk at 0.8 m they read 4.8 m: the desk, at
 grazing incidence, is this evening's reflector, as the floor was in the afternoon.
 
+## Night: a calibration series that isn't one
+
+N005 ranging with N004, both on batteries, flat on a box and a chair 0.35 m above the floor, in
+a clear room (4 m ceiling, metal HVAC at 3.4 m, nothing else within 2 m), the device's own
+ranges through the sink, 60 s a point (`captures/2026-11-03-home/cal/`):
+
+| True | 1.0 | 1.5 | 2.0 | 3.0 | 4.0 | 5.0 | 2.0 again | 6.0 | 6.0, N005 flipped |
+|---|---|---|---|---|---|---|---|---|---|
+| Median | 5.92 | 3.56 | 3.33 | 7.52 | 7.58 | 7.17 | 3.58 | 8.25 | 9.77 |
+| Quality | 246 | 230 | 245 | 238 | 237 | 237 | 240 | 242 | 243 |
+
+- **Not an offset.** Only the 2 m point sat near true + 1.3 m, twice. From 3 to 5 m the reading
+  was pinned near 7.5 m, and 1 m read 5.9 m.
+- **Every point was tight and the device called it good:** quality 230–246 throughout, the fit
+  residual of a clean single path. The quality figure can't tell a reflection from the direct
+  path (DEF-53).
+- **Flipping one puck moved the 6 m reading by 1.5 m** (8.25 → 9.77). The pucks had opposite
+  sides up for the whole series until then.
+- **Meanwhile N001–N002,** cabled at 0.6 m on the desk edge and a chair, read 2.69, 2.60 and
+  2.61 m over the three thirds of the hour: a pair that sits still reads the same all evening.
+
+What's consistent with all of it: at 0.35 m above the floor with the pucks flat, the direct
+path between them is weak, and a bounce off the ceiling or the ducts is what the phase slope
+reads; its distance barely depends on the pair's separation, which is what the pinned 7.5 m
+looks like. The deciding test wasn't run: the same pair 1.5 m up, same side up, at 3 m.
+

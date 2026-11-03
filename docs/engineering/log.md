@@ -4,6 +4,13 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Night: the calibration series, N005–N004 on batteries 0.35 m up**
+([spike](spikes/2026-11-03-four-tags-proximity.md), last section). Nine points from 1 to 6 m: not
+an offset. Only 2 m read true + 1.3 m; 3–5 m were pinned near 7.5 m; flipping one puck moved the 6 m
+reading by 1.5 m; and every point was tight with quality 230–246, so the quality figure can't flag
+a wrong path (DEF-53). The cabled pair at 0.6 m read the same all evening. Undecided, and the
+next test: the same pair 1.5 m up, same side up, at 3 m.
+
 **Evening: is the ranging broken? No** ([spike](spikes/2026-11-03-four-tags-proximity.md), the
 last section). Yesterday's firmware against today's at one placement read the same to 4 cm, 2.0–2.3
 m over the true 0.6 m, the known offset (DEF-6). Flat on a wooden desk the readings had been 2–6×
