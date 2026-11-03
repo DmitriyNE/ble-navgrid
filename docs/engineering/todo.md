@@ -162,6 +162,9 @@ Left over from them:
          hop 0;
        - `navgrid field`: list, identify, name and place, plus install-mode readings.
 7. [ ] **Install mode:** link and route quality on the LED, with fast advertising, for 10 min.
+- [ ] **Floor tests with the node high** (spike 2026-11-03-four-tags-proximity, last section): a tag
+      under a table, against a wall, in a bag, at 2–5 m sideways from a node 2.3 m up; then two
+      nodes at once. The calibration (DEF-6) in that geometry, by pair and antenna path.
 - [ ] **RTT as a real range** (DEF-55): send the reflector's mode-1 ToD−ToA to the initiator over
       the CS link (what RAS does), subtract it, drop the 100 m report offset, and try the
       sounding-sequence RTT types for precision. Then check the per-pair bias against the pair's

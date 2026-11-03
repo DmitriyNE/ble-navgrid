@@ -83,6 +83,7 @@ distance, from across the building down to the last metre.
 - **FR-R5** **Raw capture mode**: both sides' per-step data (PCT I/Q, RTT timestamps, quality indicators) streamed to the host. Every on-device estimator must run on the host against recorded captures and give identical results (same `no_std` crate).
 - **FR-R6** **Antenna diversity.** Devices with several antennas (TAG: 2) sound every antenna path the link allows, up to 4 (2 × 2 between two TAGs, 2 × 1 against a single-antenna module), and combine the per-path estimates.
 - **FR-R7** Diversity can be **disabled per device** by configuration. The device then holds antenna 0, and every link with it uses one antenna path, which means shorter procedures and less energy. Single-antenna devices always work.
+- **FR-R8** A tag ranges in whatever spot and orientation it lands in: on the floor, face up or down, under furniture. Nodes are the placed end (C-5).
 
 ### Mesh self-survey (M)
 
@@ -213,6 +214,7 @@ at best", so P0 measurements will re-baseline these.
 - **C-2 Language:** Rust everywhere. Firmware is `no_std` on Embassy; host is std Rust. Algorithm crates are `no_std` and shared by both.
 - **C-3 BLE stack:** Nordic SoftDevice Controller via `nrf-sdc`, `TrouBLE` host, `bt-hci`. No NCS/Zephyr in product firmware. NCS C samples are allowed as reference fixtures.
 - **C-4 CS is point-to-point per connection:** every range needs a live ACL between the pair, and the controller schedules CS relative to connection events. This drives the scaling design (see architecture §5).
+- **C-5 Placement:** nodes are mounted high and flat, 2 m or more up (wardrobe tops, ceilings), tags lie wherever they land. Two flat boards at one height see each other edge-on and read a bounce, by phase and by RTT alike; a flat board on the floor under a node 2.3 m up read the distance plus the calibration offset from 2.3 to 3.8 m, face up or down (engineering log, 2026-11-03). Keys under furniture or against a wall are untested.
 
 ## 7. Risks
 

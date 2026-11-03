@@ -192,3 +192,29 @@ Meanwhile N001–N002, on batteries on the desk a hand apart, read 1.67–1.77 m
   both methods see is a bounce whose length hardly depends on the chairs' separation.
 - The product geometry, a node high and flat over a tag flat on the floor, is the opposite case
   and was the next test.
+
+## Late night: a node high, a tag on the floor
+
+The same pucks: N004 flat on top of a wardrobe, 2.30 m up; N005 flat on the floor, first directly
+below it, then slid sideways along the floor, then flipped. True distance is the diagonal. Data in
+`captures/2026-11-03-home/night2/`.
+
+| Sideways (m) | 0 | 1 | 2 | 3 | 3, flipped |
+|---|---|---|---|---|---|
+| True (m) | 2.30 | 2.51 | 3.05 | 3.78 | 3.78 |
+| Phase slope, median | 3.83 | 4.05 | 5.03 | 5.60 | 5.76 |
+| Over true | +1.53 | +1.54 | +1.98 | +1.82 | +1.98 |
+| p10–p90 | 3.73–4.0, with a tail to 43 | 3.98–4.38 | 4.86–5.13 | 5.49–5.66 | 5.58–5.85 |
+| Quality | 218 | 246 | 247 | 243 | 243 |
+| RTT, mean (biased) | 12.80 | 13.82 | 14.43 | 14.62 | 15.28 |
+
+- **It ranges.** Every point reads the true distance plus the usual 1.5–2.0 m (DEF-6), tight,
+  and the RTT rises with it. The same two pucks were pinned at 6.3–6.7 m on the chairs an hour
+  earlier.
+- **Flipping the floor puck** moved the reading by 0.16 m, against 1.5 m on the chairs at 6 m
+  the night before: with the node above, the tag's side up hardly matters.
+- **What it means.** Two flat pucks at one height, edge-on, are the worst geometry and not the
+  product's. A node mounted high and flat over the floor, and a tag flat on the floor wherever
+  it lands, is the product's, and it ranged at 2.3–3.8 m with the known offset. Untested tonight:
+  a tag under furniture or against a wall, the offset's constancy across pairs and antenna
+  paths (the calibration, DEF-6), and more than one node.
