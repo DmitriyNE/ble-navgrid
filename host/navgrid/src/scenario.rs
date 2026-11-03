@@ -41,6 +41,7 @@ pub enum CombineArg {
     LowestResidual,
     Mean,
     ResidualWeighted,
+    ShortestCoherent,
 }
 
 impl From<CombineArg> for Combine {
@@ -50,6 +51,7 @@ impl From<CombineArg> for Combine {
             CombineArg::LowestResidual => Combine::LowestResidual,
             CombineArg::Mean => Combine::Mean,
             CombineArg::ResidualWeighted => Combine::ResidualWeighted,
+            CombineArg::ShortestCoherent => Combine::ShortestCoherent,
         }
     }
 }

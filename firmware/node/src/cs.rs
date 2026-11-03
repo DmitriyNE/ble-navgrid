@@ -356,7 +356,7 @@ fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSube
                         n += 1;
                     }
                 }
-                match combine_paths(&slopes[..n], Combine::ResidualWeighted) {
+                match combine_paths(&slopes[..n], Combine::ShortestCoherent) {
                     Some(combined) => Ranged::Distance(combined, n),
                     None => Ranged::TooFewChannels(r.responses.iter().map(ChannelResponse::len).max().unwrap_or(0)),
                 }

@@ -270,9 +270,17 @@ pub enum Combine {
     /// Plain mean of the paths' distances.
     Mean,
     /// Mean weighted by `1 / residual²`.
-    #[default]
     ResidualWeighted,
+    /// The shortest of the paths whose fit is coherent ([`SHORTEST_MIN_COHERENCE`]), the lowest
+    /// residual if none is. A bounce is never shorter than the direct path, and on the bench one
+    /// antenna pair kept the direct path where the others read a bounce (2026-11-03, the flat
+    /// pucks at 3.5 m: 5.1 m on one path, 6.9–9.2 on the rest, 6.5 blended).
+    #[default]
+    ShortestCoherent,
 }
+
+/// The coherence a path needs for [`Combine::ShortestCoherent`] to consider it.
+pub const SHORTEST_MIN_COHERENCE: f32 = 0.95;
 
 /// Combines per-antenna-path estimates of one procedure. Averaging strategies report the mean
 /// coherence and residual of their inputs and the smallest pair count.
@@ -288,6 +296,12 @@ pub fn combine_paths(paths: &[PhaseSlope], how: Combine) -> Option<PhaseSlope> {
             .iter()
             .copied()
             .min_by(|a, b| a.residual_rad.total_cmp(&b.residual_rad)),
+        Combine::ShortestCoherent => paths
+            .iter()
+            .copied()
+            .filter(|p| p.coherence >= SHORTEST_MIN_COHERENCE)
+            .min_by(|a, b| a.distance_m.total_cmp(&b.distance_m))
+            .or_else(|| combine_paths(paths, Combine::LowestResidual)),
         Combine::Mean | Combine::ResidualWeighted => {
             let n = paths.len() as f32;
             let total: f32 = paths.iter().map(weight).sum();
@@ -750,6 +764,25 @@ mod tests {
             assert_eq!(fp.peaks, 1, "{fp:?}");
             assert!(fp.strength > 0.999);
         }
+    }
+
+    #[test]
+    fn shortest_coherent_path_wins_and_incoherent_ones_are_ignored() {
+        let path = |distance_m, coherence| PhaseSlope {
+            distance_m,
+            coherence,
+            residual_rad: 0.2,
+            pairs: 70,
+        };
+        let paths = [path(9.2, 0.99), path(5.1, 0.98), path(6.9, 0.99), path(2.0, 0.5)];
+        assert_eq!(
+            combine_paths(&paths, Combine::ShortestCoherent).unwrap().distance_m,
+            5.1
+        );
+        // None coherent: the lowest residual stands in.
+        let paths = [path(9.2, 0.5), path(5.1, 0.6)];
+        assert!(combine_paths(&paths, Combine::ShortestCoherent).is_some());
+        assert!(combine_paths(&[], Combine::ShortestCoherent).is_none());
     }
 
     #[test]
