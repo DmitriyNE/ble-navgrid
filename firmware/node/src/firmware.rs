@@ -36,12 +36,12 @@ use navgrid_proto::layout::{
     ACTIVE, ACTIVE_HEADER, ACTIVE_HEADER_LEN, BOOTLOADER_STATE, BOOTLOADER_STATE_LEN, DFU, STAGED_UPDATE,
     STAGED_UPDATE_LEN,
 };
-use navgrid_proto::{Firmware, ProvisioningError, UPDATE_HEADER_LEN, UpdateHeader};
+use navgrid_proto::{Boot, Firmware, ImageState, Message, ProvisioningError, UPDATE_HEADER_LEN, UpdateHeader};
 use nrf_sdc::mpsl::Flash;
 use static_cell::StaticCell;
 
 use crate::board::BOARD;
-use crate::status;
+use crate::{report, status};
 
 /// The RRAM once boot is done.
 pub type Rram = Mutex<ThreadModeRawMutex, Flash<'static>>;
@@ -101,7 +101,7 @@ const FEED_EVERY: Duration = Duration::from_secs(1);
 const CONFIRM_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 #[embassy_executor::task]
-pub async fn run(wdt: Peri<'static, WDT0>, rram: &'static Rram) -> ! {
+pub async fn run(wdt: Peri<'static, WDT0>, rram: &'static Rram, mut boot: Boot) -> ! {
     // Running only if the bootloader started it.
     let mut handle = match wdt::Config::try_new(&wdt).map(|config| Watchdog::try_new::<_, 1>(wdt, config)) {
         Some(Ok((_wdt, [handle]))) => Some(handle),
@@ -116,7 +116,15 @@ pub async fn run(wdt: Peri<'static, WDT0>, rram: &'static Rram) -> ! {
     };
     let mut aligned = [0u8; 16];
     let mut state = bootloader_state(rram, &mut aligned);
-    let mut unconfirmed = match state.get_state().await {
+    let state_now = state.get_state().await;
+    boot.image = match state_now {
+        Ok(State::Swap) => ImageState::Unconfirmed,
+        Ok(State::Revert) => ImageState::Reverted(reverted_from()),
+        _ => ImageState::Confirmed,
+    };
+    info!("firmware: boot report {}", boot);
+    report::queue(Message::Boot(boot));
+    let mut unconfirmed = match state_now {
         Ok(State::Swap) => {
             info!("firmware: new image, unconfirmed until a fleet link is up");
             true

@@ -4,6 +4,19 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Boot and crash reports.**
+
+- **Built:** every boot queues a `Boot` record (protocol 4) with the build, boot number, reset
+  reasons, the image state and the last crash. The panic and HardFault handlers leave a record in
+  `.uninit` RAM at `0x20023090`, 116 KiB below the bootloader's stack, then restart; `panic-probe`
+  is gone. The sink sends its own reports to its UART.
+- **On the bench:** with a test aid (`crash-test`) that crashes 20 s after boot, N001 reported
+  each crash at its next boot: "hard fault at 0x0002f61e", which `llvm-symbolizer` puts at the
+  test's `udf` in `crash.rs:122`, and "panic at line 120: crash.rs: crash test at boot 80". The
+  sink's first report read: reset pin and soft reset, image new, no crash.
+- **Found:** the sink's serial receive once stopped answering mid-upload until a power cycle
+  (DEF-46).
+
 **Revert after an update over the air** ([spike](spikes/2026-11-03-revert-after-ota.md)).
 
 - **On the bench:** a test image that never confirms (`never-confirm`) went from the host through

@@ -10,7 +10,8 @@ publish.workspace = true
 serde.workspace = true
 postcard.workspace = true
 cobs = { version = "0.3", default-features = false }
+heapless.workspace = true
 defmt = { workspace = true, optional = true }
 
 [features]
-defmt = ["dep:defmt"]
+defmt = ["dep:defmt", "heapless/defmt"]

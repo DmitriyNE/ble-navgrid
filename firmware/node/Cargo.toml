@@ -22,10 +22,10 @@ trouble-host = { git = "https://github.com/GreatKet/trouble.git", rev = "fa9886d
 
 defmt = "1"
 defmt-rtt = "1"
-panic-probe = { version = "1", features = ["print-defmt"] }
 cortex-m = "0.7.7"
 cortex-m-rt = "0.7.5"
 static_cell = "2"
+heapless = "0.9.3"
 
 # Pairing (CS needs an encrypted link): TrouBLE's security manager takes its crypto from
 # embassy-crypto drivers, at the revision TrouBLE itself uses.
@@ -51,3 +51,5 @@ board-tag = []
 # Test aid: the image never confirms itself, so the bootloader puts the previous one back after
 # 5 min (architecture §13).
 never-confirm = []
+# Test aid: crashes 20 s after boot, a panic or a hard fault in turn, for the crash reports.
+crash-test = []

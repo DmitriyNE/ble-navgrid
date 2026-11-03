@@ -24,8 +24,23 @@ use crate::status;
 
 type Stack<'a, 'd> = trouble_host::Stack<'a, SoftdeviceController<'d>, DefaultPacketPool>;
 
-/// Messages waiting for the uplink. Full means the sink can't keep up; new ones are dropped.
+/// Messages waiting for the uplink, or on the sink for its UART. Full means the sink can't keep
+/// up; new ones are dropped.
 static OUTBOX: Channel<CriticalSectionRawMutex, Message, 16> = Channel::new();
+
+/// Queues one of this device's own reports (its boot report, say) toward the host.
+pub fn queue(msg: Message) {
+    let _ = OUTBOX.try_send(msg);
+}
+
+/// On the sink: writes its own reports to the UART, as they're queued.
+#[cfg(feature = "board-dk")]
+pub async fn own_reports(uart: &SinkUart<'_>) -> ! {
+    loop {
+        let msg = OUTBOX.receive().await;
+        send(uart, &msg).await;
+    }
+}
 
 const HEALTH_PERIOD: Duration = Duration::from_secs(60);
 

@@ -12,10 +12,10 @@ extern crate std;
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change to [`Message`] or to what a sink takes from the host.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// Upper bound for one encoded frame, including COBS overhead and the `0x00` terminator.
-pub const MAX_FRAME_LEN: usize = 64;
+pub const MAX_FRAME_LEN: usize = 128;
 
 /// L2CAP LE credit-based channel (SPSM) that carries telemetry toward a sink (D-6). Each SDU is
 /// one encoded frame, terminator included.
@@ -688,7 +688,7 @@ pub struct LinkStats {
     pub rssi_dbm: i8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Message {
     Hello {
@@ -706,6 +706,84 @@ pub enum Message {
     Link(LinkStats),
     /// A sink's answer to an update the host sends it (see [`UpdateMsg`]).
     Update(UpdateAnswer),
+    Boot(Boot),
+}
+
+/// What a device reports once per boot: why it started, the state of its image, and how its
+/// last run ended if that was a crash (architecture §13).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Boot {
+    pub node: NodeId,
+    pub firmware: Firmware,
+    /// Counts the device's boots.
+    pub epoch: u32,
+    /// The chip's `RESETREAS` bits; see [`reset_reasons`].
+    pub reset_reason: u32,
+    pub image: ImageState,
+    pub crash: Option<Crash>,
+}
+
+/// The image a device booted, as the bootloader left it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ImageState {
+    Confirmed,
+    /// Just swapped in; it confirms itself once the device is back in the mesh.
+    Unconfirmed,
+    /// The bootloader put this image back after one that didn't confirm, named if known.
+    Reverted(Option<Firmware>),
+}
+
+/// How the device's last run ended, when it crashed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Crash {
+    pub kind: CrashKind,
+    /// A panic's source line.
+    pub line: u32,
+    /// A hard fault's faulting instruction.
+    pub pc: u32,
+    /// A panic's file name and the start of its message, as `update.rs: message`.
+    pub text: heapless::String<CRASH_TEXT_LEN>,
+}
+
+pub const CRASH_TEXT_LEN: usize = 56;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum CrashKind {
+    Panic,
+    HardFault,
+}
+
+/// The nRF54L's reset reasons in `RESETREAS`, by bit. None set means power-on.
+const RESET_REASONS: [&str; 14] = [
+    "reset pin",
+    "watchdog 0",
+    "watchdog 1",
+    "debugger soft reset",
+    "debugger hard reset",
+    "debugger pin reset",
+    "soft reset",
+    "CPU lockup",
+    "wake from System OFF (GPIO)",
+    "wake from System OFF (LPCOMP)",
+    "debug interface",
+    "wake from System OFF (GRTC)",
+    "wake from System OFF (NFC)",
+    "tamper",
+];
+
+/// The reset reasons set in `bits`, or `power-on`.
+pub fn reset_reasons(bits: u32) -> impl Iterator<Item = &'static str> {
+    let power_on = (bits == 0).then_some("power-on");
+    RESET_REASONS
+        .iter()
+        .enumerate()
+        .filter(move |(i, _)| bits & (1 << i) != 0)
+        .map(|(_, &name)| name)
+        .chain(power_on)
 }
 
 /// What a sink answers the host's [`UpdateMsg`]s with.
@@ -767,7 +845,7 @@ pub fn decode(frame: &mut [u8]) -> Result<Message, Error> {
 mod tests {
     use super::*;
 
-    fn worst_case() -> [Message; 7] {
+    fn worst_case() -> [Message; 8] {
         let id = NodeId(u64::MAX);
         [
             Message::Hello {
@@ -825,7 +903,29 @@ mod tests {
                 rssi_dbm: i8::MIN,
             }),
             Message::Update(UpdateAnswer::Want { from: u32::MAX }),
+            Message::Boot(Boot {
+                node: id,
+                firmware: Firmware::new(u8::MAX, u8::MAX, u8::MAX, u32::MAX, true),
+                epoch: u32::MAX,
+                reset_reason: u32::MAX,
+                image: ImageState::Reverted(Some(Firmware::new(u8::MAX, u8::MAX, u8::MAX, u32::MAX, true))),
+                crash: Some(Crash {
+                    kind: CrashKind::HardFault,
+                    line: u32::MAX,
+                    pc: u32::MAX,
+                    text: heapless::String::try_from("x".repeat(CRASH_TEXT_LEN).as_str()).unwrap(),
+                }),
+            }),
         ]
+    }
+
+    #[test]
+    fn reset_reasons_by_bit() {
+        assert_eq!(reset_reasons(0).collect::<std::vec::Vec<_>>(), ["power-on"]);
+        assert_eq!(
+            reset_reasons(1 << 1 | 1 << 6).collect::<std::vec::Vec<_>>(),
+            ["watchdog 0", "soft reset"]
+        );
     }
 
     #[test]

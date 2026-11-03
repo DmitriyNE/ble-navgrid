@@ -14,6 +14,7 @@
 mod battery;
 mod beacon;
 mod board;
+mod crash;
 mod crypto;
 mod cs;
 mod firmware;
@@ -30,6 +31,7 @@ use core::cell::Cell;
 use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilities;
 use bt_hci::param::LeConnRole;
 use defmt::{error, info, unwrap, warn};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::select::{Either, select};
@@ -45,7 +47,6 @@ use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, SoftdeviceController, mpsl};
 use static_cell::StaticCell;
 use trouble_host::prelude::*;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     SERIAL20 => embassy_nrf::uarte::InterruptHandler<embassy_nrf::peripherals::SERIAL20>;
@@ -205,6 +206,8 @@ async fn log_cs_capabilities(stack: &Host<'_, '_>) {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    // First, before anything can clear the reset reasons or land in the crash record.
+    let (reset_reason, crash) = crash::take();
     board::early_init();
     let mut config = config::Config::default();
     config.clock_speed = config::ClockSpeed::CK128;
@@ -290,7 +293,21 @@ async fn main(spawner: Spawner) {
     )));
     spawner.spawn(unwrap!(mpsl_task(mpsl)));
     let rram = firmware::share_rram(mpsl::Flash::take(mpsl, p.RRAMC));
-    spawner.spawn(unwrap!(firmware::run(p.WDT0, rram)));
+    if let Some(crash) = &crash {
+        warn!("the last run crashed: {}", crash);
+    }
+    let boot = navgrid_proto::Boot {
+        node: node_id_from_ficr(),
+        firmware: FIRMWARE,
+        epoch,
+        reset_reason,
+        // `firmware::run` reads it from the bootloader.
+        image: navgrid_proto::ImageState::Confirmed,
+        crash,
+    };
+    spawner.spawn(unwrap!(firmware::run(p.WDT0, rram, boot)));
+    #[cfg(feature = "crash-test")]
+    spawner.spawn(unwrap!(crash::test(epoch)));
 
     let sdc_p = sdc::Peripherals::new(
         p.PPI00_CH1,
@@ -401,9 +418,10 @@ async fn main(spawner: Spawner) {
                     None
                 }
             };
-            join(
+            embassy_futures::join::join3(
                 report::serve_sink(&stack, &fleet, &uart, node, &beacons, &sink_params, rram),
                 update::from_host(&mut from_host, &uart, rram, provisioning.and_then(|p| p.signing_key)),
+                report::own_reports(&uart),
             )
             .await;
         }

@@ -9,7 +9,10 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use navgrid_proto::{BATTERY_CRITICAL_MV, BATTERY_GOOD_MV, BATTERY_LOW_MV, Firmware, Health, Message, NodeId};
+use navgrid_proto::{
+    BATTERY_CRITICAL_MV, BATTERY_GOOD_MV, BATTERY_LOW_MV, Boot, CrashKind, Firmware, Health, ImageState, Message,
+    NodeId,
+};
 
 use crate::calibration::Calibration;
 use crate::fleet::{Registry, label_name};
@@ -63,6 +66,7 @@ impl View {
             Message::Environment(e) => Some(e.node),
             Message::Link(l) => Some(l.node),
             Message::Update(_) => None,
+            Message::Boot(b) => Some(b.node),
         };
         if json {
             let mut v = serde_json::to_value(msg)?;
@@ -114,6 +118,7 @@ impl View {
                 self.name(*node),
                 self.firmware_note(*node, firmware)
             ),
+            (Message::Boot(b), _) => boot_line(&self.name(b.node), b, &self.firmware_note(b.node, &b.firmware)),
             _ => {
                 let prefix = node.map_or(String::new(), |n| format!("{}: ", self.name(n)));
                 match calibrated {
@@ -208,6 +213,29 @@ pub fn monitor(path: &str, baud: u32, json: bool, mut view: View) -> Result<()> 
             }
         }
     }
+}
+
+/// `N001 ce36dfcc4c2d boot 77: firmware 0.1.0+dca10e40, soft reset, image confirmed, crashed last
+/// time: panic at update.rs:120: …`.
+fn boot_line(name: &str, b: &Boot, note: &str) -> String {
+    let reasons: Vec<_> = navgrid_proto::reset_reasons(b.reset_reason).collect();
+    let image = match b.image {
+        ImageState::Confirmed => "confirmed".to_owned(),
+        ImageState::Unconfirmed => "new, not confirmed yet".to_owned(),
+        ImageState::Reverted(Some(from)) => format!("reverted from {from}"),
+        ImageState::Reverted(None) => "reverted".to_owned(),
+    };
+    let crash = match &b.crash {
+        Some(c) if c.kind == CrashKind::Panic => format!(", crashed last time: panic at line {}: {}", c.line, c.text),
+        Some(c) => format!(", crashed last time: hard fault at {:#010x}", c.pc),
+        None => String::new(),
+    };
+    format!(
+        "{name} boot {}: firmware {}{note}, {}, image {image}{crash}",
+        b.epoch,
+        b.firmware,
+        reasons.join(" + ")
+    )
 }
 
 /// Removes the complete frames (those ended by `0x00`) from the front of `pending`, without their
@@ -314,6 +342,28 @@ mod tests {
         assert_eq!(
             (json["number"].as_str(), json["battery_level"].as_str()),
             (Some("N042"), Some("fine"))
+        );
+    }
+
+    #[test]
+    fn boot_shows_reasons_image_and_crash() {
+        let b = Boot {
+            node: NodeId(1),
+            firmware: Firmware::new(0, 1, 0, 0xdca1_0e40, false),
+            epoch: 77,
+            reset_reason: 1 << 1,
+            image: ImageState::Reverted(Some(Firmware::new(0, 1, 6, 0xdca1_0e40, true))),
+            crash: Some(navgrid_proto::Crash {
+                kind: CrashKind::Panic,
+                line: 120,
+                pc: 0,
+                text: "update.rs: index out of bounds".try_into().unwrap(),
+            }),
+        };
+        assert_eq!(
+            boot_line("N001", &b, ""),
+            "N001 boot 77: firmware 0.1.0+dca10e40, watchdog 0, image reverted from 0.1.6+dca10e40-dirty, \
+             crashed last time: panic at line 120: update.rs: index out of bounds"
         );
     }
 

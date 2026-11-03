@@ -453,6 +453,7 @@ version = "0.1.0"
 dependencies = [
  "cobs",
  "defmt",
+ "heapless",
  "postcard",
  "serde",
 ]

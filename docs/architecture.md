@@ -743,6 +743,31 @@ starts, stay direct.
 - **Cost:** about 400 KB received per node and a little more sent, a few µAh. Time is hops ×
   (wait for a contact + about 10 s per transfer).
 
+### Diagnostics over the air
+
+Most devices will never have a debug probe on them again, so they report what went wrong
+themselves.
+
+- **Boot reports (built):** once per boot a device queues a `Boot` record carrying:
+  - its build and boot number;
+  - the chip's reset reasons (`RESETREAS`: power-on, pin, watchdog, soft reset, lockup, wake-up);
+  - the image state the bootloader left: confirmed, new, or reverted from which build;
+  - how the last run ended, if it crashed.
+- **Crash records (built):** the panic handler and the HardFault handler leave a record in RAM
+  that resets keep, then restart the device. It holds the kind, a panic's file, line and the
+  start of its message, or a fault's PC. The record sits in `.uninit`, which neither the image
+  nor the bootloader initialises; a magic number and a CRC reject what a power cut leaves.
+  `defmt` panics record only that they happened, as their message is in the log.
+- **Logs at a configured level (next):**
+  - a device forwards `defmt` frames at or above its level: errors only by default, more on a
+    dev bench, set at enrolment and later through the desired state (§12);
+  - the level comes from where defmt's linker script places each level's strings, between
+    marker symbols, so the logger tells it from a frame's string index at runtime;
+  - the host decodes the frames with that build's ELF.
+- **Reach:** a device's reports go where its telemetry goes. Today that is only a node with a
+  direct sink link, and the sink serves one node at a time (DEF-1). The bench gets a sink that
+  serves several; elsewhere they travel with the mesh sync (stage 4).
+
 ### LED and button (FR-O7)
 
 The TAG has one RGB LED (P2.08–P2.10, active low) and one button (P0.00). The second LED and
