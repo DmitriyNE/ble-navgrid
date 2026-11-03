@@ -19,6 +19,7 @@ mod crypto;
 mod cs;
 mod firmware;
 mod keys;
+mod logger;
 mod report;
 mod status;
 mod store;
@@ -31,7 +32,6 @@ use core::cell::Cell;
 use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilities;
 use bt_hci::param::LeConnRole;
 use defmt::{error, info, unwrap, warn};
-use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::select::{Either, select};
@@ -242,6 +242,7 @@ async fn main(spawner: Spawner) {
     };
     // Before MPSL too: it writes RRAM, and may restart into an update.
     firmware::apply_staged(&mut rram, provisioning.and_then(|p| p.signing_key));
+    logger::set_level(provisioning.map_or_else(Default::default, |p| p.report_level));
     let node_cfg = provisioning.map_or_else(NodeConfig::default, |p| p.config);
     let number = provisioning.and_then(|p| p.number);
     status::set_identity(provisioning.is_some(), node_cfg.role == Role::Sink);
@@ -299,6 +300,7 @@ async fn main(spawner: Spawner) {
     let boot = navgrid_proto::Boot {
         node: node_id_from_ficr(),
         firmware: FIRMWARE,
+        board: board::BOARD,
         epoch,
         reset_reason,
         // `firmware::run` reads it from the bootloader.
@@ -306,6 +308,7 @@ async fn main(spawner: Spawner) {
         crash,
     };
     spawner.spawn(unwrap!(firmware::run(p.WDT0, rram, boot)));
+    spawner.spawn(unwrap!(report::logs(node_id_from_ficr())));
     #[cfg(feature = "crash-test")]
     spawner.spawn(unwrap!(crash::test(epoch)));
 
@@ -534,6 +537,9 @@ async fn listen(central: &mut Central<'_, SoftdeviceController<'_>, DefaultPacke
     }
 }
 
+/// How long the initiator tries to connect to its peer before letting the sink link have a go.
+const PEER_CONNECT_WITHIN: Duration = Duration::from_secs(10);
+
 /// ACL event length on the initiator: room for a packet pair each way, and short enough that the
 /// CS subevent ends with time to spare in a 30 ms interval.
 const ACL_EVENT_LENGTH_US: u32 = 2_500;
@@ -686,15 +692,22 @@ async fn ranging(
         // soon as the peer's advertisement is heard (DEF-17).
         // TrouBLE forgets the key when a link drops.
         fleet.trust_address(stack, peer);
+        // Bounded, as the uplink's is: while the peer is away the central role is free between
+        // tries, and the sink link can connect and report.
         let connected = {
             let mut central = central.lock().await;
             links.space_before(stack, Link::Cs).await;
-            central.connect_ext(&config).await
+            with_timeout(PEER_CONNECT_WITHIN, central.connect_ext(&config)).await
         };
         let conn = match connected {
-            Ok(conn) => conn,
-            Err(e) => {
+            Ok(Ok(conn)) => conn,
+            Ok(Err(e)) => {
                 warn!("connect: {:?}", e);
+                continue;
+            }
+            Err(_) => {
+                // The uplink, waiting in the same task, takes the central role before the next try.
+                embassy_futures::yield_now().await;
                 continue;
             }
         };

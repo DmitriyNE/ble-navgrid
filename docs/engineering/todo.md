@@ -125,12 +125,8 @@ version compatibility during rollouts.
 Each item works through the host and the mesh first; the field tool shortens it.
 
 **Diagnostics over the air** (architecture §13), before more TAGs go up without probes. Boot and
-crash reports are done (log 2026-11-03). Next:
-1. [ ] **Logs at a configured level:** a logger that sends everything to RTT and forwards
-       `defmt` frames at or above the device's level (provisioning format 4, `navgrid provision
-       --report-level`); `navgrid sign` and `flash` keep each build's ELF in the fleet directory,
-       and the monitor decodes frames and resolves crash PCs with it.
-2. [ ] **A sink that serves several nodes** (DEF-1), so every bench node can report.
+crash reports and logs at a configured level are done (log 2026-11-03). Next:
+1. [ ] **A sink that serves several nodes** (DEF-1), so every bench node can report.
 
 Items 1–3 are done (log 2026-11-02):
 - fleet numbers, the registry and labels;

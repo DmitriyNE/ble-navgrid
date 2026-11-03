@@ -54,6 +54,9 @@ fn embedded(image: &[u8], marker: &[u8]) -> Option<String> {
 pub fn run(args: &FlashArgs) -> Result<()> {
     let image = std::fs::read(&args.elf).with_context(|| format!("reading {}", args.elf.display()))?;
     let tag = firmware_tag(&image).context("no navgrid firmware tag in the image")?;
+    if let (Ok(fleet), Some(board)) = (Fleet::open(&args.fleet), board_tag(&image)) {
+        fleet.keep_build(&tag, board, &image)?;
+    }
     println!(
         "flashing {tag} through {} probe(s); about 2 min at 100 kHz",
         args.probes.len()

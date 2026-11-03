@@ -21,7 +21,7 @@ bt-hci = { version = "0.11", default-features = false, features = ["defmt"] }
 trouble-host = { git = "https://github.com/GreatKet/trouble.git", rev = "fa9886d3f92d0b9a8adf7323a9b10b991a131d2c", features = ["defmt", "channel-sounding", "security", "scan"] }
 
 defmt = "1"
-defmt-rtt = "1"
+critical-section = "1"
 cortex-m = "0.7.7"
 cortex-m-rt = "0.7.5"
 static_cell = "2"

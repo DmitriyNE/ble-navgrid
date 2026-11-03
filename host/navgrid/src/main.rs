@@ -1,3 +1,4 @@
+mod builds;
 mod calibration;
 mod capture;
 mod fix;
@@ -97,8 +98,13 @@ fn main() -> Result<()> {
             fleet,
         } => {
             let cal = calibration.as_deref().map(calibration::Calibration::load).transpose()?;
-            let registry = fleet::Fleet::open(&fleet).ok().map(|f| f.registry()).transpose()?;
-            monitor::monitor(&port, baud, json, monitor::View::new(cal, registry))
+            let fleet = fleet::Fleet::open(&fleet).ok();
+            let registry = fleet.as_ref().map(|f| f.registry()).transpose()?;
+            let mut view = monitor::View::new(cal, registry);
+            if let Some(fleet) = &fleet {
+                view = view.with_builds(builds::Builds::new(fleet.builds_dir()));
+            }
+            monitor::monitor(&port, baud, json, view)
         }
         Cmd::Calibrate(args) => calibration::run(&args),
         Cmd::MeshSim(args) => mesh_sim::run(&args),

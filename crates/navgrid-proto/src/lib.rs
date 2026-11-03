@@ -120,7 +120,7 @@ pub enum Role {
 
 /// The hardware an image is built for. An update carries it, so no device installs another
 /// board's image; a sink only passes one on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum Board {
@@ -210,6 +210,35 @@ pub struct Provisioning {
     /// The Ed25519 public key that firmware updates must be signed with (D-35). Without one the
     /// device takes no updates.
     pub signing_key: Option<[u8; 32]>,
+    /// How much of its log the device sends toward the host.
+    pub report_level: ReportLevel,
+}
+
+/// How much of its log a device sends toward the host as [`Log`] records (architecture §13): the
+/// levels from `Error` down to this one. RTT always gets everything.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum ReportLevel {
+    Off,
+    /// Production: only what went wrong.
+    #[default]
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+/// Format 3 of the page, before the report level.
+#[derive(Deserialize)]
+struct ProvisioningV3 {
+    config: NodeConfig,
+    fleet_key: [u8; 16],
+    peer: Option<NodeId>,
+    sink: Option<NodeId>,
+    number: Option<u16>,
+    signing_key: Option<[u8; 32]>,
 }
 
 /// Format 2 of the page, before the signing key.
@@ -400,7 +429,7 @@ impl UpdateHeader {
 pub const PROVISIONING_ADDRESS: u32 = 0x0017_B000;
 /// The provisioning page's header: magic, format, payload length, CRC-32 of the payload.
 const PROVISIONING_MAGIC: [u8; 4] = *b"ngpv";
-const PROVISIONING_FORMAT: u8 = 3;
+const PROVISIONING_FORMAT: u8 = 4;
 const PROVISIONING_HEADER: usize = 12;
 /// Upper bound for an encoded provisioning page.
 pub const MAX_PROVISIONING_LEN: usize = 128;
@@ -461,6 +490,7 @@ pub fn decode_provisioning(page: &[u8]) -> Result<Provisioning, ProvisioningErro
             sink: v1.sink,
             number: None,
             signing_key: None,
+            report_level: ReportLevel::default(),
         });
     }
     if format == 2 {
@@ -472,6 +502,19 @@ pub fn decode_provisioning(page: &[u8]) -> Result<Provisioning, ProvisioningErro
             sink: v2.sink,
             number: v2.number,
             signing_key: None,
+            report_level: ReportLevel::default(),
+        });
+    }
+    if format == 3 {
+        let v3: ProvisioningV3 = postcard::from_bytes(payload).map_err(|_| ProvisioningError::Corrupt)?;
+        return Ok(Provisioning {
+            config: v3.config,
+            fleet_key: v3.fleet_key,
+            peer: v3.peer,
+            sink: v3.sink,
+            number: v3.number,
+            signing_key: v3.signing_key,
+            report_level: ReportLevel::default(),
         });
     }
     postcard::from_bytes(payload).map_err(|_| ProvisioningError::Corrupt)
@@ -707,7 +750,22 @@ pub enum Message {
     /// A sink's answer to an update the host sends it (see [`UpdateMsg`]).
     Update(UpdateAnswer),
     Boot(Boot),
+    Log(Log),
 }
+
+/// One `defmt` frame from a device's log, as its logger wrote it: the string index, the timestamp
+/// and the arguments. The host decodes it with the ELF of `firmware` for `board`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Log {
+    pub node: NodeId,
+    pub firmware: Firmware,
+    pub board: Board,
+    pub frame: heapless::Vec<u8, LOG_FRAME_LEN>,
+}
+
+/// The longest frame a device sends; longer ones stay in its RTT log only.
+pub const LOG_FRAME_LEN: usize = 64;
 
 /// What a device reports once per boot: why it started, the state of its image, and how its
 /// last run ended if that was a crash (architecture §13).
@@ -716,6 +774,7 @@ pub enum Message {
 pub struct Boot {
     pub node: NodeId,
     pub firmware: Firmware,
+    pub board: Board,
     /// Counts the device's boots.
     pub epoch: u32,
     /// The chip's `RESETREAS` bits; see [`reset_reasons`].
@@ -845,7 +904,7 @@ pub fn decode(frame: &mut [u8]) -> Result<Message, Error> {
 mod tests {
     use super::*;
 
-    fn worst_case() -> [Message; 8] {
+    fn worst_case() -> [Message; 9] {
         let id = NodeId(u64::MAX);
         [
             Message::Hello {
@@ -906,6 +965,7 @@ mod tests {
             Message::Boot(Boot {
                 node: id,
                 firmware: Firmware::new(u8::MAX, u8::MAX, u8::MAX, u32::MAX, true),
+                board: Board::Tag,
                 epoch: u32::MAX,
                 reset_reason: u32::MAX,
                 image: ImageState::Reverted(Some(Firmware::new(u8::MAX, u8::MAX, u8::MAX, u32::MAX, true))),
@@ -915,6 +975,12 @@ mod tests {
                     pc: u32::MAX,
                     text: heapless::String::try_from("x".repeat(CRASH_TEXT_LEN).as_str()).unwrap(),
                 }),
+            }),
+            Message::Log(Log {
+                node: id,
+                firmware: Firmware::new(u8::MAX, u8::MAX, u8::MAX, u32::MAX, true),
+                board: Board::Tag,
+                frame: heapless::Vec::from_slice(&[0xff; LOG_FRAME_LEN]).unwrap(),
             }),
         ]
     }
@@ -953,6 +1019,7 @@ mod tests {
             sink: None,
             number: Some(42),
             signing_key: Some([0x5a; 32]),
+            report_level: ReportLevel::Warn,
         };
         let mut buf = [0u8; MAX_PROVISIONING_LEN];
         let page = encode_provisioning(&p, &mut buf).unwrap().to_vec();
@@ -966,8 +1033,8 @@ mod tests {
         assert_eq!(decode_provisioning(&flipped), Err(ProvisioningError::Corrupt));
         assert_eq!(decode_provisioning(&[0xff; 64]), Err(ProvisioningError::Blank));
         let mut newer = page.clone();
-        newer[4] = 4;
-        assert_eq!(decode_provisioning(&newer), Err(ProvisioningError::Format(4)));
+        newer[4] = 5;
+        assert_eq!(decode_provisioning(&newer), Err(ProvisioningError::Format(5)));
         assert_eq!(
             decode_provisioning(&page[..page.len() - 1]),
             Err(ProvisioningError::Corrupt)
@@ -998,6 +1065,39 @@ mod tests {
         page[8..12].copy_from_slice(&crc.to_le_bytes());
         let p = decode_provisioning(&page).unwrap();
         assert_eq!((p.sink, p.number), (v1.sink, None));
+    }
+
+    #[test]
+    fn reads_format_3_pages_at_error_level() {
+        #[derive(Serialize)]
+        struct V3 {
+            config: NodeConfig,
+            fleet_key: [u8; 16],
+            peer: Option<NodeId>,
+            sink: Option<NodeId>,
+            number: Option<u16>,
+            signing_key: Option<[u8; 32]>,
+        }
+        let v3 = V3 {
+            config: NodeConfig::default(),
+            fleet_key: [7; 16],
+            peer: None,
+            sink: None,
+            number: Some(3),
+            signing_key: Some([9; 32]),
+        };
+        let mut page = [0u8; MAX_PROVISIONING_LEN];
+        let len = postcard::to_slice(&v3, &mut page[PROVISIONING_HEADER..]).unwrap().len();
+        let crc = crc32(&page[PROVISIONING_HEADER..PROVISIONING_HEADER + len]);
+        page[..4].copy_from_slice(&PROVISIONING_MAGIC);
+        page[4] = 3;
+        page[6..8].copy_from_slice(&(len as u16).to_le_bytes());
+        page[8..12].copy_from_slice(&crc.to_le_bytes());
+        let p = decode_provisioning(&page).unwrap();
+        assert_eq!(
+            (p.number, p.signing_key, p.report_level),
+            (Some(3), Some([9; 32]), ReportLevel::Error)
+        );
     }
 
     #[test]

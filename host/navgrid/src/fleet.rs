@@ -6,13 +6,16 @@
 //!                 secret, never in git
 //! devices.json    every enrolled device: fleet number, node ID, role, enrolment date, status
 //! labels/         one SVG label per device: fleet number and a QR code of its ID
+//! builds/         the ELF of every build flashed or signed, by firmware tag and board
+//!                 (`0.1.0+7ccdf3ca-tag.elf`): the monitor decodes devices' log frames and crash
+//!                 addresses with it. A dirty build replaces an earlier one with the same tag.
 //! ```
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use navgrid_proto::{NodeId, Role};
+use navgrid_proto::{Board, NodeId, Role};
 use serde::{Deserialize, Serialize};
 
 /// Where the fleet lives: `--fleet`, else `NAVGRID_FLEET`, else `~/.config/navgrid`.
@@ -100,6 +103,11 @@ impl Registry {
 }
 
 /// `N042`.
+/// A kept build's file name in `builds/`.
+pub fn build_file(firmware: &str, board: Board) -> String {
+    format!("{firmware}-{}.elf", board.name())
+}
+
 pub fn label_name(number: u16) -> String {
     format!("N{number:03}")
 }
@@ -165,6 +173,19 @@ impl Fleet {
         let path = self.registry_path();
         let text = serde_json::to_string_pretty(registry)? + "\n";
         std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))
+    }
+
+    /// Keeps a build's ELF, so the monitor can decode what devices running it report.
+    pub fn keep_build(&self, firmware: &str, board: Board, elf: &[u8]) -> Result<PathBuf> {
+        let dir = self.builds_dir();
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let path = dir.join(build_file(firmware, board));
+        std::fs::write(&path, elf).with_context(|| format!("writing {}", path.display()))?;
+        Ok(path)
+    }
+
+    pub fn builds_dir(&self) -> PathBuf {
+        self.dir.join("builds")
     }
 
     /// Writes the device's label and returns its path.

@@ -6,7 +6,9 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use navgrid_proto::{MAX_PROVISIONING_LEN, NodeConfig, NodeId, PROVISIONING_ADDRESS, PointMm, Provisioning, Role};
+use navgrid_proto::{
+    MAX_PROVISIONING_LEN, NodeConfig, NodeId, PROVISIONING_ADDRESS, PointMm, Provisioning, ReportLevel, Role,
+};
 
 use crate::fleet::{Fleet, FleetArgs, label_name, today};
 use crate::probe;
@@ -44,6 +46,10 @@ pub struct ProvisionArgs {
     /// Also sample the BME688 gas sensor.
     #[arg(long)]
     gas: bool,
+    /// How much of its log the device sends toward the host: errors only, as in production, or
+    /// more on a dev bench.
+    #[arg(long, value_enum, default_value = "error")]
+    report_level: ReportLevelArg,
     /// Write the page to this file instead of the device; the registry is left alone.
     #[arg(long)]
     out: Option<PathBuf>,
@@ -55,6 +61,29 @@ enum RoleArg {
     Asset,
     Person,
     Sink,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ReportLevelArg {
+    Off,
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<ReportLevelArg> for ReportLevel {
+    fn from(l: ReportLevelArg) -> Self {
+        match l {
+            ReportLevelArg::Off => ReportLevel::Off,
+            ReportLevelArg::Error => ReportLevel::Error,
+            ReportLevelArg::Warn => ReportLevel::Warn,
+            ReportLevelArg::Info => ReportLevel::Info,
+            ReportLevelArg::Debug => ReportLevel::Debug,
+            ReportLevelArg::Trace => ReportLevel::Trace,
+        }
+    }
 }
 
 impl From<RoleArg> for Role {
@@ -119,6 +148,7 @@ pub fn run(args: &ProvisionArgs) -> Result<()> {
         sink: args.sink,
         number,
         signing_key,
+        report_level: args.report_level.into(),
     };
     let mut buf = [0u8; MAX_PROVISIONING_LEN];
     let page = navgrid_proto::encode_provisioning(&p, &mut buf)?;

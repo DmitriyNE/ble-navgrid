@@ -14,6 +14,7 @@ use navgrid_proto::{
     NodeId,
 };
 
+use crate::builds::Builds;
 use crate::calibration::Calibration;
 use crate::fleet::{Registry, label_name};
 
@@ -24,6 +25,7 @@ const TREND_WINDOW_S: f64 = 24.0 * 3600.0;
 pub struct View {
     cal: Option<Calibration>,
     registry: Option<Registry>,
+    builds: Option<Builds>,
     batteries: HashMap<NodeId, Vec<(f64, f64)>>,
     start: Instant,
 }
@@ -33,8 +35,17 @@ impl View {
         Self {
             cal,
             registry,
+            builds: None,
             batteries: HashMap::new(),
             start: Instant::now(),
+        }
+    }
+
+    /// Decodes log frames and crash addresses with the builds kept in the fleet directory.
+    pub fn with_builds(self, builds: Builds) -> Self {
+        Self {
+            builds: Some(builds),
+            ..self
         }
     }
 
@@ -67,12 +78,29 @@ impl View {
             Message::Link(l) => Some(l.node),
             Message::Update(_) => None,
             Message::Boot(b) => Some(b.node),
+            Message::Log(l) => Some(l.node),
+        };
+        let builds = self.builds.as_mut();
+        let decoded = match (&msg, builds) {
+            (Message::Log(l), Some(b)) => b.log_line(&l.firmware, l.board, &l.frame),
+            (Message::Boot(boot), Some(b)) => boot
+                .crash
+                .as_ref()
+                .and_then(|c| b.function(&boot.firmware, boot.board, c.pc)),
+            _ => None,
         };
         if json {
-            let mut v = serde_json::to_value(msg)?;
+            let mut v = serde_json::to_value(&msg)?;
             if let Some(o) = v.as_object_mut() {
                 if let Some(mm) = calibrated {
                     o.insert("calibrated_mm".into(), mm.into());
+                }
+                match (&msg, &decoded) {
+                    (Message::Log(_), Some(text)) => drop(o.insert("text".into(), text.clone().into())),
+                    (Message::Boot(_), Some(function)) => {
+                        drop(o.insert("crash_function".into(), function.clone().into()))
+                    }
+                    _ => {}
                 }
                 let number = node
                     .and_then(|n| self.registry.as_ref()?.by_id(n))
@@ -118,7 +146,21 @@ impl View {
                 self.name(*node),
                 self.firmware_note(*node, firmware)
             ),
-            (Message::Boot(b), _) => boot_line(&self.name(b.node), b, &self.firmware_note(b.node, &b.firmware)),
+            (Message::Boot(b), _) => boot_line(
+                &self.name(b.node),
+                b,
+                &self.firmware_note(b.node, &b.firmware),
+                decoded.as_deref(),
+            ),
+            (Message::Log(l), _) => match &decoded {
+                Some(text) => format!("{} log: {text}", self.name(l.node)),
+                None => format!(
+                    "{} log frame {:02x?} (no build {} kept to decode it)",
+                    self.name(l.node),
+                    &l.frame[..],
+                    l.firmware
+                ),
+            },
             _ => {
                 let prefix = node.map_or(String::new(), |n| format!("{}: ", self.name(n)));
                 match calibrated {
@@ -217,7 +259,7 @@ pub fn monitor(path: &str, baud: u32, json: bool, mut view: View) -> Result<()> 
 
 /// `N001 ce36dfcc4c2d boot 77: firmware 0.1.0+dca10e40, soft reset, image confirmed, crashed last
 /// time: panic at update.rs:120: …`.
-fn boot_line(name: &str, b: &Boot, note: &str) -> String {
+fn boot_line(name: &str, b: &Boot, note: &str, function: Option<&str>) -> String {
     let reasons: Vec<_> = navgrid_proto::reset_reasons(b.reset_reason).collect();
     let image = match b.image {
         ImageState::Confirmed => "confirmed".to_owned(),
@@ -227,7 +269,10 @@ fn boot_line(name: &str, b: &Boot, note: &str) -> String {
     };
     let crash = match &b.crash {
         Some(c) if c.kind == CrashKind::Panic => format!(", crashed last time: panic at line {}: {}", c.line, c.text),
-        Some(c) => format!(", crashed last time: hard fault at {:#010x}", c.pc),
+        Some(c) => match function {
+            Some(f) => format!(", crashed last time: hard fault at {:#010x} in {f}", c.pc),
+            None => format!(", crashed last time: hard fault at {:#010x}", c.pc),
+        },
         None => String::new(),
     };
     format!(
@@ -350,6 +395,7 @@ mod tests {
         let b = Boot {
             node: NodeId(1),
             firmware: Firmware::new(0, 1, 0, 0xdca1_0e40, false),
+            board: navgrid_proto::Board::Tag,
             epoch: 77,
             reset_reason: 1 << 1,
             image: ImageState::Reverted(Some(Firmware::new(0, 1, 6, 0xdca1_0e40, true))),
@@ -361,7 +407,7 @@ mod tests {
             }),
         };
         assert_eq!(
-            boot_line("N001", &b, ""),
+            boot_line("N001", &b, "", None),
             "N001 boot 77: firmware 0.1.0+dca10e40, watchdog 0, image reverted from 0.1.6+dca10e40-dirty, \
              crashed last time: panic at line 120: update.rs: index out of bounds"
         );

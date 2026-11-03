@@ -719,7 +719,8 @@ starts, stay direct.
   a time: the sink answers each chunk with where to go on from, and the host resends any that
   gets no answer within 1 s. The sink checks the signature, then installs an update for its own
   board, or keeps one for the TAGs in its update slot and offers it to the nodes on its links.
-  The host's upload takes about 60 s. The sink updates itself the same way.
+  The host's upload takes about 60 s. The sink updates itself the same way, and confirms the new
+  image only once a node links to it: updated with no node in reach for 5 min, it reverts.
 - **On the sink link:** packets stay short, so the uplink keeps its 11/s, except during an update,
   when the node switches the link to full-length packets: one full-length exchange fills the
   link's 2.5 ms event. The node returns credits four chunks at a time, which leaves telemetry
@@ -758,12 +759,22 @@ themselves.
   start of its message, or a fault's PC. The record sits in `.uninit`, which neither the image
   nor the bootloader initialises; a magic number and a CRC reject what a power cut leaves.
   `defmt` panics record only that they happened, as their message is in the log.
-- **Logs at a configured level (next):**
-  - a device forwards `defmt` frames at or above its level: errors only by default, more on a
-    dev bench, set at enrolment and later through the desired state (§12);
-  - the level comes from where defmt's linker script places each level's strings, between
-    marker symbols, so the logger tells it from a frame's string index at runtime;
-  - the host decodes the frames with that build's ELF.
+- **Logs at a configured level (built):**
+  - **What goes out:** a device sends a copy of each `defmt` frame at or above its report level
+    as a `Log` record: errors only by default, more on a dev bench.
+  - **Where the level comes from:** it's set at enrolment (`navgrid provision --report-level`,
+    provisioning format 4), and later through the desired state (§12).
+  - **How the logger tells a frame's level:** defmt's linker script places each level's strings
+    between marker symbols, and a frame starts with its string's index.
+  - **The logger:** defmt-rtt's RTT code, vendored, so RTT still gets everything. Copies wait in
+    an 8-frame queue, and longer frames than 64 bytes stay in RTT.
+- **Decoding on the host:** a `Log` or `Boot` record names its build and board.
+  - `navgrid flash` and `navgrid sign` keep every ELF in the fleet directory's `builds/`.
+  - The monitor decodes frames with defmt's decoder, giving timestamp, level, message and source
+    line, and resolves a crash's PC to its function.
+  - A dirty build, or one with a test feature, replaces another with the same tag (DEF-48).
+- **The cost of a dev level:** a link that stalls sends one warning per CS procedure, 11 a
+  second, until it drops. The queues bound it.
 - **Reach:** a device's reports go where its telemetry goes. Today that is only a node with a
   direct sink link, and the sink serves one node at a time (DEF-1). The bench gets a sink that
   serves several; elsewhere they travel with the mesh sync (stage 4).

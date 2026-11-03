@@ -133,7 +133,9 @@ pub fn run_sign(args: &SignArgs) -> Result<()> {
             image.len()
         );
     }
-    let key = Fleet::open(&args.fleet)?.signing_key()?;
+    let fleet = Fleet::open(&args.fleet)?;
+    let key = fleet.signing_key()?;
+    fleet.keep_build(&tag, board, &elf)?;
     let file = sign(&image, firmware, board, &key);
     std::fs::write(&args.out, &file).with_context(|| format!("writing {}", args.out.display()))?;
     println!(

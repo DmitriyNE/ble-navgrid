@@ -33,6 +33,22 @@ pub fn queue(msg: Message) {
     let _ = OUTBOX.try_send(msg);
 }
 
+/// Sends the frames the logger keeps for the host (`logger`), as `Log` records.
+#[embassy_executor::task]
+pub async fn logs(node: NodeId) -> ! {
+    loop {
+        crate::logger::QUEUED_FRAME.wait().await;
+        while let Some(frame) = crate::logger::take() {
+            queue(Message::Log(navgrid_proto::Log {
+                node,
+                firmware: crate::FIRMWARE,
+                board: crate::board::BOARD,
+                frame,
+            }));
+        }
+    }
+}
+
 /// On the sink: writes its own reports to the UART, as they're queued.
 #[cfg(feature = "board-dk")]
 pub async fn own_reports(uart: &SinkUart<'_>) -> ! {

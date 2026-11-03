@@ -4,6 +4,26 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Logs over the air at a configured level.**
+
+- **Built:**
+  - **The logger** is defmt-rtt's RTT code, vendored, plus a copy of each frame at or above the
+    device's report level. It tells a frame's level from its string index and defmt's level
+    markers.
+  - **The setting:** `navgrid provision --report-level`, in provisioning format 4; errors only by
+    default.
+  - **The host:** `Boot` and `Log` records name their build and board. `navgrid flash` and `sign`
+    keep each ELF in `builds/`, and the monitor decodes frames and crash PCs with it.
+- **On the bench:**
+  - **N001 at warn level** sent `WARN the last run crashed: … (main.rs:298)` at each boot of the
+    crash test.
+  - **Its boot reports** read "hard fault at 0x0002f87a in …crash test task…".
+  - **When N002 was taken away,** N001 sent one "too few channels" warning per procedure for 4 s:
+    the cost of a dev level.
+- **Fixed:** with its CS peer away, an initiator couldn't connect its sink link (DEF-47), so the
+  sink, updated meanwhile, saw no node for 5 min and reverted. The peer connect now gives up
+  after 10 s.
+
 **Boot and crash reports.**
 
 - **Built:** every boot queues a `Boot` record (protocol 4) with the build, boot number, reset

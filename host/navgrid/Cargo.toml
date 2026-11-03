@@ -19,3 +19,7 @@ serialport.workspace = true
 qrcode.workspace = true
 ed25519-dalek.workspace = true
 sha2.workspace = true
+# Decoding devices' log frames and crash addresses with the builds they run (builds.rs).
+defmt-decoder = "1.2"
+object = { version = "0.36", default-features = false, features = ["read"] }
+rustc-demangle = "0.1"
