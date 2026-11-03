@@ -116,43 +116,95 @@ pub async fn offer(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPoo
     }
 }
 
-/// Takes the update channels a peer opens on `conn`. Never returns: the link's own task ends when
-/// it drops.
-pub async fn listen(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPool>, rram: &'static Rram) -> ! {
+/// Takes the update channels a peer opens on `conn`. With `widen`, the link switches to
+/// full-length packets for a transfer and back after: on the sink link one full-length exchange
+/// fills an event, which would cap the uplink (DEF-42). Never returns: the link's own task ends
+/// when it drops.
+pub async fn listen(
+    stack: &Stack<'_, '_>,
+    conn: &Connection<'_, DefaultPacketPool>,
+    rram: &'static Rram,
+    widen: bool,
+) -> ! {
     loop {
-        let mut channel = match L2capChannel::listen(stack, conn).accept(&Default::default()).await {
+        let mut channel = match L2capChannel::listen(stack, conn).accept(&RECEIVING).await {
             Ok(channel) => channel,
             Err(_) => core::future::pending().await,
         };
         info!("update: channel {=u16:#06x} opened by the peer", channel.spsm());
-        if channel.spsm() == UPDATE_SPSM {
-            receive(stack, &mut channel, rram).await;
+        if channel.spsm() != UPDATE_SPSM {
+            continue;
+        }
+        let Some(header) = answer(stack, &mut channel, rram).await else {
+            continue;
+        };
+        if widen {
+            packet_length(stack, conn, FULL_LENGTH).await;
+        }
+        // Returns only if the transfer failed; otherwise the node restarts into the update.
+        receive(stack, &mut channel, rram, header).await;
+        if widen {
+            packet_length(stack, conn, SHORT_LENGTH).await;
         }
     }
 }
 
-async fn receive(stack: &Stack<'_, '_>, channel: &mut L2capChannel<'_, DefaultPacketPool>, rram: &'static Rram) {
-    let mut rx = [0u8; UPDATE_CHUNK + 5];
+/// Credits go back four chunks at a time rather than after each (TrouBLE's default), out of the
+/// 8 the sender starts with. On the sink link the node sends one packet per event during a
+/// transfer, and a credit packet per chunk would take every one of them from the telemetry.
+const RECEIVING: L2capChannelConfig = L2capChannelConfig {
+    mtu: None,
+    mps: None,
+    flow_policy: CreditFlowPolicy::Every(4),
+    initial_credits: None,
+};
+
+/// Full-length packets for a transfer: 251 octets, 2120 µs.
+const FULL_LENGTH: (u16, u16) = (251, 2120);
+/// The short ones otherwise: 27 octets, 328 µs.
+const SHORT_LENGTH: (u16, u16) = (27, 328);
+
+async fn packet_length(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPool>, (octets, us): (u16, u16)) {
+    if let Err(e) = conn.update_data_length(stack, octets, us).await {
+        warn!("update: data length {=u16}: {:?}", octets, e);
+    }
+}
+
+/// Reads the peer's offer and answers it: the header, once asked for from byte 0, or `None`
+/// once declined.
+async fn answer(
+    stack: &Stack<'_, '_>,
+    channel: &mut L2capChannel<'_, DefaultPacketPool>,
+    rram: &'static Rram,
+) -> Option<UpdateHeader> {
+    let mut rx = [0u8; UPDATE_HEADER_LEN + 1];
     let mut tx = [0u8; 16];
-    let Ok(n) = channel.receive(stack, &mut rx).await else {
-        return;
-    };
+    let n = channel.receive(stack, &mut rx).await.ok()?;
     let Some(UpdateMsg::Offer(header)) = UpdateMsg::decode(&rx[..n]) else {
-        return;
+        return None;
     };
     let wanted = header.board == BOARD && header.firmware != crate::FIRMWARE && takes(&header, rram).await;
     if !wanted {
         let _ = channel.send(stack, UpdateMsg::Decline.encode(&mut tx)).await;
-        return;
+        return None;
     }
     info!("update: receiving {} ({=u32} bytes)", header.firmware, header.len);
-    if channel
+    channel
         .send(stack, UpdateMsg::Want { from: 0 }.encode(&mut tx))
         .await
-        .is_err()
-    {
-        return;
-    }
+        .ok()?;
+    Some(header)
+}
+
+/// Takes the image after [`answer`], and restarts into the check at boot once it's stored.
+async fn receive(
+    stack: &Stack<'_, '_>,
+    channel: &mut L2capChannel<'_, DefaultPacketPool>,
+    rram: &'static Rram,
+    header: UpdateHeader,
+) {
+    let mut rx = [0u8; UPDATE_CHUNK + 5];
+    let mut tx = [0u8; 16];
     let len = header.len as usize;
     let mut writer = Writer::new();
     let t = Instant::now();

@@ -109,8 +109,8 @@ Done (log 2026-11-03): version tracking, the bootloader
 ([spike](spikes/2026-11-03-single-hop-update.md)), and updates from the host through the sink
 ([spike](spikes/2026-11-03-updates-through-the-sink.md)). Left before stage 3:
 
-1. [ ] **The sink link's packet length** (DEF-42): one exchange per event caps the uplink at
-       8.3 frames/s. Full-length packets only during a transfer, or a shorter sink interval.
+1. [ ] **The uplink during an update from the sink** (DEF-45): Health first in the outbox, or
+       several frames per SDU.
 2. [ ] **The sink's UART receive** (DEF-43): a buffered UARTE, which re-arms in its interrupt
        handler, instead of `read_until_idle`.
 3. [ ] **Resume and retry** (DEF-39): pick up from the last page written after a dropout (`Want`

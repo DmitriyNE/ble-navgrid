@@ -454,7 +454,7 @@ async fn reflector(
         if let Err(e) = cs::reflect(stack, conn.handle()).await {
             warn!("CS: {}", e);
         }
-        select(serve(stack, &conn, fleet), update::listen(stack, &conn, rram)).await;
+        select(serve(stack, &conn, fleet), update::listen(stack, &conn, rram, false)).await;
     }
 }
 
@@ -490,7 +490,11 @@ async fn initiator(
                 let _link = status::Link::up(true);
                 report::set_link(node, node_id(peer));
                 // The sink offers the update it carries for this board.
-                select(report::run(stack, &mut channel), update::listen(stack, &conn, rram)).await;
+                select(
+                    report::run(stack, &mut channel),
+                    update::listen(stack, &conn, rram, true),
+                )
+                .await;
             }
             links.sink.set(false);
             Timer::after(Duration::from_secs(5)).await;
@@ -613,13 +617,10 @@ async fn uplink<'a>(
     if links.cs.get() {
         links.respace.signal(());
     }
-    // 2M and full-length packets, as on the CS link: an update from the sink comes one 224-byte
-    // chunk per event.
+    // 2M, as on the CS link. Packets stay short except during an update from the sink
+    // (`update::listen`): a full-length exchange fills the link's 2.5 ms event (DEF-42).
     if let Err(e) = conn.set_phy(stack, PhyKind::Le2M).await {
         warn!("uplink: set PHY: {:?}", e);
-    }
-    if let Err(e) = conn.update_data_length(stack, 251, 2120).await {
-        warn!("uplink: data length: {:?}", e);
     }
     if !secure(&conn).await || !encrypted(stack, &conn, fleet).await {
         return None;

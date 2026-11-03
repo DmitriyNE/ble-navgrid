@@ -4,6 +4,19 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**The sink link's packet length** (DEF-42,
+[spike](spikes/2026-11-03-updates-through-the-sink.md#follow-up-the-sink-links-packet-length-def-42)).
+
+- **Full length only for updates:** the sink link keeps short packets, and the receiving node
+  switches it to full length for an update and back after. N001's uplink is back to 11.1/s at
+  rest, outbox empty.
+- **Credits four chunks at a time:** with one packet per event during a transfer, TrouBLE's
+  credit after each chunk took all of them, and the uplink carried nothing for the 4.5 min.
+  Batched, it carries 6.6/s, and the transfer runs at 1.5 KB/s instead of 1.8. Ranges and Health
+  are still dropped during an update (DEF-45).
+- **The sink updated itself** over serial, and all three devices now run the same commit, the
+  TAGs as 0.1.4 from the sink and from N001.
+
 **Updates from the host through the sink, working**
 ([spike](spikes/2026-11-03-updates-through-the-sink.md)).
 

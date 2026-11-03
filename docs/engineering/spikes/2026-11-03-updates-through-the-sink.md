@@ -86,3 +86,24 @@ is unconfirmed, but it confirms on its first fleet link, and ranging had resumed
 
 With N002 back on a probe, its tag reads `navgrid-firmware 0.1.2+51eed786-dirty` and its
 bootloader state `0xD0`: it runs B2, confirmed, received from N001 without a probe.
+
+## Follow-up: the sink link's packet length (DEF-42)
+
+With 251-byte packets on the sink link at all times, the uplink carried at most 8.3 frames/s
+even with no transfer. Packets now stay short and the receiver switches the link to full length
+for a transfer (`update::listen`). Measured on N001, with the sink sending each image over the
+sink link:
+
+| N001's firmware | Uplink at rest | Transfer from the sink | Uplink during it |
+|---|---|---|---|
+| Full length always (B2) | 8.3/s, outbox full | 1.86 KB/s | – |
+| Full length for transfers, a credit per chunk (C2) | 11.1/s, `queued: 0` | 504,288 B in 275 s, 1.83 KB/s | none for the whole transfer |
+| The same, credits four chunks at a time (C4) | 11.1/s, `queued: 0` | 504,352 B in 340 s, 1.49 KB/s | 6.6/s, no Health |
+
+During a transfer the node, as central, sends one packet per 120 ms event. With TrouBLE's default
+credit policy, a credit packet per chunk takes every one of them. Batching the credits trades a
+fifth of the transfer rate for most of the uplink.
+
+The sink also updated itself over serial: its own board's update, sent in 58 s, restarted it into
+the check and swap, and its Hello then reported the new build. Both TAGs ended on C4 (`0.1.4`,
+confirmed): N001 from the sink, N002 from N001.
