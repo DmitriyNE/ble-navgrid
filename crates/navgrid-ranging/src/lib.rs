@@ -258,8 +258,8 @@ pub fn rtt_distance_m(steps: impl IntoIterator<Item = (i16, i16)>) -> Option<f32
 ///
 /// In simulation (`navgrid sim --trials`) no strategy wins everywhere: [`Combine::Mean`] is best
 /// when reflections are only 1–3 m longer than the direct path, [`Combine::LowestResidual`] when
-/// they are ~6 m longer, and [`Combine::ResidualWeighted`] is never the worst, so it is the
-/// default until real captures decide.
+/// they are ~6 m longer, and [`Combine::ResidualWeighted`] is never the worst; on the bench
+/// (2026-11-03) [`Combine::ShortestCoherent`] rescued the point the blend lost, so it is the default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Combine {
