@@ -146,3 +146,49 @@ path between them is weak, and a bounce off the ceiling or the ducts is what the
 reads; its distance barely depends on the pair's separation, which is what the pinned 7.5 m
 looks like. The deciding test wasn't run: the same pair 1.5 m up, same side up, at 3 m.
 
+## Late night: a round-trip-time referee, and the chairs
+
+N005 and N004 on wooden chair seats, 0.45 m up, flat, same side up. The first two points
+(2.0 m → 4.31 m, 3.0 m → 6.27 m, both tight) looked like twice the distance, so the phase path
+was checked for a factor of two:
+
+- The estimator divides the round-trip slope by 4π, and the firmware runs with inline PCT
+  transfer, so the initiator's reported tone is already the round trip (Core 6.3 enhancement
+  bit 0, `INLINE_PCT`). Consistent.
+- **The host's "raw tones" estimate was never independent.** `navgrid cs` without `--ipt`
+  multiplies the initiator's tones by the reflector's, and on the kept captures that changes
+  nothing (0.6 m: 2.84 m either way, coherence 0.997 either way): under inline transfer the
+  reflector's reported tone is flat, and the initiator's carries everything. So "the tones
+  themselves carry the 1.5 m" in the 40 cm section above was the device's own data read back,
+  not a second measurement. `scripts/cs-capture.sh` now passes `--ipt`. (The first-path
+  numbers in the evening section used the same product and so a wrong amplitude weighting;
+  with `--ipt` the 0.6 m capture's first path reads 0.87 m and the 0.8 m one 1.35 m, against
+  2.60 and 2.33 before. Not examined further tonight.)
+- **A referee that doesn't use phase:** mode-1 steps (sub-mode 1, Nordic's default too) were
+  added to the procedure, and the initiator reports its mean ToA−ToD over the step's packets as
+  a second `Range` with method `Rtt`, next to the phase slope. The reflector's turnaround isn't
+  transferred, so the value carries a bias that is constant for a pair but differs between
+  pairs; steps the controller marks unreceived (`0x8000`, which swamped the first build's means)
+  are left out; the value is reported 100 m up so negative means survive the unsigned field.
+  Access-address-only timing: about ±6 m per procedure of ~17 steps, ±0.3 m a minute. Three
+  builds went to the four TAGs through the sink, over the air, about six minutes a round, with
+  the pucks where they were.
+
+| True (m) | 1.0 | 2.0 | 3.0 | 4.0 |
+|---|---|---|---|---|
+| Phase slope, median | 3.04 | 4.42 | 6.35 | 6.67 |
+| RTT, mean ± s.e. | 12.34 ± 0.31 | 13.04 ± 0.29 | 15.96 ± 0.21 | 15.67 ± 0.26 |
+| RTT − phase slope | 9.3 | 8.6 | 9.6 | 9.0 |
+
+Meanwhile N001–N002, on batteries on the desk a hand apart, read 1.67–1.77 m by phase and
+−0.4 to −0.9 m by RTT all along.
+
+- **No factor of two.** The RTT follows the phase slope within half a metre across the row,
+  with a 9 m bias for this pair (−2 m for the desk pair, so the bias is per pair: the
+  reflector's untransferred turnaround, or the pair's frequency offset in the timing
+  estimator). The phase slope reports a real path length.
+- **It isn't the direct path.** 3 → 4 m moved neither method; 2 → 3 m moved the RTT 2.9 m
+  and the phase 1.9 m. Two flat pucks at the same height look at each other edge-on, and what
+  both methods see is a bounce whose length hardly depends on the chairs' separation.
+- The product geometry, a node high and flat over a tag flat on the floor, is the opposite case
+  and was the next test.

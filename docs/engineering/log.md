@@ -4,6 +4,16 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Late night: a round-trip-time referee, no factor of two, and the chairs**
+([spike](spikes/2026-11-03-four-tags-proximity.md), last section). Two chair-seat points read
+twice the distance, so mode-1 steps went into the procedure and the initiator now reports its mean
+RTT as a second `Range` (method `Rtt`, reflector turnaround not transferred, so a per-pair bias;
+unreceived steps dropped; reported 100 m up), delivered to the four TAGs over the air in three
+rounds through the sink. Over 1–4 m the RTT tracked the phase slope within 0.5 m: the phase slope
+measures a real path, and from 3 to 4 m neither method moved, so it isn't the direct one. Also
+found: `navgrid cs` without `--ipt` was reading the device's own combined tones back, so the
+"raw tones" checks earlier today were not independent (DEF-54); the capture script passes it now.
+
 **Night: the calibration series, N005–N004 on batteries 0.35 m up**
 ([spike](spikes/2026-11-03-four-tags-proximity.md), last section). Nine points from 1 to 6 m: not
 an offset. Only 2 m read true + 1.3 m; 3–5 m were pinned near 7.5 m; flipping one puck moved the 6 m

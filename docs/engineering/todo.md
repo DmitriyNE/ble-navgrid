@@ -162,6 +162,12 @@ Left over from them:
          hop 0;
        - `navgrid field`: list, identify, name and place, plus install-mode readings.
 7. [ ] **Install mode:** link and route quality on the LED, with fast advertising, for 10 min.
+- [ ] **RTT as a real range** (DEF-55): send the reflector's mode-1 ToD−ToA to the initiator over
+      the CS link (what RAS does), subtract it, drop the 100 m report offset, and try the
+      sounding-sequence RTT types for precision. Then check the per-pair bias against the pair's
+      frequency offset (DEF-2).
+- [ ] **Re-run the kept captures with `--ipt`** (DEF-54) and look at the first-path estimator's
+      numbers again: 0.87 m at 0.6 m and 1.35 m at 0.8 m on a first look.
 
 ## P1 — find my keys, first cut
 

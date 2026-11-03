@@ -16,7 +16,7 @@ cargo build -q --release -p navgrid
 timeout "$secs" probe-rs attach --chip nRF54L15 --probe "$refl" --speed 100 "$elf" > "$out/reflector.log" 2>&1 || true
 sleep 2
 echo "lines: initiator $(grep -c CSR "$out/initiator.log") CSR, reflector $(grep -c CSR "$out/reflector.log") CSR"
-./target/release/navgrid cs "$out/initiator.log" "$out/reflector.log" --json > "$out/estimates.jsonl" 2> "$out/cs.err" || true
+./target/release/navgrid cs "$out/initiator.log" "$out/reflector.log" --json --ipt > "$out/estimates.jsonl" 2> "$out/cs.err" || true
 python3 - "$out/estimates.jsonl" <<'EOF'
 import json, sys
 ps, fs, st = [], [], []
