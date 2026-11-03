@@ -775,9 +775,10 @@ themselves.
   - A dirty build, or one with a test feature, replaces another with the same tag (DEF-48).
 - **The cost of a dev level:** a link that stalls sends one warning per CS procedure, 11 a
   second, until it drops. The queues bound it.
-- **Reach:** a device's reports go where its telemetry goes. Today that is only a node with a
-  direct sink link, and the sink serves one node at a time (DEF-1). The bench gets a sink that
-  serves several; elsewhere they travel with the mesh sync (stage 4).
+- **Reach:** a device's reports go where its telemetry goes: a node with a direct sink link,
+  of up to 4 the sink serves at once. A reflector opens its own sink link when provisioned with a
+  sink, once beacons advertise with the extended commands (DEF-50). Beyond the sink's range,
+  reports travel with the mesh sync (stage 4).
 
 ### LED and button (FR-O7)
 

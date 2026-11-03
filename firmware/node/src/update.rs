@@ -9,6 +9,8 @@
 //!   own board it installs the same way. One for another board it checks against the signing key
 //!   and keeps in its update slot, then offers it to the nodes on its links.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use defmt::{info, warn};
 use embassy_time::{Duration, Instant, with_timeout};
 use navgrid_proto::layout::{ACTIVE, ACTIVE_LEN, DFU, STAGED_UPDATE, STAGED_UPDATE_LEN};
@@ -148,11 +150,16 @@ pub async fn listen(
         }
         // Returns only if the transfer failed; otherwise the node restarts into the update.
         receive(stack, &mut channel, rram, header).await;
+        TAKING.store(false, Ordering::Release);
         if widen {
             packet_length(stack, conn, SHORT_LENGTH).await;
         }
     }
 }
+
+/// Set while this node takes an update: a node listens on several links (a reflector on its CS
+/// link and its sink link), and two transfers would write the one update slot.
+static TAKING: AtomicBool = AtomicBool::new(false);
 
 /// Credits go back four chunks at a time rather than after each (TrouBLE's default), out of the
 /// 8 the sender starts with. On the sink link the node sends one packet per event during a
@@ -190,7 +197,14 @@ async fn answer(
     };
     let wanted =
         header.board == BOARD && header.firmware != crate::FIRMWARE && !reverted(&header) && takes(&header, rram).await;
-    if !wanted {
+    let busy = wanted && TAKING.swap(true, Ordering::Acquire);
+    if busy {
+        info!(
+            "update: declining {}: taking an update on another link",
+            header.firmware
+        );
+    }
+    if !wanted || busy {
         let _ = channel.send(stack, UpdateMsg::Decline.encode(&mut tx)).await;
         return None;
     }
@@ -389,15 +403,15 @@ async fn stage(rram: &Rram, header: &UpdateHeader) -> bool {
 mod sink {
     use embassy_nrf::uarte::UarteRxWithIdle;
     use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-    use embassy_sync::signal::Signal;
+    use embassy_sync::watch::Watch;
     use embassy_time::Timer;
     use navgrid_proto::{DOWNLINK_CHUNK, MAX_DOWNLINK_FRAME, Message, UpdateAnswer};
 
     use super::*;
     use crate::report::{self, SinkUart};
 
-    /// Raised when the sink starts carrying an update, so the link it serves offers it at once.
-    pub static CARRYING: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+    /// Changes when the sink starts carrying an update, so every link it serves offers it at once.
+    pub static CARRYING: Watch<CriticalSectionRawMutex, (), 4> = Watch::new();
 
     /// An update arriving from the host.
     struct Transfer {
@@ -538,7 +552,7 @@ mod sink {
                         t.started.elapsed().as_millis()
                     );
                     if t.header.board != BOARD {
-                        CARRYING.signal(());
+                        CARRYING.sender().send(());
                     }
                 }
                 Some(UpdateAnswer::Done)

@@ -4,6 +4,18 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**A sink for several nodes, and reflectors' reports (blocked).**
+
+- **The sink** serves up to 4 nodes: one future advertises and hands each connection to a free
+  slot. The "carrying an update" signal is now a `Watch`, so every link offers, and the sink
+  offers only what it carries; it was offering its own DK image to TAGs. Tested with N001 only.
+- **A node takes one update at a time:** a reflector listens on its CS link and its sink link,
+  and two transfers would write one slot.
+- **A reflector provisioned with a sink** opens its own sink link and reports Health. On N002
+  the connect failed every time with Command Disallowed: the SDC refuses extended commands after
+  legacy advertising (DEF-50). Meanwhile N001 lost every 4th CS procedure; with N002 back to no
+  sink, none in 350. Next: extended advertising for the beacons.
+
 **Logs over the air at a configured level.**
 
 - **Built:**

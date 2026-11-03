@@ -33,7 +33,7 @@ use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilities;
 use bt_hci::param::LeConnRole;
 use defmt::{error, info, unwrap, warn};
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
+use embassy_futures::join::{join, join3};
 use embassy_futures::select::{Either, select};
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::rramc::Nvmc;
@@ -441,7 +441,17 @@ async fn main(spawner: Spawner) {
                 );
                 join(ranging, report::health(mpsl, node, FIRMWARE)).await;
             }
-            None => reflector(&stack, &fleet, &beacons, &adv_params, rram).await,
+            None => match sink {
+                Some(sink) => {
+                    join3(
+                        reflector(&stack, &fleet, &beacons, &adv_params, rram),
+                        reflector_report(&stack, &fleet, sink.address(), rram),
+                        report::health(mpsl, node, FIRMWARE),
+                    )
+                    .await;
+                }
+                None => reflector(&stack, &fleet, &beacons, &adv_params, rram).await,
+            },
         }
     };
     // The runner returns only on an error, e.g. an HCI event bt-hci can't parse; everything stops
@@ -502,26 +512,55 @@ async fn initiator(
     listen(&mut central).await;
     let central = Mutex::<CriticalSectionRawMutex, _>::new(central);
     let links = Links::default();
+    report::set_link(node, node_id(peer));
     let report = async {
-        let Some(sink) = sink else {
-            return;
-        };
-        loop {
-            if let Some((conn, mut channel)) = uplink(stack, fleet, &central, &links, sink).await {
-                let _link = status::Link::up(true);
-                report::set_link(node, node_id(peer));
-                // The sink offers the update it carries for this board.
-                select(
-                    report::run(stack, &mut channel),
-                    update::listen(stack, &conn, rram, true),
-                )
-                .await;
-            }
-            links.sink.set(false);
-            Timer::after(Duration::from_secs(5)).await;
+        if let Some(sink) = sink {
+            report_to_sink(stack, fleet, &central, &links, sink, rram).await;
         }
     };
     join(ranging(stack, fleet, &central, &links, peer, antennas, rram), report).await;
+}
+
+/// Keeps a link to the sink and sends the telemetry outbox over it, reconnecting 5 s after it
+/// drops. The sink also offers the update it carries for this board on it.
+async fn report_to_sink<'a>(
+    stack: &'a Host<'_, '_>,
+    fleet: &keys::Fleet,
+    central: &Mutex<CriticalSectionRawMutex, Central<'a, SoftdeviceController<'_>, DefaultPacketPool>>,
+    links: &Links,
+    sink: [u8; 6],
+    rram: &'static firmware::Rram,
+) -> ! {
+    loop {
+        if let Some((conn, mut channel)) = uplink(stack, fleet, central, links, sink).await {
+            let _link = status::Link::up(true);
+            select(
+                report::run(stack, &mut channel),
+                update::listen(stack, &conn, rram, true),
+            )
+            .await;
+        }
+        links.sink.set(false);
+        Timer::after(Duration::from_secs(5)).await;
+    }
+}
+
+/// A reflector's own link to the sink, when it has one, for its health and logs: as an
+/// initiator's, with the same short events, beside the CS link it serves as peripheral.
+async fn reflector_report(
+    stack: &Host<'_, '_>,
+    fleet: &keys::Fleet,
+    sink: [u8; 6],
+    rram: &'static firmware::Rram,
+) -> ! {
+    if let Err(e) = stack
+        .command(sdc::vendor::NordicEventLengthSet::new(ACL_EVENT_LENGTH_US))
+        .await
+    {
+        warn!("ACL event length: {:?}", e);
+    }
+    let central = Mutex::<CriticalSectionRawMutex, _>::new(stack.central());
+    report_to_sink(stack, fleet, &central, &Links::default(), sink, rram).await
 }
 
 /// Scans for a few seconds; the event handler logs the beacons it hears (FR-M4). Neighbour

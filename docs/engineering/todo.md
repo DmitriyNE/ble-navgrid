@@ -125,8 +125,11 @@ version compatibility during rollouts.
 Each item works through the host and the mesh first; the field tool shortens it.
 
 **Diagnostics over the air** (architecture §13), before more TAGs go up without probes. Boot and
-crash reports and logs at a configured level are done (log 2026-11-03). Next:
-1. [ ] **A sink that serves several nodes** (DEF-1), so every bench node can report.
+crash reports, logs at a configured level and a sink that serves 4 nodes are done (log
+2026-11-03). Next:
+1. [ ] **Reflectors report** (DEF-50): extended advertising for the beacons (the P0 item above),
+       so a reflector can open its sink link; then find whether its link or its 2.5 ms event
+       length costs the CS link procedures, and test the sink with two nodes at once.
 
 Items 1–3 are done (log 2026-11-02):
 - fleet numbers, the registry and labels;

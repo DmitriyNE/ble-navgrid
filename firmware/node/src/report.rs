@@ -9,6 +9,8 @@ use core::cell::Cell;
 
 use defmt::warn;
 #[cfg(feature = "board-dk")]
+use embassy_futures::join::join;
+#[cfg(feature = "board-dk")]
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -147,10 +149,12 @@ pub async fn send(uart: &SinkUart<'_>, msg: &Message) {
     }
 }
 
-/// The sink: writes a `Hello` frame, then advertises, accepts one fleet node at a time, and
-/// forwards every SDU of its telemetry channel to `uart` unchanged (each SDU is one frame). Once
-/// that channel is open, it offers the node the update it carries, and again whenever it starts
-/// carrying another.
+/// How many nodes the sink serves at once.
+#[cfg(feature = "board-dk")]
+const SINK_LINKS: usize = 4;
+
+/// The sink: writes a `Hello` frame, then advertises and serves up to [`SINK_LINKS`] fleet nodes at
+/// once ([`serve_node`]), advertising again whenever a link is free.
 #[cfg(feature = "board-dk")]
 pub async fn serve_sink(
     stack: &Stack<'_, '_>,
@@ -161,6 +165,9 @@ pub async fn serve_sink(
     params: &AdvertisementParameters,
     rram: &'static crate::firmware::Rram,
 ) -> ! {
+    use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+    use embassy_sync::signal::Signal;
+
     let hello = Message::Hello {
         node,
         role: navgrid_proto::Role::Sink,
@@ -169,66 +176,118 @@ pub async fn serve_sink(
         antennas: 1,
     };
     send(uart, &hello).await;
-    let config = L2capChannelConfig::default();
-    let mut peripheral = stack.peripheral();
-    loop {
-        defmt::info!("sink: advertising");
-        let conn = beacons.advertise(&mut peripheral, params).await;
-        defmt::info!("sink: connected: handle {}", conn.handle().raw());
-        fleet.trust(stack, &conn);
-        // Only fleet members get the channel.
-        if !crate::encrypted(stack, &conn, fleet).await {
-            continue;
+    let accepted: Channel<NoopRawMutex, Connection<'_, DefaultPacketPool>, 1> = Channel::new();
+    let busy = Cell::new(0usize);
+    let freed: Signal<NoopRawMutex, ()> = Signal::new();
+    let advertising = async {
+        let mut peripheral = stack.peripheral();
+        loop {
+            while busy.get() == SINK_LINKS {
+                freed.wait().await;
+            }
+            defmt::info!(
+                "sink: advertising, {=usize} of {=usize} links up",
+                busy.get(),
+                SINK_LINKS
+            );
+            let conn = beacons.advertise(&mut peripheral, params).await;
+            busy.set(busy.get() + 1);
+            accepted.send(conn).await;
         }
-        let _link = status::Link::up(false);
-        // A link can drop before or during the channel; never wait on a dead one.
-        let disconnected = async {
+    };
+    let slot = || async {
+        loop {
+            let conn = accepted.receive().await;
+            serve_node(stack, fleet, uart, &conn, rram).await;
+            busy.set(busy.get() - 1);
+            freed.signal(());
+        }
+    };
+    join(
+        advertising,
+        embassy_futures::join::join_array([slot(), slot(), slot(), slot()]),
+    )
+    .await;
+    unreachable!()
+}
+
+/// One node's link to the sink, until it drops: forwards every SDU of its telemetry channel to
+/// `uart` unchanged (each SDU is one frame). Once that channel is open, it offers the node the
+/// update the sink carries, and again whenever it starts carrying another.
+#[cfg(feature = "board-dk")]
+async fn serve_node(
+    stack: &Stack<'_, '_>,
+    fleet: &crate::keys::Fleet,
+    uart: &SinkUart<'_>,
+    conn: &Connection<'_, DefaultPacketPool>,
+    rram: &'static crate::firmware::Rram,
+) {
+    defmt::info!("sink: connected: handle {}", conn.handle().raw());
+    fleet.trust(stack, conn);
+    // Only fleet members get the channel.
+    if !crate::encrypted(stack, conn, fleet).await {
+        return;
+    }
+    let _link = status::Link::up(false);
+    // A link can drop before or during the channel; never wait on a dead one.
+    let disconnected = async {
+        loop {
+            if let ConnectionEvent::Disconnected { reason } = conn.next().await {
+                return reason;
+            }
+        }
+    };
+    let forward = async {
+        let mut channel = match L2capChannel::listen(stack, conn)
+            .accept(&L2capChannelConfig::default())
+            .await
+        {
+            Ok(channel) => channel,
+            Err(e) => {
+                warn!("sink: channel: {:?}", e);
+                return;
+            }
+        };
+        let frames = async {
+            let mut sdu = [0u8; 255];
+            let mut frames = 0u32;
             loop {
-                if let ConnectionEvent::Disconnected { reason } = conn.next().await {
-                    return reason;
+                match channel.receive(stack, &mut sdu).await {
+                    Ok(len) => {
+                        if uart.lock().await.write(&sdu[..len]).await.is_err() {
+                            warn!("sink: UART write failed");
+                        }
+                        frames += 1;
+                        if frames.is_multiple_of(100) {
+                            defmt::info!("sink: handle {}: {=u32} frames", conn.handle().raw(), frames);
+                        }
+                    }
+                    Err(e) => {
+                        defmt::info!("sink: channel closed after {=u32} frames: {:?}", frames, e);
+                        return;
+                    }
                 }
             }
         };
-        let forward = async {
-            let mut channel = match L2capChannel::listen(stack, &conn).accept(&config).await {
-                Ok(channel) => channel,
-                Err(e) => {
-                    warn!("sink: channel: {:?}", e);
-                    return;
-                }
+        // The node listens for updates once its telemetry channel is up.
+        let offering = async {
+            let Some(mut carrying) = crate::update::CARRYING.receiver() else {
+                warn!("sink: no receiver left for carried updates");
+                return core::future::pending().await;
             };
-            let frames = async {
-                let mut sdu = [0u8; 255];
-                let mut frames = 0u32;
-                loop {
-                    match channel.receive(stack, &mut sdu).await {
-                        Ok(len) => {
-                            if uart.lock().await.write(&sdu[..len]).await.is_err() {
-                                warn!("sink: UART write failed");
-                            }
-                            frames += 1;
-                            if frames.is_multiple_of(100) {
-                                defmt::info!("sink: {=u32} frames", frames);
-                            }
-                        }
-                        Err(e) => {
-                            defmt::info!("sink: channel closed after {=u32} frames: {:?}", frames, e);
-                            return;
-                        }
-                    }
+            // Whatever was carried before is offered just below.
+            let _ = carrying.try_get();
+            loop {
+                // Its nodes are of another board: only what it carries for them is any use.
+                if crate::firmware::carried().is_some() {
+                    crate::update::offer(stack, conn, rram).await;
                 }
-            };
-            // The node listens for updates once its telemetry channel is up.
-            let offering = async {
-                loop {
-                    crate::update::offer(stack, &conn, rram).await;
-                    crate::update::CARRYING.wait().await;
-                }
-            };
-            select(frames, offering).await;
+                carrying.changed().await;
+            }
         };
-        if let Either::Second(reason) = select(forward, disconnected).await {
-            defmt::info!("sink: disconnected: {:?}", reason);
-        }
+        select(frames, offering).await;
+    };
+    if let Either::Second(reason) = select(forward, disconnected).await {
+        defmt::info!("sink: disconnected: {:?}", reason);
     }
 }
