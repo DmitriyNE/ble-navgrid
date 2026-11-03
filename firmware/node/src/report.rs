@@ -92,6 +92,26 @@ pub fn push(est: &PhaseSlope, paths: usize) {
     let _ = OUTBOX.try_send(Message::Range(range));
 }
 
+/// Queues one on-device round-trip-time range (`cs::Ranging::rtt`), `steps` mode-1 steps averaged.
+/// A no-op until [`set_link`].
+pub fn push_rtt(distance_m: f32, steps: u8) {
+    let Some((initiator, reflector)) = LINK.lock(Cell::get) else {
+        return;
+    };
+    let range = Range {
+        initiator,
+        reflector,
+        uptime_ms: Instant::now().as_millis() as u32,
+        distance_mm: (distance_m.max(0.0) * 1000.0) as u32,
+        sigma_mm: 1000,
+        quality: 128,
+        method: RangeMethod::Rtt,
+        steps,
+        antenna_paths: 1,
+    };
+    let _ = OUTBOX.try_send(Message::Range(range));
+}
+
 /// Queues this node's health once a minute while the uplink is up (FR-S2).
 pub async fn health(mpsl: &MultiprotocolServiceLayer<'_>, node: NodeId, firmware: Firmware) -> ! {
     loop {

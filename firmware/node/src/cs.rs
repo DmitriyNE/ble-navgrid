@@ -31,7 +31,7 @@ use embassy_sync::channel::Channel;
 use embassy_time::{Duration, with_timeout};
 use navgrid_proto::{BEACON_COMPANY, Beacon};
 use navgrid_ranging::steps::{self, MAX_ANTENNA_PATHS, RawStep, Role, Step, ToneQuality};
-use navgrid_ranging::{ChannelResponse, Combine, PhaseSlope, combine_paths, phase_slope};
+use navgrid_ranging::{ChannelResponse, Combine, PhaseSlope, SPEED_OF_LIGHT, combine_paths, phase_slope};
 use nrf_sdc::SoftdeviceController;
 use trouble_host::prelude::*;
 
@@ -257,11 +257,37 @@ impl EventHandler for Events {
 struct Ranging {
     procedure: u16,
     responses: [ChannelResponse; MAX_ANTENNA_PATHS as usize],
+    /// The mode-1 steps' ToA−ToD so far, summed, in 0.5 ns, and how many.
+    rtt_half_ns: i32,
+    rtt_steps: u8,
+}
+
+impl Ranging {
+    const EMPTY_RESPONSES: [ChannelResponse; MAX_ANTENNA_PATHS as usize] =
+        [const { ChannelResponse::new() }; MAX_ANTENNA_PATHS as usize];
+
+    fn clear(&mut self) {
+        self.responses = Self::EMPTY_RESPONSES;
+        self.rtt_half_ns = 0;
+        self.rtt_steps = 0;
+    }
+
+    /// Mean one-way distance from the mode-1 steps, with the reflector's turnaround taken as zero:
+    /// a bias that doesn't depend on distance, which is what a referee for the phase slope's scale
+    /// needs. Negative means are reported as zero.
+    fn rtt(&self) -> Option<(f32, u8)> {
+        (self.rtt_steps > 0).then(|| {
+            let round_trip_s = self.rtt_half_ns as f32 / f32::from(self.rtt_steps) * 0.5e-9;
+            (round_trip_s * SPEED_OF_LIGHT / 2.0, self.rtt_steps)
+        })
+    }
 }
 
 static RANGING: Mutex<CriticalSectionRawMutex, RefCell<Ranging>> = Mutex::new(RefCell::new(Ranging {
     procedure: 0,
-    responses: [const { ChannelResponse::new() }; MAX_ANTENNA_PATHS as usize],
+    responses: Ranging::EMPTY_RESPONSES,
+    rtt_half_ns: 0,
+    rtt_steps: 0,
 }));
 
 /// The outcome of one procedure on the initiator.
@@ -286,7 +312,7 @@ fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSube
             && p != r.procedure
         {
             r.procedure = p;
-            r.responses = [const { ChannelResponse::new() }; MAX_ANTENNA_PATHS as usize];
+            r.clear();
         }
         for step in steps.iter() {
             let raw = RawStep {
@@ -294,15 +320,21 @@ fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSube
                 channel: step.step_channel,
                 data: step.step_data,
             };
-            let Ok(Step::Mode2(tones)) = steps::decode(Role::Initiator, paths, raw) else {
-                continue;
-            };
-            for path in 0..tones.paths() {
-                if let Some(tone) = tones.path(path)
-                    && tone.quality != ToneQuality::Unavailable
-                {
-                    r.responses[usize::from(path)].insert(raw.channel, tone.pct);
+            match steps::decode(Role::Initiator, paths, raw) {
+                Ok(Step::Mode2(tones)) => {
+                    for path in 0..tones.paths() {
+                        if let Some(tone) = tones.path(path)
+                            && tone.quality != ToneQuality::Unavailable
+                        {
+                            r.responses[usize::from(path)].insert(raw.channel, tone.pct);
+                        }
+                    }
                 }
+                Ok(Step::Mode1(rtt)) => {
+                    r.rtt_half_ns = r.rtt_half_ns.saturating_add(i32::from(rtt.toa_tod));
+                    r.rtt_steps = r.rtt_steps.saturating_add(1);
+                }
+                _ => {}
             }
         }
         // 0: all results in; 1: more to come; 0xF: aborted.
@@ -329,22 +361,27 @@ fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSube
             } else {
                 Ranged::Aborted
             };
-            r.responses = [const { ChannelResponse::new() }; MAX_ANTENNA_PATHS as usize];
-            (r.procedure, ranged)
+            let rtt = r.rtt();
+            r.clear();
+            (r.procedure, ranged, rtt)
         })
     });
+    if let Some((p, _, Some((distance_m, steps)))) = done {
+        crate::report::push_rtt(distance_m, steps);
+        info!("rtt {=u16}: {=f32} m from {=u8} step(s)", p, distance_m, steps);
+    }
     match done {
-        Some((p, Ranged::Distance(d, n))) => {
+        Some((p, Ranged::Distance(d, n), _)) => {
             crate::report::push(&d, n);
             info!(
                 "distance {=u16}: {=f32} m from {=usize} path(s), coherence {=f32}, residual {=f32} rad, {=u8} pairs",
                 p, d.distance_m, n, d.coherence, d.residual_rad, d.pairs
             );
         }
-        Some((p, Ranged::TooFewChannels(channels))) => {
+        Some((p, Ranged::TooFewChannels(channels), _)) => {
             warn!("distance {=u16}: too few channels ({=usize})", p, channels)
         }
-        Some((p, Ranged::Aborted)) => warn!("distance {=u16}: procedure aborted", p),
+        Some((p, Ranged::Aborted, _)) => warn!("distance {=u16}: procedure aborted", p),
         None => {}
     }
 }
@@ -497,7 +534,7 @@ pub async fn initiate(stack: &Stack<'_, '_>, handle: ConnHandle, antennas: u8) -
             CONFIG_ID,
             1,    // create context: local and remote
             2,    // main mode 2: phase-based ranging
-            0xFF, // no sub mode
+            1,    // sub mode 1: RTT steps among the tone steps, a referee for the phase slope
             2,    // min main mode steps
             5,    // max main mode steps
             0,    // main mode repetition
