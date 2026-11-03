@@ -8,9 +8,10 @@ Newest first. Conventions: [README](README.md).
 ([spike](spikes/2026-11-03-four-tags-proximity.md), last section). N004 flat on a wardrobe at
 2.30 m, N005 flat on the floor from directly below to 3 m sideways (true 2.30–3.78 m): the phase
 slope read true + 1.5–2.0 m at every point, tight, quality 243–247, and the RTT rose with it; flipping
-the floor puck moved it 0.16 m. The same pucks were pinned on the chairs an hour earlier. Two flat
-pucks at one height, edge-on, is the worst case, not the product's; a node high and flat over the
-floor is, and it works at these distances. Data in `captures/2026-11-03-home/night2/`.
+the floor puck moved it 0.16 m. The same pucks were pinned on the chairs an hour earlier. Two low
+pucks at one height sit in the floor reflection's fades (two-ray, not the antenna pattern, whose
+plots are near-uniform); a node high over the floor is the product's geometry, and it works at
+these distances. Data in `captures/2026-11-03-home/night2/`.
 
 **Late night: a round-trip-time referee, no factor of two, and the chairs**
 ([spike](spikes/2026-11-03-four-tags-proximity.md), last section). Two chair-seat points read

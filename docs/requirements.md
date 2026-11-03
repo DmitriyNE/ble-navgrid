@@ -214,7 +214,7 @@ at best", so P0 measurements will re-baseline these.
 - **C-2 Language:** Rust everywhere. Firmware is `no_std` on Embassy; host is std Rust. Algorithm crates are `no_std` and shared by both.
 - **C-3 BLE stack:** Nordic SoftDevice Controller via `nrf-sdc`, `TrouBLE` host, `bt-hci`. No NCS/Zephyr in product firmware. NCS C samples are allowed as reference fixtures.
 - **C-4 CS is point-to-point per connection:** every range needs a live ACL between the pair, and the controller schedules CS relative to connection events. This drives the scaling design (see architecture §5).
-- **C-5 Placement:** nodes are mounted high and flat, 2 m or more up (wardrobe tops, ceilings), tags lie wherever they land. Two flat boards at one height see each other edge-on and read a bounce, by phase and by RTT alike; a flat board on the floor under a node 2.3 m up read the distance plus the calibration offset from 2.3 to 3.8 m, face up or down (engineering log, 2026-11-03). Keys under furniture or against a wall are untested.
+- **C-5 Placement:** nodes are mounted high and flat, 2 m or more up (wardrobe tops, ceilings), tags lie wherever they land. Two boards at one low height sit in the floor reflection's fades and read a bounce, by phase and by RTT alike; a flat board on the floor under a node 2.3 m up read the distance plus the calibration offset from 2.3 to 3.8 m, face up or down (engineering log, 2026-11-03). Keys under furniture or against a wall are untested.
 
 ## 7. Risks
 

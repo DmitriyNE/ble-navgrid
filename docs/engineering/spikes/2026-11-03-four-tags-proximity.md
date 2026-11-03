@@ -218,3 +218,15 @@ below it, then slid sideways along the floor, then flipped. True distance is the
   it lands, is the product's, and it ranged at 2.3–3.8 m with the known offset. Untested tonight:
   a tag under furniture or against a wall, the offset's constancy across pairs and antenna
   paths (the calibration, DEF-6), and more than one node.
+
+**Correction, the same night.** The "edge-on" explanation above is wrong: the chip antenna's
+pattern (Johanson 2450AT18D0100, evaluation-board plots) is within a few dB in all three planes.
+What fits is two-ray ground reflection. With both pucks 0.45 m up, the floor bounce is nearly the
+direct path's length (13 cm longer at 3 m, about one wavelength, changing by 0.2 rad across the
+74 MHz band), and the reflection inverts it, so at some distances the direct path sits in a deep
+fade across the whole band and the longest-lived bounce (ceiling, wall, furniture) sets the
+reading, whose length barely follows the separation; at others the two reinforce and the reading
+is true plus the offset. That is the on-and-off pattern of both nights' low rows, and flipping a
+puck (its polarization against the floor) moving a point by 1.5 m. With one end at 2.3 m the floor
+bounce at the tag merges with the direct path and nothing else is as short. To check: raise one of
+two low pucks to about 1 m, which should un-pin the chair row.
