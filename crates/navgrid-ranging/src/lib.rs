@@ -309,6 +309,8 @@ pub struct FirstPath {
     pub strongest_m: f32,
     /// Paths found at or above the threshold.
     pub peaks: u8,
+    /// Every path found, strongest first: distance and power relative to the strongest.
+    pub components: [(f32, f32); FIRST_PATH_MAX_PATHS as usize],
 }
 
 /// How far the profile is searched. Beyond it a reflection is weak and the grid costly.
@@ -557,11 +559,16 @@ pub fn first_path(resp: &ChannelResponse, window: Window, threshold: f32, min_ch
     let strength_of = |i: usize| power(amplitudes[i]);
     let strongest = (0..n).max_by(|&a, &b| strength_of(a).total_cmp(&strength_of(b)))?;
     let first = (0..n).min_by(|&a, &b| ds[a].total_cmp(&ds[b]))?;
+    let mut components = [(0.0f32, 0.0f32); MAX_PATHS];
+    for (i, c) in components.iter_mut().enumerate().take(n) {
+        *c = (ds[i], strength_of(i) / strength_of(strongest));
+    }
     Some(FirstPath {
         distance_m: ds[first],
         strength: strength_of(first) / strength_of(strongest),
         strongest_m: ds[strongest],
         peaks: n as u8,
+        components,
     })
 }
 

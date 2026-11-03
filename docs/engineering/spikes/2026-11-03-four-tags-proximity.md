@@ -87,3 +87,36 @@ calibration offset (DEF-6), not the estimator.
   phase-slope estimator has no multipath rejection; keys on the floor, the use case, need an
   estimator that finds the first path (an IFFT or super-resolution one, as NCS's `cs_de`), and
   captures from the floor to develop it on.
+
+## Evening, at home: captures on a wooden desk, and a bisect
+
+N001 and N002 cabled to the DKs on an IKEA desk, firmware with `NAVGRID_LOG_STEPS`, 60 s raw
+captures (`docs/engineering/captures/2026-11-03-home/`), both host estimators on each. Lying flat
+on the desk, with 2 × 2 antennas and then one antenna each (`--no-diversity` on both):
+
+| True | Antennas | Phase slope | First path |
+|---|---|---|---|
+| 1.25 m | 2 × 2 | 4.34 m; per antenna path 9.5 / 4.2 / 8.6 / 3.2 | paths 1 and 3: 3.4 and 3.1 |
+| 0.80 m | 2 × 2 | 4.50 m; per path 4.9 / 3.6 / 7.8 / 5.9 | 2.56 m, 22 % of the strongest |
+| 0.80 m | 1 × 1 | 4.79 m, p10 4.48, p90 5.22 | 2.33 m, p10 1.95, p90 2.76, 13 % |
+| 0.40 m | 1 × 1 | 2.43 m, p10 2.24, p90 2.85 | 2.80 m |
+
+The strongest component sat at 3–4.5 m whatever the distance; the first-path estimator's earliest
+component tracked the true distance plus 1.7–1.9 m at 0.8 and 1.25 m, under a component 9 dB
+stronger. One antenna each made the phase slope tight but no truer, so the antenna switch is not
+the cause (that was a suspect: paths 0 and 2 read 8–9 m at 1.25 m while 1 and 3 read 3–4 m).
+
+**The bisect.** Were the day's firmware changes the cause? Yesterday's last commit (`78f97aa`),
+built with the raw-step logging and provisioned with its own tool, against today's, at one
+placement, N002 on the desk edge and N001 on a chair 30 cm lower, 60 cm apart, one antenna each:
+
+| Firmware | Phase slope | p10–p90 | First path |
+|---|---|---|---|
+| `78f97aa`, 2026-11-02 | 2.88 m | 2.83–2.96 | 2.60 m |
+| `0f39a7d3`, today | 2.84 m | 2.79–2.94 | 2.60 m |
+
+The same to 4 cm. Nothing today changed what the radios measure. The 2.0–2.3 m over the true
+0.6 m is yesterday's "reads about 2.4 m long" (DEF-6). And with both TAGs off the desk surface
+the readings were tight again, where flat on the desk at 0.8 m they read 4.8 m: the desk, at
+grazing incidence, is this evening's reflector, as the floor was in the afternoon.
+

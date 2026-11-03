@@ -498,6 +498,7 @@ impl Estimate {
                 "strength": round(f.strength, 4),
                 "strongest_m": round(f.strongest_m, 4),
                 "peaks": f.peaks,
+                "components": f.components[..usize::from(f.peaks)].iter().map(|(d, s)| [round(*d, 3), round(*s, 4)]).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
             "first_path_m": self.first_path_m.map(|d| round(d, 4)),
             "channels": self.channels,

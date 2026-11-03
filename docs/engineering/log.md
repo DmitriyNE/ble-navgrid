@@ -4,6 +4,14 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Evening: is the ranging broken? No** ([spike](spikes/2026-11-03-four-tags-proximity.md), the
+last section). Yesterday's firmware against today's at one placement read the same to 4 cm, 2.0–2.3
+m over the true 0.6 m, the known offset (DEF-6). Flat on a wooden desk the readings had been 2–6×
+long with a component 9 dB stronger than the direct path 2–2.5 m further out; off the desk surface
+they were tight. The first-path estimator found the direct path under that component in every
+run where the two were separable: its first real-data result. Six captures kept under
+`docs/engineering/captures/2026-11-03-home/`.
+
 **A first-path estimator, on the host** (DEF-51).
 
 - **Built:** `navgrid_ranging::first_path`, orthogonal matching pursuit over a windowed delay
