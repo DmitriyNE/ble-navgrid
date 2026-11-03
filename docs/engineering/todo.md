@@ -23,10 +23,13 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **Standalone J-Link Pro** doesn't connect to the TAG at all; the SWD adapter may be bad.
 - [ ] **After first boot:** check the antenna-switch default outside CS (the CS callback works:
       2×2 ranges on four paths), and boot a DK (DEF-2, DEF-3).
-- [ ] **Distance calibration** (DEF-6), when accuracy matters: record `monitor --json` at several
-      measured separations and run `navgrid calibrate`. Offsets are keyed by link, path count
-      (which fixes the timing configuration) and method. Check whether one constant fits all
-      separations, or a scale term is needed.
+- [ ] **Distance calibration** (DEF-6): record `monitor --json` at several tape-measured
+      separations and run `navgrid calibrate`. Needs longer DK cables or battery TAGs on a tape,
+      in a clear spot off any surface (spike 2026-11-03-four-tags-proximity). The clean points
+      so far (10, 60, 90 cm) fit a constant of about 2.3 m with one antenna each; with 2 × 2
+      antennas each antenna path has its own offset, so key the calibration by antenna path, not
+      only by path count. Then put the offset on the device (Nordic's board distance offset, or
+      ours in `cs.rs`).
 - [ ] **Legacy connect** (DEF-17): retry `LE Create Connection` now that the cache is on.
 - [ ] **Sub mode 1 and faster procedures:** with sub mode 1, 20 ms and a procedure every 5
       events, two in three procedures aborted (unspecified, or no CS_SYNC). Find out why before
