@@ -10,6 +10,7 @@ mod probe;
 mod provision;
 mod scenario;
 mod sign;
+mod tones;
 mod track;
 
 use std::path::PathBuf;
@@ -33,6 +34,8 @@ enum Cmd {
     Track(track::TrackArgs),
     /// Distances from raw CS captures: the `CSR`/`CSC` lines both boards log over RTT.
     Cs(capture::CsArgs),
+    /// Run the estimators on the raw tones initiators send through the sink (`navgrid monitor --json` logs).
+    Tones(tones::TonesArgs),
     /// Decode COBS/postcard frames from a capture file or stdin.
     Decode {
         /// Input file; stdin if omitted.
@@ -89,6 +92,7 @@ fn main() -> Result<()> {
         Cmd::Sim(args) => fix::run(&args),
         Cmd::Track(args) => track::run(&args),
         Cmd::Cs(args) => capture::run(&args),
+        Cmd::Tones(args) => tones::run(&args),
         Cmd::Decode { path, json } => monitor::decode(path, json),
         Cmd::Monitor {
             port,

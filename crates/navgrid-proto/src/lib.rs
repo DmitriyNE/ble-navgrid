@@ -12,7 +12,7 @@ extern crate std;
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change to [`Message`] or to what a sink takes from the host.
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// Upper bound for one encoded frame, including COBS overhead and the `0x00` terminator.
 pub const MAX_FRAME_LEN: usize = 128;
@@ -751,6 +751,9 @@ pub enum Message {
     Update(UpdateAnswer),
     Boot(Boot),
     Log(Log),
+    /// One antenna path's raw tones from one procedure, a chunk of consecutive channels
+    /// (diagnostics; `navgrid tones` runs the host estimators on them).
+    Tones(Tones),
 }
 
 /// One `defmt` frame from a device's log, as its logger wrote it: the string index, the timestamp
@@ -766,6 +769,26 @@ pub struct Log {
 
 /// The longest frame a device sends; longer ones stay in its RTT log only.
 pub const LOG_FRAME_LEN: usize = 64;
+
+/// Raw tones of one antenna path of one procedure, for the host's estimators: `pct` holds the
+/// channels from `first` up, 3 bytes each in the controller's PCT layout (12-bit I and Q,
+/// `navgrid_ranging::steps::pct`), all zero where the channel had no usable tone. A procedure
+/// takes three of these ([`TONES_CHANNELS`] channels each). An initiator sends one path a second,
+/// its paths in turn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Tones {
+    pub node: NodeId,
+    pub procedure: u16,
+    pub path: u8,
+    pub paths: u8,
+    pub first: u8,
+    pub pct: heapless::Vec<u8, TONES_PCT_LEN>,
+}
+
+/// Channels per [`Tones`] message, and the bytes they take.
+pub const TONES_CHANNELS: usize = 33;
+pub const TONES_PCT_LEN: usize = 3 * TONES_CHANNELS;
 
 /// What a device reports once per boot: why it started, the state of its image, and how its
 /// last run ended if that was a crash (architecture §13).

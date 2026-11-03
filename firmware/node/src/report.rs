@@ -30,6 +30,9 @@ type Stack<'a, 'd> = trouble_host::Stack<'a, SoftdeviceController<'d>, DefaultPa
 /// Messages waiting for the uplink, or on the sink for its UART. Full means the sink can't keep
 /// up; new ones are dropped.
 static OUTBOX: Channel<CriticalSectionRawMutex, Message, 16> = Channel::new();
+/// Ranges, the bulk of the traffic, stop queuing at this depth so a boot report, a log frame or
+/// raw tones still find a slot.
+const RANGE_QUEUE_LIMIT: usize = 12;
 
 /// Queues one of this device's own reports (its boot report, say) toward the host.
 pub fn queue(msg: Message) {
@@ -78,6 +81,9 @@ pub fn push(est: &PhaseSlope, paths: usize) {
     let Some((initiator, reflector)) = LINK.lock(Cell::get) else {
         return;
     };
+    if OUTBOX.len() >= RANGE_QUEUE_LIMIT {
+        return;
+    }
     let range = Range {
         initiator,
         reflector,
@@ -102,6 +108,9 @@ pub fn push_rtt(distance_m: f32, steps: u8) {
     let Some((initiator, reflector)) = LINK.lock(Cell::get) else {
         return;
     };
+    if OUTBOX.len() >= RANGE_QUEUE_LIMIT {
+        return;
+    }
     let range = Range {
         initiator,
         reflector,
@@ -114,6 +123,22 @@ pub fn push_rtt(distance_m: f32, steps: u8) {
         antenna_paths: 1,
     };
     let _ = OUTBOX.try_send(Message::Range(range));
+}
+
+/// Queues one chunk of raw tones (`cs::send_tones`), as the initiator of the link. A no-op until
+/// [`set_link`].
+pub fn push_tones(procedure: u16, path: u8, paths: u8, first: u8, pct: heapless::Vec<u8, { navgrid_proto::TONES_PCT_LEN }>) {
+    let Some((node, _)) = LINK.lock(Cell::get) else {
+        return;
+    };
+    let _ = OUTBOX.try_send(Message::Tones(navgrid_proto::Tones {
+        node,
+        procedure,
+        path,
+        paths,
+        first,
+        pct,
+    }));
 }
 
 /// Queues this node's health once a minute while the uplink is up (FR-S2).

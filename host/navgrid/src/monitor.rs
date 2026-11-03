@@ -114,6 +114,7 @@ impl View {
             Message::Update(_) => None,
             Message::Boot(b) => Some(b.node),
             Message::Log(l) => Some(l.node),
+            Message::Tones(t) => Some(t.node),
         };
         // Note the mismatch before learning, so the line still shows what the registry had.
         let firmware_note = match &msg {
@@ -194,6 +195,15 @@ impl View {
                 self.name(*node),
             ),
             (Message::Boot(b), _) => boot_line(&self.name(b.node), b, &firmware_note, decoded.as_deref()),
+            (Message::Tones(t), _) => format!(
+                "{} tones: procedure {} path {} of {}, channels {}–{}",
+                self.name(t.node),
+                t.procedure,
+                t.path,
+                t.paths,
+                t.first,
+                usize::from(t.first) + t.pct.len() / 3 - 1
+            ),
             (Message::Log(l), _) => match &decoded {
                 Some(text) => format!("{} log: {text}", self.name(l.node)),
                 None => format!(

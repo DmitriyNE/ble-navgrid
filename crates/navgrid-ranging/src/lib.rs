@@ -373,6 +373,55 @@ fn power(c: Complex) -> f32 {
 }
 
 /// The strongest peak of the profile of `resp`, refined: its distance and power.
+/// A local maximum of the delay profile, `magnitude` relative to the strongest (1.0).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Peak {
+    pub distance_m: f32,
+    pub magnitude: f32,
+}
+
+/// How many peaks [`profile_peaks`] keeps.
+pub const PROFILE_PEAKS: usize = 8;
+
+/// The delay profile's local maxima, strongest first: what an IFFT of the response shows, on the
+/// first-path grid with `window`, magnitudes relative to the strongest. On the round-trip
+/// response the peaks sit at the one-way paths and at the means of their pairs (see
+/// [`first_path`]).
+pub fn profile_peaks(resp: &ChannelResponse, window: Window) -> [Option<Peak>; PROFILE_PEAKS] {
+    let mut peaks: [Option<Peak>; PROFILE_PEAKS] = [None; PROFILE_PEAKS];
+    if resp.is_empty() {
+        return peaks;
+    }
+    let steps = (FIRST_PATH_MAX_RANGE_M / FIRST_PATH_STEP_M) as usize;
+    let mag = |i: usize| libm::sqrtf(power(matched(resp, window, i as f32 * FIRST_PATH_STEP_M)));
+    let (mut before, mut at) = (0.0f32, mag(0));
+    for i in 1..=steps {
+        let after = mag(i);
+        if at > before && at >= after && at > 0.0 {
+            let peak = Peak {
+                distance_m: (i - 1) as f32 * FIRST_PATH_STEP_M,
+                magnitude: at,
+            };
+            // Keep the strongest PROFILE_PEAKS, in order.
+            let mut slot = Some(peak);
+            for p in peaks.iter_mut() {
+                match p {
+                    Some(have) if have.magnitude >= slot.map_or(0.0, |s| s.magnitude) => {}
+                    _ => core::mem::swap(p, &mut slot),
+                }
+            }
+        }
+        before = at;
+        at = after;
+    }
+    let strongest = peaks[0].map_or(1.0, |p| p.magnitude);
+    for p in peaks.iter_mut().flatten() {
+        p.magnitude /= strongest;
+    }
+    peaks
+}
+
 fn strongest_peak(resp: &ChannelResponse, window: Window) -> Option<(f32, f32)> {
     let steps = (FIRST_PATH_MAX_RANGE_M / FIRST_PATH_STEP_M) as usize;
     let (mut best, mut best_i) = (0.0f32, 0usize);
@@ -701,6 +750,40 @@ mod tests {
             assert_eq!(fp.peaks, 1, "{fp:?}");
             assert!(fp.strength > 0.999);
         }
+    }
+
+    #[test]
+    fn profile_peaks_lists_the_paths_strongest_first() {
+        // 10 m and 20 m, far enough apart for the Hann window's 4 m lobe. The round trip squares
+        // the channel: amplitudes 1.0 at 10 m, 2 × 0.6 at the cross term 15 m, 0.36 at 20 m, so
+        // the cross term is the strongest peak.
+        let paths = [
+            Path {
+                length_m: 10.0,
+                amplitude: 1.0,
+            },
+            Path {
+                length_m: 20.0,
+                amplitude: 0.6,
+            },
+        ];
+        let resp = response(&paths, 0.02, &mut SplitMix64::new(3));
+        let peaks = profile_peaks(&resp, Window::Hann);
+        let top = peaks[0].unwrap();
+        assert!(libm::fabsf(top.distance_m - 15.0) < 0.3, "{peaks:?}");
+        assert_eq!(top.magnitude, 1.0);
+        let near = |d: f32| {
+            peaks
+                .iter()
+                .flatten()
+                .any(|p| libm::fabsf(p.distance_m - d) < 0.7 && p.magnitude < 1.0 && p.magnitude > 0.1)
+        };
+        assert!(near(10.0) && near(20.0), "{peaks:?}");
+        assert!(
+            profile_peaks(&ChannelResponse::new(), Window::Hann)
+                .iter()
+                .all(Option::is_none)
+        );
     }
 
     #[test]

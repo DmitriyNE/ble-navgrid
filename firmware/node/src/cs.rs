@@ -18,8 +18,8 @@ use bt_hci::event::le::{
     LeCsConfigComplete, LeCsProcedureEnableComplete, LeCsReadRemoteSupportedCapabilitiesComplete,
     LeCsSecurityEnableComplete, LeCsSubeventResult, LeCsSubeventResultContinue,
 };
-use core::cell::RefCell;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::cell::{Cell, RefCell};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use bt_hci::param::{
     ConnHandle, ExtDuration, LeCsSubeventStepData, LeExtAdvReportsIter, PackedAbortReasons, PhyKind, Status,
@@ -28,9 +28,9 @@ use defmt::{Format, info, warn};
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_time::{Duration, with_timeout};
-use navgrid_proto::{BEACON_COMPANY, Beacon};
-use navgrid_ranging::steps::{self, MAX_ANTENNA_PATHS, RawStep, Role, Step, ToneQuality};
+use embassy_time::{Duration, Instant, with_timeout};
+use navgrid_proto::{BEACON_COMPANY, Beacon, TONES_CHANNELS, TONES_PCT_LEN};
+use navgrid_ranging::steps::{self, MAX_ANTENNA_PATHS, RawStep, Role, Step, ToneQuality, encode_pct};
 use navgrid_ranging::{ChannelResponse, Combine, PhaseSlope, SPEED_OF_LIGHT, combine_paths, phase_slope};
 use nrf_sdc::SoftdeviceController;
 use trouble_host::prelude::*;
@@ -364,6 +364,9 @@ fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSube
                 Ranged::Aborted
             };
             let rtt = r.rtt();
+            if procedure_done == 0 {
+                send_tones(r.procedure, &r.responses);
+            }
             r.clear();
             (r.procedure, ranged, rtt)
         })
@@ -385,6 +388,47 @@ fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSube
         }
         Some((p, Ranged::Aborted, _)) => warn!("distance {=u16}: procedure aborted", p),
         None => {}
+    }
+}
+
+/// How often an initiator sends one antenna path's raw tones to the sink (`Message::Tones`).
+const TONES_EVERY: Duration = Duration::from_secs(1);
+/// One past the last CS channel (76).
+const CS_CHANNELS_END: u8 = 77;
+static TONES_LAST: Mutex<CriticalSectionRawMutex, Cell<Option<Instant>>> = Mutex::new(Cell::new(None));
+static TONES_SENT: AtomicU32 = AtomicU32::new(0);
+
+/// Queues one antenna path's tones of the procedure just completed, at most once a second, the
+/// paths in turn: three chunks of [`TONES_CHANNELS`] channels from channel 2, zeros where a
+/// channel had no usable tone.
+fn send_tones(procedure: u16, responses: &[ChannelResponse; MAX_ANTENNA_PATHS as usize]) {
+    let now = Instant::now();
+    let due = TONES_LAST.lock(|l| match l.get() {
+        Some(t) if now - t < TONES_EVERY => false,
+        _ => {
+            l.set(Some(now));
+            true
+        }
+    });
+    if !due {
+        return;
+    }
+    let paths = responses.iter().filter(|r| !r.is_empty()).count();
+    if paths == 0 {
+        return;
+    }
+    let path = TONES_SENT.fetch_add(1, Ordering::Relaxed) as usize % paths;
+    let resp = &responses[path];
+    let mut first = 2u8;
+    while first < CS_CHANNELS_END {
+        let end = (first + TONES_CHANNELS as u8).min(CS_CHANNELS_END);
+        let mut pct = heapless::Vec::<u8, TONES_PCT_LEN>::new();
+        for channel in first..end {
+            let bytes = resp.get(channel).map_or([0; 3], encode_pct);
+            let _ = pct.extend_from_slice(&bytes);
+        }
+        crate::report::push_tones(procedure, path as u8, paths as u8, first, pct);
+        first = end;
     }
 }
 
