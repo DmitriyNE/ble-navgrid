@@ -4,6 +4,26 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Updates from the host through the sink, first half.**
+
+- **The sink DK:** reflashed under the bootloader and enrolled as N003, on the current protocol.
+- **Boards:** an update's header now names its board (format 2), and the image carries a
+  `navgrid-board` tag that `navgrid sign` reads. A device declines another board's update.
+- **Host to sink, working:** `navgrid update FILE --sink PORT` sends an update over VCOM1, a 4 KiB
+  page per message with a CRC-32, each after the sink's answer. The sink checks the signature
+  (0.93 s), then installs its own board's update, or keeps a TAG update in its update slot to
+  offer to the nodes on its links. B (490 KB) went over in 63–77 s.
+- **Fixed on the way:**
+  - the sink checked the signature before the last, partial page was written;
+  - a receiver restarted 100 ms after its `Done`, before a slow link could carry it, and now
+    waits for the sender to close the channel;
+  - a write that gets no timeslots within 10 s now fails instead of holding the transfer.
+- **Sink to node, not working** (DEF-41): in three runs the sink's transfer to N001 stalled near
+  the end twice, and once N001 never answered the channel request. N001's CS held 11.1/s
+  throughout.
+- **Also found:** the sink link at 2M and 251-byte packets caps the uplink at 8.3 frames/s
+  (DEF-42), and the sink's UART receive takes framing errors (DEF-43).
+
 **Single-hop updates over the air** ([spike](spikes/2026-11-03-single-hop-update.md)).
 
 - **Built:** a node passes the update it was installed from to a peer over their fleet link, on

@@ -62,6 +62,7 @@ impl View {
             Message::Health(h) => Some(h.node),
             Message::Environment(e) => Some(e.node),
             Message::Link(l) => Some(l.node),
+            Message::Update(_) => None,
         };
         if json {
             let mut v = serde_json::to_value(msg)?;
@@ -211,7 +212,7 @@ pub fn monitor(path: &str, baud: u32, json: bool, mut view: View) -> Result<()> 
 
 /// Removes the complete frames (those ended by `0x00`) from the front of `pending`, without their
 /// terminators. A partial frame stays for the next read; empty frames are skipped.
-fn take_frames(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
+pub fn take_frames(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
     while let Some(end) = pending.iter().position(|&b| b == 0) {
         let frame: Vec<u8> = pending.drain(..=end).take(end).collect();

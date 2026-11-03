@@ -14,6 +14,7 @@ compile_error!("select a board: --features board-dk or --features board-tag");
 #[cfg(feature = "board-dk")]
 mod consts {
     pub const NAME: &str = "nRF54L15 DK";
+    pub const BOARD: navgrid_proto::Board = navgrid_proto::Board::Dk;
     pub const LFXO_LOAD_FF: u32 = 17_000;
     pub const HFXO_LOAD_FF: u32 = 15_000;
     pub const ANTENNAS: u8 = 1;
@@ -23,6 +24,7 @@ mod consts {
 #[cfg(feature = "board-tag")]
 mod consts {
     pub const NAME: &str = "nRF54L15 TAG";
+    pub const BOARD: navgrid_proto::Board = navgrid_proto::Board::Tag;
     pub const LFXO_LOAD_FF: u32 = 9_000;
     pub const HFXO_LOAD_FF: u32 = 8_000;
     pub const ANTENNAS: u8 = 2;

@@ -37,6 +37,8 @@ rand_chacha = { version = "0.9", default-features = false }
 embassy-boot = { version = "0.7", features = ["defmt", "ed25519-dalek"] }
 embassy-boot-nrf = { version = "0.12", features = ["defmt"] }
 embassy-embedded-hal = "0.6"
+# The sink checks an update from the host before passing it on (update.rs).
+ed25519-dalek = { version = "2", default-features = false, features = ["digest"] }
 # Fleet-key link keys (keys.rs) and RRAM storage (store.rs).
 aes = "0.9.3"
 cmac = "0.8.0"

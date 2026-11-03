@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 serde.workspace = true
 postcard.workspace = true
+cobs = { version = "0.3", default-features = false }
 defmt = { workspace = true, optional = true }
 
 [features]

@@ -2,19 +2,25 @@
 //!
 //! An update file is an [`UpdateHeader`] followed by the raw image for the active slot. The
 //! signature is Ed25519 over the image's SHA-512 digest, as embassy-boot verifies it on the device.
-//! `update` stages one through the probe: the image into the update slot, the header into the
-//! staging page. The device checks it at boot and has the bootloader swap it in.
+//! `update` either stages one through the probe (the image into the update slot, the header into
+//! the staging page), or sends it to a sink over its serial port. The device checks it at boot and
+//! has the bootloader swap it in; a sink passes one for another board to the nodes on its links.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use ed25519_dalek::Signer;
 use navgrid_proto::layout::{ACTIVE, ACTIVE_LEN, DFU, STAGED_UPDATE};
-use navgrid_proto::{Firmware, UPDATE_HEADER_LEN, UpdateHeader};
+use navgrid_proto::{
+    Board, DOWNLINK_CHUNK, Firmware, MAX_DOWNLINK_FRAME, Message, UPDATE_HEADER_LEN, UpdateAnswer, UpdateHeader,
+    UpdateMsg,
+};
 use sha2::{Digest, Sha512};
 
 use crate::fleet::{Fleet, FleetArgs};
-use crate::{flash, probe};
+use crate::{flash, monitor, probe};
 
 #[derive(clap::Args)]
 pub struct SignArgs {
@@ -31,9 +37,16 @@ pub struct SignArgs {
 pub struct UpdateArgs {
     /// A signed update file, from `navgrid sign`.
     file: PathBuf,
-    /// The probe of the device to update.
+    /// Stage it on a device through the device's probe.
+    #[arg(long, required_unless_present = "sink", conflicts_with = "sink")]
+    probe: Option<String>,
+    /// Or send it to the sink on this serial port (its VCOM1, e.g. `/dev/cu.usbmodem…3`). Stop
+    /// `navgrid monitor` on the port first. The sink installs an update for its own board and
+    /// passes one for another board to the nodes on its links.
     #[arg(long)]
-    probe: String,
+    sink: Option<String>,
+    #[arg(long, default_value_t = 115_200)]
+    baud: u32,
     #[command(flatten)]
     fleet: FleetArgs,
 }
@@ -91,10 +104,11 @@ pub fn load_image(elf: &[u8]) -> Result<(u32, Vec<u8>)> {
 }
 
 /// The update file for an image: its header, then the image.
-pub fn sign(image: &[u8], firmware: Firmware, key: &ed25519_dalek::SigningKey) -> Vec<u8> {
+pub fn sign(image: &[u8], firmware: Firmware, board: Board, key: &ed25519_dalek::SigningKey) -> Vec<u8> {
     let digest = Sha512::digest(image);
     let header = UpdateHeader {
         firmware,
+        board,
         len: image.len() as u32,
         signature: key.sign(&digest).to_bytes(),
     };
@@ -107,6 +121,8 @@ pub fn run_sign(args: &SignArgs) -> Result<()> {
     let elf = std::fs::read(&args.elf).with_context(|| format!("reading {}", args.elf.display()))?;
     let tag = flash::firmware_tag(&elf).context("no navgrid firmware tag in the image")?;
     let firmware = parse_tag(&tag).with_context(|| format!("can't read the firmware tag {tag:?}"))?;
+    let board =
+        flash::board_tag(&elf).context("no navgrid board tag in the image: built before boards were tagged?")?;
     let (start, image) = load_image(&elf)?;
     if start != ACTIVE {
         bail!("the image starts at {start:#x}, not the active slot ({ACTIVE:#x}): built for the bootloader?");
@@ -118,9 +134,14 @@ pub fn run_sign(args: &SignArgs) -> Result<()> {
         );
     }
     let key = Fleet::open(&args.fleet)?.signing_key()?;
-    let file = sign(&image, firmware, &key);
+    let file = sign(&image, firmware, board, &key);
     std::fs::write(&args.out, &file).with_context(|| format!("writing {}", args.out.display()))?;
-    println!("{}: {firmware}, {} bytes, signed", args.out.display(), image.len());
+    println!(
+        "{}: {firmware} for the {} board, {} bytes, signed",
+        args.out.display(),
+        board.name(),
+        image.len()
+    );
     Ok(())
 }
 
@@ -143,7 +164,16 @@ pub fn read_update(path: &Path) -> Result<(UpdateHeader, Vec<u8>)> {
 
 pub fn run_update(args: &UpdateArgs) -> Result<()> {
     let (header, image) = read_update(&args.file)?;
-    let probe = Some(args.probe.as_str());
+    match (&args.probe, &args.sink) {
+        (Some(probe), _) => stage(args, probe, &header, &image),
+        (None, Some(port)) => to_sink(port, args.baud, &header, &image),
+        (None, None) => unreachable!("clap requires one"),
+    }
+}
+
+/// Stages the update on the device behind `probe`, and records it in the registry.
+fn stage(args: &UpdateArgs, probe: &str, header: &UpdateHeader, image: &[u8]) -> Result<()> {
+    let probe = Some(probe);
     let id = probe::read_id(probe)?;
     println!(
         "staging {} ({} bytes) on {:012x}; about {} s at 100 kHz",
@@ -157,7 +187,7 @@ pub fn run_update(args: &UpdateArgs) -> Result<()> {
         tmp.join(format!("navgrid-update-{}.bin", std::process::id())),
         tmp.join(format!("navgrid-update-{}.hdr", std::process::id())),
     );
-    std::fs::write(&image_file, &image)?;
+    std::fs::write(&image_file, image)?;
     std::fs::write(&header_file, header.encode())?;
     let staged = probe::download(probe, &image_file, Some(DFU))
         .and_then(|()| probe::download(probe, &header_file, Some(STAGED_UPDATE)))
@@ -178,6 +208,122 @@ pub fn run_update(args: &UpdateArgs) -> Result<()> {
     Ok(())
 }
 
+/// How long the sink may take to answer an offer or a page: 0.36 s to send a page at 115200 baud,
+/// and the time to store it in MPSL timeslots.
+const SINK_ANSWER_WITHIN: Duration = Duration::from_secs(1);
+/// And `Done`: it checks the image's signature first.
+const SINK_CHECK_WITHIN: Duration = Duration::from_secs(20);
+/// Sends of one message before giving up.
+const SINK_TRIES: u32 = 5;
+
+/// Sends the update to the sink on `port`, a page per message, each after the sink has stored the
+/// last.
+fn to_sink(port: &str, baud: u32, header: &UpdateHeader, image: &[u8]) -> Result<()> {
+    let port = serialport::new(port, baud)
+        .timeout(Duration::from_millis(50))
+        .open()
+        .with_context(|| format!("opening {port}"))?;
+    let mut sink = Sink {
+        port,
+        pending: Vec::new(),
+    };
+    println!(
+        "sending {} for the {} board ({} bytes) to the sink; about {} s",
+        header.firmware,
+        header.board.name(),
+        header.len,
+        image.len() * 10 / baud as usize + 5
+    );
+    let mut from = match sink.ask(&UpdateMsg::Offer(*header), SINK_ANSWER_WITHIN, |_| true)? {
+        UpdateAnswer::Want { from } => from as usize,
+        UpdateAnswer::Decline => bail!(
+            "the sink declined {}: it runs or carries it already, its own image isn't confirmed yet, or it's too long",
+            header.firmware
+        ),
+        UpdateAnswer::Done => bail!("the sink answered the offer with Done"),
+    };
+    let t = Instant::now();
+    while from < image.len() {
+        let end = (from + DOWNLINK_CHUNK).min(image.len());
+        let data = UpdateMsg::Data {
+            offset: from as u32,
+            bytes: &image[from..end],
+        };
+        // An answer for another chunk is a late one, for a chunk sent twice.
+        let fits = |a: &UpdateAnswer| !matches!(a, UpdateAnswer::Want { from } if *from as usize != end);
+        match sink.ask(&data, SINK_ANSWER_WITHIN, fits)? {
+            UpdateAnswer::Want { .. } => from = end,
+            other => bail!("the sink stopped at byte {from}: {other:?}"),
+        }
+        if from % (64 * 1024) < DOWNLINK_CHUNK || from == image.len() {
+            print!("\r{} / {} KiB", from / 1024, image.len() / 1024);
+            std::io::stdout().flush()?;
+        }
+    }
+    println!();
+    match sink.ask(&UpdateMsg::Done, SINK_CHECK_WITHIN, |a| {
+        !matches!(a, UpdateAnswer::Want { .. })
+    })? {
+        UpdateAnswer::Done => {}
+        other => bail!(
+            "the sink didn't store {} ({other:?}): its signature doesn't match the sink's key?",
+            header.firmware
+        ),
+    }
+    match header.board {
+        Board::Dk => println!(
+            "sent in {:.0} s; the sink restarts to check and install it",
+            t.elapsed().as_secs_f64()
+        ),
+        Board::Tag => println!(
+            "sent in {:.0} s, checked and stored; the sink offers it to the nodes on its links",
+            t.elapsed().as_secs_f64()
+        ),
+    }
+    Ok(())
+}
+
+/// A sink's serial port, for its answers among the frames it forwards.
+struct Sink {
+    port: Box<dyn serialport::SerialPort>,
+    pending: Vec<u8>,
+}
+
+impl Sink {
+    /// Sends `msg` and waits for an answer that `fits`, sending it again if none comes.
+    /// Waits up to `within` for each answer.
+    fn ask(&mut self, msg: &UpdateMsg, within: Duration, fits: impl Fn(&UpdateAnswer) -> bool) -> Result<UpdateAnswer> {
+        let mut out = vec![0u8; MAX_DOWNLINK_FRAME];
+        let frame = navgrid_proto::encode_downlink(msg, &mut out);
+        for _ in 0..SINK_TRIES {
+            self.port.write_all(frame).context("writing to the sink")?;
+            let deadline = Instant::now() + within;
+            while Instant::now() < deadline {
+                if let Some(answer) = self.answer()?.filter(&fits) {
+                    return Ok(answer);
+                }
+            }
+        }
+        bail!("no answer from the sink after {SINK_TRIES} tries: is it a sink, on protocol 3?")
+    }
+
+    /// The first answer in what the port has to read, skipping the frames the sink forwards.
+    fn answer(&mut self) -> Result<Option<UpdateAnswer>> {
+        let mut buf = [0u8; 256];
+        match self.port.read(&mut buf) {
+            Ok(n) => self.pending.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => return Err(e).context("reading from the sink"),
+        }
+        Ok(monitor::take_frames(&mut self.pending)
+            .into_iter()
+            .find_map(|mut f| match navgrid_proto::decode(&mut f) {
+                Ok(Message::Update(answer)) => Some(answer),
+                _ => None,
+            }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,7 +342,7 @@ mod tests {
     fn signature_verifies_over_the_digest() {
         let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let image = vec![0xa5u8; 5000];
-        let file = sign(&image, Firmware::new(0, 1, 0, 1, false), &key);
+        let file = sign(&image, Firmware::new(0, 1, 0, 1, false), Board::Tag, &key);
         let header = UpdateHeader::decode(&file).unwrap();
         assert_eq!(&file[UPDATE_HEADER_LEN..], &image[..]);
         let digest = Sha512::digest(&image);

@@ -2,7 +2,8 @@
 //! sends each on-device range, and its health once a minute, over an L2CAP channel as
 //! `navgrid-proto` frames. The sink (a DK)
 //! writes every frame it receives to its UART, which the DK's debugger exposes as VCOM1, for
-//! `navgrid monitor`. The sink comes from the initiator's provisioning.
+//! `navgrid monitor`. The sink comes from the initiator's provisioning. It also takes updates from
+//! the host on the same port and offers the ones it carries to the node on its link (`update`).
 
 use core::cell::Cell;
 
@@ -95,18 +96,35 @@ pub async fn run(stack: &Stack<'_, '_>, channel: &mut L2capChannel<'_, DefaultPa
     }
 }
 
+/// The sink's UART: the frames it forwards and its own, among them its answers to the host.
+#[cfg(feature = "board-dk")]
+pub type SinkUart<'d> =
+    embassy_sync::mutex::Mutex<embassy_sync::blocking_mutex::raw::NoopRawMutex, embassy_nrf::uarte::UarteTx<'d>>;
+
+/// Writes one of the sink's own frames.
+#[cfg(feature = "board-dk")]
+pub async fn send(uart: &SinkUart<'_>, msg: &Message) {
+    let mut buf = [0u8; MAX_FRAME_LEN];
+    if let Ok(frame) = navgrid_proto::encode(msg, &mut buf)
+        && uart.lock().await.write(frame).await.is_err()
+    {
+        warn!("sink: UART write failed");
+    }
+}
+
 /// The sink: writes a `Hello` frame, then advertises, accepts one fleet node at a time, and
-/// forwards every SDU of its telemetry channel to `uart` unchanged (each SDU is one frame).
+/// forwards every SDU of its telemetry channel to `uart` unchanged (each SDU is one frame). Once
+/// that channel is open, it offers the node the update it carries, and again whenever it starts
+/// carrying another.
 #[cfg(feature = "board-dk")]
 pub async fn serve_sink(
     stack: &Stack<'_, '_>,
     fleet: &crate::keys::Fleet,
-    mut uart: embassy_nrf::uarte::UarteTx<'_>,
+    uart: &SinkUart<'_>,
     node: NodeId,
     beacons: &crate::beacon::Beacons,
     params: &AdvertisementParameters,
 ) -> ! {
-    let mut buf = [0u8; MAX_FRAME_LEN];
     let hello = Message::Hello {
         node,
         role: navgrid_proto::Role::Sink,
@@ -114,11 +132,7 @@ pub async fn serve_sink(
         firmware: crate::FIRMWARE,
         antennas: 1,
     };
-    if let Ok(frame) = navgrid_proto::encode(&hello, &mut buf)
-        && uart.write(frame).await.is_err()
-    {
-        warn!("sink: UART write failed");
-    }
+    send(uart, &hello).await;
     let config = L2capChannelConfig::default();
     let mut peripheral = stack.peripheral();
     loop {
@@ -147,25 +161,35 @@ pub async fn serve_sink(
                     return;
                 }
             };
-            let mut sdu = [0u8; 255];
-            let mut frames = 0u32;
-            loop {
-                match channel.receive(stack, &mut sdu).await {
-                    Ok(len) => {
-                        if uart.write(&sdu[..len]).await.is_err() {
-                            warn!("sink: UART write failed");
+            let frames = async {
+                let mut sdu = [0u8; 255];
+                let mut frames = 0u32;
+                loop {
+                    match channel.receive(stack, &mut sdu).await {
+                        Ok(len) => {
+                            if uart.lock().await.write(&sdu[..len]).await.is_err() {
+                                warn!("sink: UART write failed");
+                            }
+                            frames += 1;
+                            if frames.is_multiple_of(100) {
+                                defmt::info!("sink: {=u32} frames", frames);
+                            }
                         }
-                        frames += 1;
-                        if frames.is_multiple_of(100) {
-                            defmt::info!("sink: {=u32} frames", frames);
+                        Err(e) => {
+                            defmt::info!("sink: channel closed after {=u32} frames: {:?}", frames, e);
+                            return;
                         }
-                    }
-                    Err(e) => {
-                        defmt::info!("sink: channel closed after {=u32} frames: {:?}", frames, e);
-                        return;
                     }
                 }
-            }
+            };
+            // The node listens for updates once its telemetry channel is up.
+            let offering = async {
+                loop {
+                    crate::update::offer(stack, &conn).await;
+                    crate::update::CARRYING.wait().await;
+                }
+            };
+            select(frames, offering).await;
         };
         if let Either::Second(reason) = select(forward, disconnected).await {
             defmt::info!("sink: disconnected: {:?}", reason);

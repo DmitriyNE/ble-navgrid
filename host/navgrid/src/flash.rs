@@ -10,10 +10,10 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use navgrid_proto::NodeId;
 use navgrid_proto::layout::{
     ACTIVE_HEADER, ACTIVE_HEADER_LEN, BOOTLOADER_STATE, BOOTLOADER_STATE_LEN, STAGED_UPDATE, STAGED_UPDATE_LEN,
 };
+use navgrid_proto::{Board, NodeId};
 
 use crate::fleet::{Fleet, FleetArgs, label_name, today};
 use crate::probe;
@@ -33,11 +33,19 @@ pub struct FlashArgs {
     fleet: FleetArgs,
 }
 
-const TAG: &[u8] = b"navgrid-firmware ";
-
 /// The build an image says it is, from its embedded tag.
 pub fn firmware_tag(image: &[u8]) -> Option<String> {
-    let start = image.windows(TAG.len()).position(|w| w == TAG)? + TAG.len();
+    embedded(image, b"navgrid-firmware ")
+}
+
+/// The board an image is built for, from its embedded tag.
+pub fn board_tag(image: &[u8]) -> Option<Board> {
+    Board::from_name(&embedded(image, b"navgrid-board ")?)
+}
+
+/// The text after `marker` up to its NUL, as the firmware embeds its tags.
+fn embedded(image: &[u8], marker: &[u8]) -> Option<String> {
+    let start = image.windows(marker.len()).position(|w| w == marker)? + marker.len();
     let len = image[start..].iter().position(|&b| b == 0)?;
     let tag = std::str::from_utf8(&image[start..start + len]).ok()?;
     (!tag.is_empty() && tag.len() < 64).then(|| tag.to_owned())
@@ -129,5 +137,13 @@ mod tests {
         image.extend_from_slice(b"navgrid-firmware 0.1.0+1950d45d-dirty\0rest");
         assert_eq!(firmware_tag(&image).as_deref(), Some("0.1.0+1950d45d-dirty"));
         assert_eq!(firmware_tag(b"nothing here"), None);
+    }
+
+    #[test]
+    fn finds_the_board_in_an_image() {
+        let image = b"navgrid-firmware 0.1.0+1950d45d\0navgrid-board tag\0";
+        assert_eq!(board_tag(image), Some(Board::Tag));
+        assert_eq!(board_tag(b"navgrid-board nrf52\0"), None);
+        assert_eq!(board_tag(b"navgrid-firmware 0.1.0+1950d45d\0"), None);
     }
 }

@@ -1255,6 +1255,7 @@ dependencies = [
  "cortex-m-rt",
  "defmt 1.2.0",
  "defmt-rtt",
+ "ed25519-dalek",
  "embassy-boot",
  "embassy-boot-nrf",
  "embassy-crypto",
@@ -1281,6 +1282,7 @@ dependencies = [
 name = "navgrid-proto"
 version = "0.1.0"
 dependencies = [
+ "cobs",
  "defmt 1.2.0",
  "postcard",
  "serde",

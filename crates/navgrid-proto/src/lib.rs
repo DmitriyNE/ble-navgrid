@@ -2,7 +2,7 @@
 //!
 //! Messages are postcard-encoded. On byte streams (UART, RTT, capture files) each message is one
 //! COBS frame terminated by `0x00`. Lengths and coordinates are integer millimetres so firmware
-//! never formats floats.
+//! never formats floats. The host's frames to a sink are [`UpdateMsg`]s ([`encode_downlink`]).
 
 #![no_std]
 
@@ -11,8 +11,8 @@ extern crate std;
 
 use serde::{Deserialize, Serialize};
 
-/// Bumped on any incompatible change to [`Message`].
-pub const PROTOCOL_VERSION: u16 = 2;
+/// Bumped on any incompatible change to [`Message`] or to what a sink takes from the host.
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// Upper bound for one encoded frame, including COBS overhead and the `0x00` terminator.
 pub const MAX_FRAME_LEN: usize = 64;
@@ -116,6 +116,40 @@ pub enum Role {
     Person,
     /// USB-powered gateway that collects telemetry for the host.
     Sink,
+}
+
+/// The hardware an image is built for. An update carries it, so no device installs another
+/// board's image; a sink only passes one on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum Board {
+    /// nRF54L15 DK.
+    Dk = 1,
+    /// nRF54L15 TAG.
+    Tag = 2,
+}
+
+impl Board {
+    /// As the image names it (`navgrid-board tag`).
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Dk => "dk",
+            Self::Tag => "tag",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Dk, Self::Tag].into_iter().find(|b| b.name() == name)
+    }
+
+    const fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            1 => Some(Self::Dk),
+            2 => Some(Self::Tag),
+            _ => None,
+        }
+    }
 }
 
 /// Point in the building frame, millimetres.
@@ -230,6 +264,11 @@ pub const UPDATE_CHUNK: usize = 224;
 /// answers `Done` once it has the image stored, and the sender keeps the channel open until then:
 /// closing it drops whatever the receiver hasn't read yet.
 ///
+/// The host sends a sink the same messages over its serial port ([`encode_downlink`]), with
+/// [`DOWNLINK_CHUNK`]-byte `Data` and a CRC-32 each. The sink answers in [`Message::Update`], a `Want` after each
+/// `Data` as well: the serial port has no flow control of its own, so the host sends the next
+/// chunk only then, and resends one that got no answer.
+///
 /// Fixed layout, little-endian: a tag byte, then `Offer` the encoded [`UpdateHeader`], `Want`
 /// the start offset, `Data` the offset and the bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,7 +281,7 @@ pub enum UpdateMsg<'a> {
 }
 
 impl<'a> UpdateMsg<'a> {
-    /// The encoded message; `buf` needs [`UPDATE_HEADER_LEN`] + 1 or [`UPDATE_CHUNK`] + 5 bytes.
+    /// The encoded message; `buf` needs [`UPDATE_HEADER_LEN`] + 1 bytes, or 5 more than the data.
     pub fn encode<'b>(&self, buf: &'b mut [u8]) -> &'b [u8] {
         let len = match *self {
             Self::Offer(h) => {
@@ -293,19 +332,20 @@ impl<'a> UpdateMsg<'a> {
 /// image; a device keeps it in [`layout::STAGED_UPDATE`] until it has checked the image in the
 /// update slot.
 ///
-/// Fixed layout, little-endian: magic `ngup`, format (1), flags (bit 0 dirty), 2 reserved bytes,
-/// version, commit, image length, the 64-byte Ed25519 signature over the image's SHA-512 digest
+/// Fixed layout, little-endian: magic `ngup`, format (2), flags (bit 0 dirty), the [`Board`], a
+/// reserved byte, version, commit, image length, the 64-byte Ed25519 signature over the image's SHA-512 digest
 /// (as embassy-boot verifies it), and a CRC-32 of everything before it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UpdateHeader {
     pub firmware: Firmware,
+    pub board: Board,
     pub len: u32,
     pub signature: [u8; 64],
 }
 
 pub const UPDATE_HEADER_LEN: usize = 88;
 const UPDATE_MAGIC: [u8; 4] = *b"ngup";
-const UPDATE_FORMAT: u8 = 1;
+const UPDATE_FORMAT: u8 = 2;
 
 impl UpdateHeader {
     pub fn encode(&self) -> [u8; UPDATE_HEADER_LEN] {
@@ -313,6 +353,7 @@ impl UpdateHeader {
         b[..4].copy_from_slice(&UPDATE_MAGIC);
         b[4] = UPDATE_FORMAT;
         b[5] = u8::from(self.firmware.dirty);
+        b[6] = self.board as u8;
         b[8..12].copy_from_slice(&self.firmware.version.to_le_bytes());
         b[12..16].copy_from_slice(&self.firmware.commit.to_le_bytes());
         b[16..20].copy_from_slice(&self.len.to_le_bytes());
@@ -338,6 +379,7 @@ impl UpdateHeader {
         if crc32(&b[..84]) != word(84) {
             return Err(ProvisioningError::Corrupt);
         }
+        let board = Board::from_u8(b[6]).ok_or(ProvisioningError::Corrupt)?;
         let mut signature = [0u8; 64];
         signature.copy_from_slice(&b[20..84]);
         Ok(Self {
@@ -346,6 +388,7 @@ impl UpdateHeader {
                 commit: word(12),
                 dirty: b[5] & 1 != 0,
             },
+            board,
             len: word(16),
             signature,
         })
@@ -661,6 +704,51 @@ pub enum Message {
     Health(Health),
     Environment(Environment),
     Link(LinkStats),
+    /// A sink's answer to an update the host sends it (see [`UpdateMsg`]).
+    Update(UpdateAnswer),
+}
+
+/// What a sink answers the host's [`UpdateMsg`]s with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum UpdateAnswer {
+    /// Send on from this byte: after the offer, and after each chunk stored.
+    Want {
+        from: u32,
+    },
+    Decline,
+    /// Stored: the sink installs it, or passes it to the nodes on its links.
+    Done,
+}
+
+/// Image bytes per [`UpdateMsg::Data`] from the host to a sink: an RRAM page.
+pub const DOWNLINK_CHUNK: usize = 4096;
+/// The longest message from the host to a sink, with its CRC.
+const MAX_DOWNLINK_MSG: usize = DOWNLINK_CHUNK + 5 + 4;
+/// Upper bound for one frame from the host to a sink, COBS overhead and terminator included.
+pub const MAX_DOWNLINK_FRAME: usize = cobs::max_encoding_length(MAX_DOWNLINK_MSG) + 1;
+
+/// `msg` as one frame for a sink: the message and its CRC-32, COBS-framed, `0x00` terminator
+/// included. `out` needs [`MAX_DOWNLINK_FRAME`] bytes.
+pub fn encode_downlink<'b>(msg: &UpdateMsg, out: &'b mut [u8]) -> &'b [u8] {
+    let mut raw = [0u8; MAX_DOWNLINK_MSG];
+    let len = msg.encode(&mut raw).len();
+    let crc = crc32(&raw[..len]);
+    raw[len..len + 4].copy_from_slice(&crc.to_le_bytes());
+    let n = cobs::encode(&raw[..len + 4], out);
+    out[n] = 0;
+    &out[..=n]
+}
+
+/// A frame from the host, without its terminator, decoded in place; `None` if it was damaged on
+/// the way.
+pub fn decode_downlink(frame: &mut [u8]) -> Option<UpdateMsg<'_>> {
+    let n = cobs::decode_in_place(frame).ok()?;
+    let (msg, crc) = frame[..n].split_at(n.checked_sub(4)?);
+    if crc32(msg).to_le_bytes() != crc {
+        return None;
+    }
+    UpdateMsg::decode(msg)
 }
 
 pub type Error = postcard::Error;
@@ -679,7 +767,7 @@ pub fn decode(frame: &mut [u8]) -> Result<Message, Error> {
 mod tests {
     use super::*;
 
-    fn worst_case() -> [Message; 6] {
+    fn worst_case() -> [Message; 7] {
         let id = NodeId(u64::MAX);
         [
             Message::Hello {
@@ -736,6 +824,7 @@ mod tests {
                 quality: u8::MAX,
                 rssi_dbm: i8::MIN,
             }),
+            Message::Update(UpdateAnswer::Want { from: u32::MAX }),
         ]
     }
 
@@ -830,6 +919,7 @@ mod tests {
     fn update_header_roundtrips_and_rejects_damage() {
         let h = UpdateHeader {
             firmware: Firmware::new(0, 1, 1, 0x0cf9_80a7, false),
+            board: Board::Tag,
             len: 415_144,
             signature: [0x3c; 64],
         };
@@ -839,12 +929,16 @@ mod tests {
         bad[30] ^= 1;
         assert_eq!(UpdateHeader::decode(&bad), Err(ProvisioningError::Corrupt));
         assert_eq!(UpdateHeader::decode(&[0xff; 4096]), Err(ProvisioningError::Blank));
+        let mut format1 = b;
+        format1[4] = 1;
+        assert_eq!(UpdateHeader::decode(&format1), Err(ProvisioningError::Format(1)));
     }
 
     #[test]
     fn update_messages_roundtrip() {
         let header = UpdateHeader {
             firmware: Firmware::new(0, 1, 1, 7, false),
+            board: Board::Dk,
             len: 1000,
             signature: [9; 64],
         };
@@ -865,6 +959,34 @@ mod tests {
             assert_eq!(UpdateMsg::decode(&encoded), Some(msg));
         }
         assert_eq!(UpdateMsg::decode(&[9]), None);
+    }
+
+    #[test]
+    fn downlink_frames_decode_and_fit() {
+        let page = [0u8; DOWNLINK_CHUNK];
+        let msg = UpdateMsg::Data {
+            offset: 8192,
+            bytes: &page,
+        };
+        let mut out = [0u8; MAX_DOWNLINK_FRAME];
+        let frame = encode_downlink(&msg, &mut out).to_vec();
+        assert_eq!(frame.iter().position(|&b| b == 0), Some(frame.len() - 1));
+        let mut body = frame[..frame.len() - 1].to_vec();
+        assert_eq!(decode_downlink(&mut body.clone()), Some(msg));
+        // A flipped bit, or a byte lost on the way.
+        body[1000] ^= 0x10;
+        assert_eq!(decode_downlink(&mut body.clone()), None);
+        body.remove(2000);
+        assert_eq!(decode_downlink(&mut body), None);
+    }
+
+    #[test]
+    fn boards_by_name() {
+        for b in [Board::Dk, Board::Tag] {
+            assert_eq!(Board::from_name(b.name()), Some(b));
+            assert_eq!(Board::from_u8(b as u8), Some(b));
+        }
+        assert_eq!(Board::from_name("nrf52"), None);
     }
 
     #[test]

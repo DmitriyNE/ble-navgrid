@@ -707,8 +707,15 @@ starts, stay direct.
   chunk per 30 ms connection event, so a 490 KB image takes 70 s. Ranging on the same link holds
   11.1/s throughout. Ranging then stops for about 35 s while the receiver checks the image, swaps
   it and reconnects.
-- **Not yet:** resuming after a dropout (`Want` carries the start offset for it), and the host
-  as the sender through the sink.
+- **Boards:** an update's header names the board its image is for (header format 2). A device
+  installs only its own board's images and declines others.
+- **From the host, through the sink:** `navgrid update FILE --sink PORT` sends the update to the
+  sink over VCOM1, the same messages as over the air with 4 KiB `Data` and a CRC-32 each, one at
+  a time: the sink answers each chunk with where to go on from, and the host resends any that
+  gets no answer within 1 s. The sink checks the signature, then installs an update for its own
+  board, or keeps one for the TAGs in its update slot and offers it to the nodes on its links.
+  The host's upload takes about 70 s. The sink's offer to a node does not work yet (DEF-41).
+- **Not yet:** resuming after a dropout (`Want` carries the start offset for it).
 - **Why first:** at 100 kHz SWD (DEF-19), reflashing 20 TAGs takes about 2 min per probe, and
   probes and DK adapters are scarce.
 

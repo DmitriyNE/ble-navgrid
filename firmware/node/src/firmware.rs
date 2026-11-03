@@ -8,7 +8,8 @@
 //!   (a fleet link up). One that isn't within 5 min restarts unconfirmed, and the bootloader puts
 //!   the previous image back.
 //! - **Passing it on:** the header of an installed update is kept ([`servable`]), so the node can
-//!   offer its image to neighbours (`update`).
+//!   offer its image to neighbours (`update`). A staged update for another board isn't installed:
+//!   a sink carries it for the nodes ([`carried`]).
 //!
 //! After boot the RRAM belongs to MPSL's timeslot driver ([`share_rram`]), shared by this and the
 //! update receiver. Its writes run in timeslots, clear of the radio. Written directly, a 4 KiB page
@@ -31,12 +32,14 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_storage::nor_flash::NorFlash;
 use navgrid_proto::layout::{
-    ACTIVE_HEADER, ACTIVE_HEADER_LEN, BOOTLOADER_STATE, BOOTLOADER_STATE_LEN, STAGED_UPDATE, STAGED_UPDATE_LEN,
+    ACTIVE, ACTIVE_HEADER, ACTIVE_HEADER_LEN, BOOTLOADER_STATE, BOOTLOADER_STATE_LEN, DFU, STAGED_UPDATE,
+    STAGED_UPDATE_LEN,
 };
 use navgrid_proto::{ProvisioningError, UPDATE_HEADER_LEN, UpdateHeader};
 use nrf_sdc::mpsl::Flash;
 use static_cell::StaticCell;
 
+use crate::board::BOARD;
 use crate::status;
 
 /// The RRAM once boot is done.
@@ -56,14 +59,26 @@ fn bootloader_state<'a>(
     FirmwareState::new(Partition::new(rram, BOOTLOADER_STATE, BOOTLOADER_STATE_LEN), aligned)
 }
 
-/// The header of the image this node runs, if it was installed from an update with this build:
-/// what it can offer its neighbours.
-pub fn servable() -> Option<UpdateHeader> {
+/// What this node can offer its neighbours, and where the image lies: an update it carries for
+/// another board, or else the update it was installed from, if it still runs that build.
+pub fn servable() -> Option<(UpdateHeader, u32)> {
+    if let Some(header) = carried() {
+        return Some((header, DFU));
+    }
+    header_at(ACTIVE_HEADER)
+        .filter(|h| h.firmware == crate::FIRMWARE && h.board == BOARD)
+        .map(|h| (h, ACTIVE))
+}
+
+/// An update for another board, staged in the update slot to pass on (a sink's, from the host).
+pub fn carried() -> Option<UpdateHeader> {
+    header_at(STAGED_UPDATE).filter(|h| h.board != BOARD)
+}
+
+fn header_at(at: u32) -> Option<UpdateHeader> {
     // SAFETY: memory-mapped RRAM.
-    let page = unsafe { core::slice::from_raw_parts(ACTIVE_HEADER as *const u8, UPDATE_HEADER_LEN) };
-    UpdateHeader::decode(page)
-        .ok()
-        .filter(|h| h.firmware == crate::FIRMWARE)
+    let page = unsafe { core::slice::from_raw_parts(at as *const u8, UPDATE_HEADER_LEN) };
+    UpdateHeader::decode(page).ok()
 }
 
 /// Whether the running image is confirmed. Until it is, the update slot holds the image a revert
@@ -138,8 +153,8 @@ pub async fn run(wdt: Peri<'static, WDT0>, rram: &'static Rram) -> ! {
 
 /// Checks an update staged in the update slot (`navgrid update` writes one through the probe): its
 /// signature against the provisioned key, over the image's SHA-512 digest. A good one is marked
-/// for the bootloader and the device restarts into it; a bad one is discarded. Runs at boot,
-/// before the radio starts, as it writes RRAM.
+/// for the bootloader and the device restarts into it; a bad one is discarded, and one for
+/// another board kept. Runs at boot, before the radio starts, as it writes RRAM.
 pub fn apply_staged(rram: &mut Nvmc<'_>, signing_key: Option<[u8; 32]>) {
     // SAFETY: memory-mapped RRAM, written only through `rram`.
     let page = unsafe { core::slice::from_raw_parts(STAGED_UPDATE as *const u8, UPDATE_HEADER_LEN) };
@@ -152,6 +167,14 @@ pub fn apply_staged(rram: &mut Nvmc<'_>, signing_key: Option<[u8; 32]>) {
             return;
         }
     };
+    if header.board != BOARD {
+        info!(
+            "update: carrying {} for the {} board, to pass on",
+            header.firmware,
+            header.board.name()
+        );
+        return;
+    }
     let Some(key) = signing_key else {
         warn!("update: no signing key provisioned, discarding {}", header.firmware);
         discard(rram);

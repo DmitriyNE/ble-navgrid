@@ -451,6 +451,7 @@ dependencies = [
 name = "navgrid-proto"
 version = "0.1.0"
 dependencies = [
+ "cobs",
  "defmt",
  "postcard",
  "serde",

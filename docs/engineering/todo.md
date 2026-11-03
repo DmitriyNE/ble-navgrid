@@ -106,12 +106,17 @@ Done (log 2026-11-03): version tracking, the bootloader
 ([spike](spikes/2026-11-03-bootloader.md)), signing, and single-hop updates between TAGs
 ([spike](spikes/2026-11-03-single-hop-update.md)). Left before stage 3:
 
-1. [ ] **The host as the sender, through the sink:** `navgrid update FILE --node N001`. The sink
-       DK needs reflashing and enrolling first (DEF-37).
-2. [ ] **Resume and retry** (DEF-39): pick up from the last page written after a dropout (`Want`
+1. [ ] **The sink's offer to its nodes** (DEF-41): the host's upload to the sink works, the
+       sink's transfer to N001 over the sink link doesn't. Next: TrouBLE's debug log on both
+       ends, to see where the channel request and the last chunks go.
+2. [ ] **The sink link's packet length** (DEF-42): one exchange per event caps the uplink at
+       8.3 frames/s. Full-length packets only during a transfer, or a shorter sink interval.
+3. [ ] **The sink's UART receive** (DEF-43): a buffered UARTE, which re-arms in its interrupt
+       handler, instead of `read_until_idle`.
+4. [ ] **Resume and retry** (DEF-39): pick up from the last page written after a dropout (`Want`
        carries the offset), and offer again to a peer that declined while unconfirmed.
-3. [ ] **A shorter swap** (DEF-38): a slot closer to the image size, or buffered writes.
-4. [ ] **Test the 5-minute confirm timeout,** and a revert after an over-the-air update.
+5. [ ] **A shorter swap** (DEF-38): a slot closer to the image size, or buffered writes.
+6. [ ] **Test the 5-minute confirm timeout,** and a revert after an over-the-air update.
 
 After stage 4: the desired-firmware record, neighbour-to-neighbour spreading, canary rollout and
 version compatibility during rollouts.
@@ -126,7 +131,7 @@ Items 1–3 are done (log 2026-11-02):
 - battery readings.
 
 Left over from them:
-- reflash the sink DK and enrol it, so it has a number and protocol 2;
+- the registry: learn what a device runs from its Hello and Health (DEF-44);
 - check that a phone scans the label QR;
 - try the factory reset on a TAG;
 - bring in install mode on the long press (item 7).

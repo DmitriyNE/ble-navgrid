@@ -157,6 +157,14 @@ static FIRMWARE_TAG: &[u8] = concat!(
 )
 .as_bytes();
 
+/// The board, where `navgrid sign` finds it: `navgrid-board tag`.
+#[used]
+#[cfg(feature = "board-dk")]
+static BOARD_TAG: &[u8] = b"navgrid-board dk\0";
+#[used]
+#[cfg(feature = "board-tag")]
+static BOARD_TAG: &[u8] = b"navgrid-board tag\0";
+
 const fn parse(s: &str, radix: u32) -> u32 {
     let b = s.as_bytes();
     let mut i = 0;
@@ -366,10 +374,14 @@ async fn main(spawner: Spawner) {
     if peer.is_some() {
         cs::set_initiator();
     }
-    // The sink writes frames to UART20 (P1.04, 115200 baud), which the DK's debugger exposes as
-    // VCOM1.
+    // The sink writes frames to UART20 (TX P1.04, 115200 baud), which the DK's debugger exposes as
+    // VCOM1, and takes the host's on its RX (P1.05). Frames from the host end at an idle line,
+    // which TIMER21 times.
     #[cfg(feature = "board-dk")]
-    let uart = embassy_nrf::uarte::UarteTx::new(p.SERIAL20, Irqs, p.P1_04, Default::default());
+    let (uart, mut from_host) = embassy_nrf::uarte::Uarte::new(p.SERIAL20, p.P1_05, p.P1_04, Irqs, Default::default())
+        .split_with_idle(p.TIMER21, p.PPI20_CH2, p.PPI20_CH3);
+    #[cfg(feature = "board-dk")]
+    let uart = Mutex::new(uart);
     let role = async {
         log_cs_capabilities(&stack).await;
         #[cfg(feature = "board-dk")]
@@ -380,7 +392,20 @@ async fn main(spawner: Spawner) {
                 interval_max: Duration::from_millis(100),
                 ..Default::default()
             };
-            report::serve_sink(&stack, &fleet, uart, node, &beacons, &sink_params).await;
+            // And keep the crystal running: on the internal oscillator between radio events, the
+            // UART's clock is off by enough for framing errors on the host's frames.
+            let _hfxo = match mpsl.request_hfclk().await {
+                Ok(hfxo) => Some(hfxo),
+                Err(e) => {
+                    warn!("sink: HFXO request: {:?}", e);
+                    None
+                }
+            };
+            join(
+                report::serve_sink(&stack, &fleet, &uart, node, &beacons, &sink_params),
+                update::from_host(&mut from_host, &uart, rram, provisioning.and_then(|p| p.signing_key)),
+            )
+            .await;
         }
         match peer {
             Some(peer) => {
@@ -391,6 +416,7 @@ async fn main(spawner: Spawner) {
                     sink.map(NodeId::address),
                     antennas,
                     node,
+                    rram,
                 );
                 join(ranging, report::health(mpsl, node, FIRMWARE)).await;
             }
@@ -441,6 +467,7 @@ async fn initiator(
     sink: Option<[u8; 6]>,
     antennas: u8,
     node: NodeId,
+    rram: &'static firmware::Rram,
 ) {
     // Short ACL events leave room in each 30 ms CS-link interval for the sink link's event after
     // the CS subevent (see `Links`). Applies to connections made from now on.
@@ -459,10 +486,11 @@ async fn initiator(
             return;
         };
         loop {
-            if let Some((_conn, mut channel)) = uplink(stack, fleet, &central, &links, sink).await {
+            if let Some((conn, mut channel)) = uplink(stack, fleet, &central, &links, sink).await {
                 let _link = status::Link::up(true);
                 report::set_link(node, node_id(peer));
-                report::run(stack, &mut channel).await;
+                // The sink offers the update it carries for this board.
+                select(report::run(stack, &mut channel), update::listen(stack, &conn, rram)).await;
             }
             links.sink.set(false);
             Timer::after(Duration::from_secs(5)).await;
@@ -584,6 +612,14 @@ async fn uplink<'a>(
     links.sink.set(true);
     if links.cs.get() {
         links.respace.signal(());
+    }
+    // 2M and full-length packets, as on the CS link: an update from the sink comes one 224-byte
+    // chunk per event.
+    if let Err(e) = conn.set_phy(stack, PhyKind::Le2M).await {
+        warn!("uplink: set PHY: {:?}", e);
+    }
+    if let Err(e) = conn.update_data_length(stack, 251, 2120).await {
+        warn!("uplink: data length: {:?}", e);
     }
     if !secure(&conn).await || !encrypted(stack, &conn, fleet).await {
         return None;
