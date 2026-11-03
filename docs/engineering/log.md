@@ -4,6 +4,12 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**After midnight, later: the chairs with the pucks on edge** ([spike](spikes/2026-11-03-four-tags-proximity.md),
+last section). Three quarters vertical by power (the two chips sit 120° apart, each 60° from the
+horizon on edge): the 3–4 m fade is shallower (3.2 m over true at worst against 4.4 flat, the RTT's
+excess 1.9 m against 2.9) and no tones are lost, but it is still there. Polarization helps; placement
+(a metre below the ceiling, unequal node heights) matters more.
+
 **After midnight: the chair sweep** ([spike](spikes/2026-11-03-four-tags-proximity.md), last
 section). N005–N004 on chair seats 0.45 m up, 0.50 to 4.00 m in 25 cm steps: true + 1.2–2.0 m up to
 2.75 m with the RTT rising alongside, then a step of 2–3.5 m at 3.00 m that holds to 4.00 m, and at

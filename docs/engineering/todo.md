@@ -165,6 +165,14 @@ Left over from them:
 - [ ] **Floor tests with the node high** (spike 2026-11-03-four-tags-proximity, last section): a tag
       under a table, against a wall, in a bag, at 2–5 m sideways from a node 2.3 m up; then two
       nodes at once. The calibration (DEF-6) in that geometry, by pair and antenna path.
+- [ ] **Node placement and antenna** (spike 2026-11-03-four-tags-proximity, last sections): a node
+      sits about 1 m below the ceiling (the two-ray first fade is at 2h²/λ, the breakpoint at
+      4h²/λ: 1.5 and 2.9 m for 0.3 m below, 16 and 33 m for 1 m below); nodes at unequal heights;
+      a node variant with a vertical antenna (the flat TAG is horizontally polarized, and on edge
+      the 3–4 m fade halved). Test node-to-node under a ceiling at two depths before fixing the
+      mount.
+- [ ] **Per-antenna-path ranges over the air**, so a polarization or diversity split can be seen
+      without cables (today only the combined estimate is reported).
 - [ ] **RTT as a real range** (DEF-55): send the reflector's mode-1 ToD−ToA to the initiator over
       the CS link (what RAS does), subtract it, drop the 100 m report offset, and try the
       sounding-sequence RTT types for precision. Then check the per-pair bias against the pair's

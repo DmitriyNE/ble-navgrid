@@ -258,3 +258,28 @@ RTT mean (per-pair bias included), data in `captures/2026-11-03-home/night2/swee
   range the direct path outweighs any room bounce by far more. That is the shape of the row:
   clean to 2.75 m, a wide fade from 3 m, and (last night) recovery by 6 m. The floor's reflection
   phase, polarization and what the pucks sit on move the edges by tens of centimetres.
+
+## After midnight: the same chairs with the pucks on edge
+
+The TAG's two chip antennas (Johanson 2450AT18D0100, ceramic monopoles, E-field along the
+chip) sit 120° apart on the round board, so on edge each is about 60° from the horizon: three
+quarters vertical by power, for both antennas and all four paths. Same chairs, same height, same
+pair, 60 s a point, a coarse sweep with the fade filled in (`night2/vertical-*`):
+
+| True (m) | 0.50 | 1.00 | 2.00 | 2.50 | 3.00 | 3.50 | 4.00 |
+|---|---|---|---|---|---|---|---|
+| On edge: phase slope | 1.79 | 2.35 | 3.58 | 4.37 | 5.41 | 6.71 | 6.61 |
+| On edge: over true | 1.3 | 1.35 | 1.6 | 1.9 | 2.4 | 3.2 | 2.6 |
+| On edge: RTT | 11.7 | 12.1 | 12.8 | 13.5 | 14.9 | 14.8 | 14.7 |
+| Flat: phase slope | 2.21 | 2.39 | 4.05 | 4.17 | 6.62 | 7.86 | 7.22 |
+| Flat: over true | 1.7 | 1.4 | 2.0 | 1.7 | 3.6 | 4.4 | 3.2 |
+| Flat: RTT | 11.7 | 12.4 | 13.7 | 13.7 | 17.4 | 17.3 | 16.6 |
+
+- **Shallower, not gone.** On edge the fade's worst point is 3.2 m over true (flat: 4.4), the
+  RTT's excess over 2 → 4 m is 1.9 m for 2 m of true distance (flat: 2.9), and no procedures
+  lost their tones at 3.5 m (flat: three in four). A quarter of the power is still horizontally
+  polarized and the floor still reflects the vertical part at these grazing angles, so the
+  direct path still dips at 3–4 m, just less.
+- **Below 2.5 m both sweeps read true + 1.3–2.0 m,** the edge-on one a little lower.
+- Polarization is a real lever, worth a node variant with a properly vertical antenna, but it
+  doesn't replace placement: a metre below the ceiling and unequal node heights do more.
