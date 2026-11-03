@@ -104,7 +104,14 @@ Every device runs on a CR2032 (budget in §5): no radio stays busy without a rea
      biases the range by +1.8 m while coherence stays at 0.9998. The fit residual catches it.
    - **RTT** (implemented, units to be verified on hardware): coarse, multipath-robust, and
      relay-attack-resistant.
-   - **IFFT / super-resolution** (P0/P1): resolves the first path under multipath.
+   - **IFFT / super-resolution** (P0/P1): resolves the first path under multipath. The bench
+     showed what the phase slope does without it
+     ([spike](engineering/spikes/2026-11-03-four-tags-proximity.md), DEF-51): a board or object
+     within about 0.5 m of a TAG scatters its readings or makes them tightly wrong; two TAGs flat
+     on the floor 1.5 m apart read 7–10 m, the floor reflection cancelling the direct path; 6.1 m
+     through office partitions reads 12–20 m. With 1 m of clearance and a line of sight the
+     readings are clean, offset by the uncalibrated radio delay (about 1.5 m at 40 cm, DEF-6).
+     Keys on the floor need the first path.
 4. **Combine antenna paths** (`combine_paths`). Each antenna sees the multipath differently.
    Diversity cuts fix p90 by ~40 % under moderate multipath, but the best combiner depends on the
    delay spread. Residual-weighted is never the worst, so it is the default until real captures

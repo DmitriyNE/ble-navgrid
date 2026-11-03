@@ -43,8 +43,21 @@ Highest priority first within each phase. Done items are deleted; the [log](log.
 - [ ] **One-path rate, opt-in:** a 15 ms connection gives one-path links 33/s instead of 16.7,
       but leaves no room for a second link (spike 2026-11-02-cs-ranging-rate). Decide with
       multi-link scheduling; candidate use: the dedicated final-approach link (D-20).
+- [ ] **A first-path estimator** (DEF-51): the phase slope has no multipath rejection, and keys
+      on the floor won't range with it. Captures (`NAVGRID_LOG_STEPS`, both boards) from a bad
+      placement first: two TAGs flat on the floor 1.5 m apart, and 0.5 m from a DK. Then an
+      IFFT or super-resolution estimator on the host, as NCS's `cs_de`, compared on those
+      captures and the 40 cm one (`scratchpad` of 2026-11-03; keep copies under `docs/`).
 - [ ] **Cross-check estimator:** compare against NCS v3.4.1 `ipt_*` / `ras_*` samples and `cs_de`
       on the same captures; settle sign and units (DEF-6).
+- [ ] **Inline PCT transfer** (D-4) is described as on by default, but the firmware doesn't use
+      it: a capture needs both boards' logs, and the reflector's tones go unused on the device.
+      Either implement it or correct the design text.
+- [ ] **Single antenna path:** N001 provisioned `--no-diversity` gave no ranges in 90 s; check
+      with a probe on it.
+- [ ] **Battery forecast** (DEF-52): ignore the first hour's sag, or fit from the settled part.
+- [ ] **Monitor names:** re-read the registry when a device enrols, or on a boot report from an
+      unknown ID, instead of only at start.
 - [ ] **Energy per activity** with a power profiler on a TAG: advertising, idle link, CS per
       antenna-path count, BMI270 gyro, BME688. Also measure CR2032 sag during CS (R-9).
 - [ ] **BME688 driver** and pressure-noise characterisation: two TAGs side by side, then known

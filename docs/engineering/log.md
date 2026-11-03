@@ -4,6 +4,27 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-03
 
+**Four TAGs: two CS pairs, and what placement does to ranging**
+([spike](spikes/2026-11-03-four-tags-proximity.md)).
+
+- **Brought up:** N004 (reflector) and N005 (initiator ranging with N004), one probe session
+  each with the bootloader, image and enrolment. All four TAGs report to the sink at once, both
+  pairs range at 10.6/s (11.0 alone).
+- **Both pairs read 10–20 m over 2 m,** and a day of moving TAGs about found why, in order:
+  - **not the batteries** and **not the other pair's procedures**;
+  - **a board or an object within about 0.5 m** of a TAG (another TAG, dead or alive, a DK, a
+    metal jar) scatters its readings or makes them tightly wrong; **1 m clear** reads clean;
+  - **flat on the floor,** 1.5 m apart, a tight 7–10 m: the floor reflection cancels the direct
+    path;
+  - **6.1 m through office partitions:** 12–20 m, scattered, a quarter of the procedures empty.
+- **The short-range "3×" was the calibration offset:** every clean reading, the morning's
+  included (those TAGs were 40 cm apart, the cables' reach), sat 1.5–2.5 m above the truth. A
+  raw capture at 40 cm (`NAVGRID_LOG_STEPS`, both boards, `navgrid cs`) gives 1.96 m from the
+  tones themselves against 1.88 m on the device: the radio's delay, DEF-6, not the estimator.
+- **What follows:** the phase-slope estimator has no multipath rejection (DEF-51); keys on the
+  floor need a first-path estimator, developed on captures from the floor. The monitor's
+  battery forecast is fooled by fresh cells' first-hour sag (DEF-52).
+
 **Reflectors report, through extended advertising with legacy PDUs** (DEF-50).
 
 - **N002 reports:** its own sink link runs beside its CS link; the sink served N001 and N002 at
