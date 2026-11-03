@@ -237,10 +237,14 @@ pub fn range_quality(est: &PhaseSlope) -> u8 {
 ///
 /// Each item is `(toa_tod_initiator, tod_toa_reflector)` from CS step data, in units of 0.5 ns:
 /// the initiator's ToA−ToD (round trip plus reflector turnaround) and the reflector's ToD−ToA
-/// (turnaround). Units and sign follow the Core 6.0 step-data format; P0 confirms them on hardware.
+/// (turnaround). Units and sign follow the Core 6.0 step-data format. A step either side didn't
+/// receive carries `0x8000` (`i16::MIN`) in place of a time and is left out.
 pub fn rtt_distance_m(steps: impl IntoIterator<Item = (i16, i16)>) -> Option<f32> {
     let (mut sum_half_ns, mut n) = (0i64, 0u32);
     for (initiator, reflector) in steps {
+        if initiator == i16::MIN || reflector == i16::MIN {
+            continue;
+        }
         sum_half_ns += i64::from(initiator) - i64::from(reflector);
         n += 1;
     }

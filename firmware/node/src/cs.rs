@@ -330,7 +330,9 @@ fn range(procedure: Option<u16>, procedure_done: u8, paths: u8, steps: &LeCsSube
                         }
                     }
                 }
-                Ok(Step::Mode1(rtt)) => {
+                // A packet that wasn't received has no time (0x8000) and a failed access-address
+                // check (quality 2 or more in the low nibble); either would swamp the mean.
+                Ok(Step::Mode1(rtt)) if rtt.toa_tod != i16::MIN && rtt.quality & 0x0f < 2 => {
                     r.rtt_half_ns = r.rtt_half_ns.saturating_add(i32::from(rtt.toa_tod));
                     r.rtt_steps = r.rtt_steps.saturating_add(1);
                 }
