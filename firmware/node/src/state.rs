@@ -331,12 +331,23 @@ pub async fn run(mpsl: &MultiprotocolServiceLayer<'_>) -> ! {
         }
         last_tick = Instant::now();
         let now = now_ms();
-        let (sink, hops) = with(|r| {
+        let (sink, hops, position) = with(|r| {
             r.tick(now);
-            (r.is_sink(), r.hops())
+            let me = r.id();
+            let position = r
+                .get(&Key {
+                    origin: CONTROLLER,
+                    topic: Topic::Position(me),
+                })
+                .and_then(|s| match &s.record().body {
+                    Body::Position(p) => Some((p.point, *p.sigma_mm.iter().max().unwrap_or(&0))),
+                    _ => None,
+                });
+            (r.is_sink(), r.hops(), position)
         })
-        .unwrap_or((false, u8::MAX));
+        .unwrap_or((false, u8::MAX, None));
         status::set_hops(hops);
+        status::set_position(position);
         if last_health.elapsed() >= HEALTH_EVERY {
             last_health = Instant::now();
             let t = mpsl.get_temperature();

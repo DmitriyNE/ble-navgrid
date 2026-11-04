@@ -153,6 +153,11 @@ mod tests {
                 config: u32::MAX,
                 hops: u8::MAX,
                 frame: u16::MAX,
+                pinned: Some(PointMm {
+                    x: i32::MIN,
+                    y: i32::MIN,
+                    z: i32::MIN,
+                }),
                 neighbours,
             }))),
             Sync::Push(record(Body::Position(Position {

@@ -13,6 +13,7 @@ mod probe;
 mod provision;
 mod scenario;
 mod sign;
+mod solve;
 mod tones;
 mod track;
 
@@ -74,6 +75,9 @@ enum Cmd {
     LinkSim(link_sim::LinkSimArgs),
     /// The mesh state a sink mirrored into monitor logs: nodes, health, links, positions, commands.
     Mesh(mesh_view::MeshViewArgs),
+    /// The central solver over the mirrored links: every node's position, pins fixed; written
+    /// back to the mesh through a sink with --sink.
+    Solve(solve::SolveArgs),
     /// Enrol a device through its probe: fleet key, fleet number, role, bring-up peer and sink.
     Provision(provision::ProvisionArgs),
     /// Flash firmware through one or more probes at once, and record the build in the registry.
@@ -124,6 +128,7 @@ fn main() -> Result<()> {
         Cmd::MeshSim(args) => mesh_sim::run(&args),
         Cmd::LinkSim(args) => link_sim::run(&args),
         Cmd::Mesh(args) => mesh_view::run(&args),
+        Cmd::Solve(args) => solve::run(&args),
         Cmd::Provision(args) => provision::run(&args),
         Cmd::Flash(args) => flash::run(&args),
         Cmd::Sign(args) => sign::run_sign(&args),

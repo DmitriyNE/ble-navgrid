@@ -225,6 +225,8 @@ pub struct NodeInfo {
     pub hops: u8,
     /// The frame version the node has seen (FR-A5).
     pub frame: u16,
+    /// Surveyed coordinates, if the node is a pin (FR-A3a): the central solver's fixed points.
+    pub pinned: Option<PointMm>,
     /// The mesh neighbours it syncs with, ascending.
     pub neighbours: Vec<NodeId, MAX_NEIGHBOURS>,
 }

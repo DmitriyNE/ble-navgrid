@@ -24,11 +24,11 @@ pub struct MeshViewArgs {
     fleet: FleetArgs,
 }
 
-pub fn run(args: &MeshViewArgs) -> Result<()> {
-    let registry = Fleet::open(&args.fleet).ok().and_then(|f| f.registry().ok());
-    let host = NodeId(0xffff_ffff_ffff);
+/// A host replica (a sink's view) filled from the records in monitor logs; how many record
+/// lines there were and how many were kept as newest.
+pub fn replica_from_logs(files: &[PathBuf]) -> Result<(Replica<Heap>, usize, usize)> {
     let mut replica: Replica<Heap> = Replica::new(
-        Config::new(host, CONTROLLER, true),
+        Config::new(HOST, CONTROLLER, true),
         1,
         navgrid_mesh::NodeInfo {
             role: navgrid_mesh::Role::Anchor,
@@ -37,13 +37,14 @@ pub fn run(args: &MeshViewArgs) -> Result<()> {
             config: 0,
             hops: 0,
             frame: 0,
+            pinned: None,
             neighbours: Default::default(),
         },
         0,
     );
     let mut taken = 0usize;
     let mut lines = 0usize;
-    for path in &args.files {
+    for path in files {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         for line in text.lines() {
             let Ok(v) = serde_json::from_str::<Value>(line) else {
@@ -64,15 +65,27 @@ pub fn run(args: &MeshViewArgs) -> Result<()> {
     if lines == 0 {
         bail!("no Record lines in the logs: the sink mirrors them on protocol 6");
     }
-    let name = |id: NodeId| -> String {
-        if id == CONTROLLER {
-            return "controller".into();
-        }
-        registry
-            .as_ref()
-            .and_then(|r: &Registry| r.by_id(id))
-            .map_or_else(|| format!("{:012x}", id.0), |d| label_name(d.number))
-    };
+    Ok((replica, lines, taken))
+}
+
+/// The host replica's own ID, kept out of the tables.
+pub const HOST: NodeId = NodeId(0xffff_ffff_ffff);
+
+/// A node's name: its fleet number when the registry knows it.
+pub fn node_name(id: NodeId, registry: Option<&Registry>) -> String {
+    if id == CONTROLLER {
+        return "controller".into();
+    }
+    registry
+        .and_then(|r| r.by_id(id))
+        .map_or_else(|| format!("{:012x}", id.0), |d| label_name(d.number))
+}
+
+pub fn run(args: &MeshViewArgs) -> Result<()> {
+    let registry = Fleet::open(&args.fleet).ok().and_then(|f| f.registry().ok());
+    let (replica, lines, taken) = replica_from_logs(&args.files)?;
+    let host = HOST;
+    let name = |id: NodeId| -> String { node_name(id, registry.as_ref()) };
     if args.json {
         for s in replica.records() {
             if s.record().origin == host {
@@ -90,14 +103,22 @@ pub fn run(args: &MeshViewArgs) -> Result<()> {
         .filter(|r| r.origin != host)
         .collect();
     println!(
-        "{:<8} {:<8} {:>4} {:<30} {:<18} {:>5}",
-        "node", "role", "hops", "neighbours", "firmware", "age s"
+        "{:<8} {:<8} {:>4} {:<30} {:<18} {:<20} {:>5}",
+        "node", "role", "hops", "neighbours", "firmware", "pinned at (m)", "age s"
     );
     for r in &records {
         if let Body::Node(n) = &r.body {
             let neighbours: Vec<String> = n.neighbours.iter().map(|&id| name(id)).collect();
+            let pinned = n.pinned.map_or(String::new(), |p| {
+                format!(
+                    "{:.2} {:.2} {:.2}",
+                    f64::from(p.x) / 1000.0,
+                    f64::from(p.y) / 1000.0,
+                    f64::from(p.z) / 1000.0
+                )
+            });
             println!(
-                "{:<8} {:<8} {:>4} {:<30} {:<18} {:>5}",
+                "{:<8} {:<8} {:>4} {:<30} {:<18} {:<20} {:>5}",
                 name(r.origin),
                 format!("{:?}", n.role),
                 if n.hops == u8::MAX {
@@ -107,6 +128,7 @@ pub fn run(args: &MeshViewArgs) -> Result<()> {
                 },
                 neighbours.join(" "),
                 n.firmware.to_string(),
+                pinned,
                 r.age_ms / 1000
             );
         }

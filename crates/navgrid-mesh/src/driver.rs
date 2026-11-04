@@ -413,6 +413,7 @@ mod tests {
             config: 0,
             hops: 0,
             frame: 0,
+            pinned: None,
             neighbours: Default::default(),
         };
         Replica::new(Config::new(NodeId(id), CONTROLLER, sink), 1, info, 0)

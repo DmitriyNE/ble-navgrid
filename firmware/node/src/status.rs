@@ -7,9 +7,13 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 
+use core::cell::Cell;
+
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Instant;
+use navgrid_proto::PointMm;
 
 /// Encrypted links up.
 static LINKS: AtomicU8 = AtomicU8::new(0);
@@ -23,6 +27,9 @@ static HOPS: AtomicU8 = AtomicU8::new(u8::MAX);
 /// antennas used for CS.
 static ADV_INTERVAL_MS: AtomicU16 = AtomicU16::new(1000);
 static ANTENNAS: AtomicU8 = AtomicU8::new(1);
+/// The controller's position of this node, with its 1-sigma (mm, the largest axis), for the
+/// beacon of a node that isn't pinned.
+static POSITION: Mutex<CriticalSectionRawMutex, Cell<Option<(PointMm, u32)>>> = Mutex::new(Cell::new(None));
 /// Uptime in seconds when a link last failed to encrypt (another fleet key), 0 if never.
 static FOREIGN_S: AtomicU32 = AtomicU32::new(0);
 static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
@@ -111,6 +118,22 @@ pub fn set_antennas(n: u8) {
 
 pub fn antennas() -> u8 {
     ANTENNAS.load(Ordering::Relaxed)
+}
+
+/// The controller solved this node's position.
+pub fn set_position(p: Option<(PointMm, u32)>) {
+    let changed = POSITION.lock(|c| {
+        let old = c.get();
+        c.set(p);
+        old.map(|(q, s)| (q.x, q.y, q.z, s)) != p.map(|(q, s)| (q.x, q.y, q.z, s))
+    });
+    if changed {
+        BEACON_CHANGED.signal(());
+    }
+}
+
+pub fn position() -> Option<(PointMm, u32)> {
+    POSITION.lock(Cell::get)
 }
 
 /// A link failed to encrypt or its peer turned out not to be in the fleet.

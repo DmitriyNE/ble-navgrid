@@ -55,11 +55,16 @@ impl Beacons {
             battery_mv: status::battery_mv(),
             pressure_dpa: None,
             number: self.number,
-            position: self.cfg.pinned.map(|p| BeaconPosition {
-                point_dm: [dm(p.x), dm(p.y), dm(p.z)],
-                sigma_dm: 1,
-                frame: 0,
-            }),
+            position: self
+                .cfg
+                .pinned
+                .map(|p| (p, 100))
+                .or_else(status::position)
+                .map(|(p, sigma_mm)| BeaconPosition {
+                    point_dm: [dm(p.x), dm(p.y), dm(p.z)],
+                    sigma_dm: (sigma_mm / 100).clamp(1, 254) as u8,
+                    frame: 1,
+                }),
         }
     }
 

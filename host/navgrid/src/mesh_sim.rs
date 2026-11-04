@@ -292,6 +292,7 @@ impl<'a> Sim<'a> {
                     config: 0,
                     hops: 0,
                     frame: 0,
+                    pinned: None,
                     neighbours: Default::default(),
                 };
                 Replica::new(cfg, 1, info, 0)

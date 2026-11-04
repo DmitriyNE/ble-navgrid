@@ -14,6 +14,7 @@ fn info() -> NodeInfo {
         config: 0,
         hops: 0,
         frame: 0,
+        pinned: None,
         neighbours: Default::default(),
     }
 }

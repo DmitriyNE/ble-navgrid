@@ -354,6 +354,7 @@ async fn main(spawner: Spawner) {
                 config,
                 hops: 0,
                 frame: 0,
+                pinned: node_cfg.pinned,
                 neighbours: Default::default(),
             },
         );
