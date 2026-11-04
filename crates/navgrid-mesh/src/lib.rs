@@ -45,4 +45,4 @@ pub use replica::{
 };
 #[cfg(feature = "alloc")]
 pub use table::Heap;
-pub use table::{Fixed, Storage, Table};
+pub use table::{Arena, Device, Fixed, Lent, Storage, Table};

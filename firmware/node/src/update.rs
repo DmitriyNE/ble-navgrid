@@ -28,8 +28,9 @@ pub use sink::{CARRYING, from_host};
 
 type Stack<'a, 'd> = trouble_host::Stack<'a, SoftdeviceController<'d>, DefaultPacketPool>;
 
-/// The receiver writes the update slot a page at a time.
-const PAGE: usize = 4096;
+/// The receiver writes the update slot this much at a time: RRAM needs no erase, so this is
+/// only the write granularity (and a resume's), and the buffer's size in RAM.
+const PAGE: usize = 1024;
 /// How long a peer may take to answer an offer, and to store the end of the image.
 const ANSWER_WITHIN: Duration = Duration::from_secs(5);
 /// Progress is logged every this many bytes.
@@ -281,7 +282,8 @@ async fn receive(
     header: UpdateHeader,
     from: usize,
 ) {
-    let mut writer = Writer::from(from);
+    let mut page = LINK_PAGE.lock().await;
+    let mut writer = Writer::from(from, &mut page);
     if !store(stack, channel, rram, &header, &mut writer).await {
         let done = writer.next - writer.next % PAGE;
         PARTIAL.lock(|p| p.set((done > 0).then_some((header, done))));
@@ -299,7 +301,7 @@ async fn store(
     channel: &mut L2capChannel<'_, DefaultPacketPool>,
     rram: &'static Rram,
     header: &UpdateHeader,
-    writer: &mut Writer,
+    writer: &mut Writer<'_>,
 ) -> bool {
     let mut rx = [0u8; UPDATE_CHUNK + 5];
     let mut tx = [0u8; 16];
@@ -384,21 +386,30 @@ async fn takes(header: &UpdateHeader, rram: &'static Rram) -> bool {
     }
 }
 
+/// The page a transfer over a link collects into: one, as one transfer runs at a time
+/// (`TAKING`); in a static rather than in each link's future.
+static LINK_PAGE: embassy_sync::mutex::Mutex<CriticalSectionRawMutex, [u8; PAGE]> =
+    embassy_sync::mutex::Mutex::new([0; PAGE]);
+
 /// Collects an image into the update slot a page at a time.
-struct Writer {
-    page: [u8; PAGE],
+struct Writer<'p> {
+    page: &'p mut [u8; PAGE],
     /// Bytes of the image taken so far.
     next: usize,
 }
 
-impl Writer {
+impl<'p> Writer<'p> {
     /// Goes on from byte `done`, a whole number of pages already in the slot.
-    fn from(done: usize) -> Self {
+    fn from(done: usize, page: &'p mut [u8; PAGE]) -> Self {
+        let mut writer = Self { page, next: 0 };
+        writer.reset(done);
+        writer
+    }
+
+    fn reset(&mut self, done: usize) {
         debug_assert!(done.is_multiple_of(PAGE));
-        Self {
-            page: [0xff; PAGE],
-            next: done,
-        }
+        self.page.fill(0xff);
+        self.next = done;
     }
 
     async fn put(&mut self, rram: &Rram, mut bytes: &[u8]) -> bool {
@@ -409,7 +420,7 @@ impl Writer {
             bytes = &bytes[take..];
             self.next += take;
             if self.next.is_multiple_of(PAGE) {
-                if !write(rram, DFU + (self.next - PAGE) as u32, &self.page).await {
+                if !write(rram, DFU + (self.next - PAGE) as u32, self.page).await {
                     return false;
                 }
                 self.page.fill(0xff);
@@ -506,10 +517,12 @@ mod sink {
     /// An update arriving from the host.
     struct Transfer {
         header: UpdateHeader,
-        writer: Writer,
         stored: bool,
         started: Instant,
     }
+
+    /// The page the sink collects the host's uploads into.
+    static HOST_PAGE: static_cell::StaticCell<[u8; PAGE]> = static_cell::StaticCell::new();
 
     /// Takes updates the host sends over the serial port (`navgrid update --sink`), answering each
     /// message on `tx`. One for this board restarts the sink into the check at boot; one for another
@@ -523,6 +536,7 @@ mod sink {
         let mut frame = [0u8; MAX_DOWNLINK_FRAME];
         let mut filled = 0;
         let mut transfer = None;
+        let mut writer = Writer::from(0, HOST_PAGE.init([0xff; PAGE]));
         loop {
             // Frames come one at a time, each after the answer to the last, so a read that ends at an
             // idle line has the rest of a frame or nothing after it.
@@ -547,7 +561,7 @@ mod sink {
             let Some(msg) = navgrid_proto::decode_downlink(&mut frame[..end]) else {
                 continue;
             };
-            let Some(answer) = take(msg, &mut transfer, rram, signing_key).await else {
+            let Some(answer) = take(msg, &mut transfer, &mut writer, rram, signing_key).await else {
                 continue;
             };
             report::send(tx, &Message::Update(answer)).await;
@@ -565,6 +579,7 @@ mod sink {
     async fn take(
         msg: UpdateMsg<'_>,
         transfer: &mut Option<Transfer>,
+        writer: &mut Writer<'_>,
         rram: &'static Rram,
         signing_key: Option<[u8; 32]>,
     ) -> Option<UpdateAnswer> {
@@ -596,9 +611,9 @@ mod sink {
                     header.board.name(),
                     header.len
                 );
+                writer.reset(0);
                 *transfer = Some(Transfer {
                     header,
-                    writer: Writer::from(0),
                     stored: false,
                     started: Instant::now(),
                 });
@@ -608,11 +623,11 @@ mod sink {
                 let Some(t) = transfer.as_mut() else {
                     return Some(UpdateAnswer::Decline);
                 };
-                let next = t.writer.next;
+                let next = writer.next;
                 let expected = (t.header.len as usize - next).min(DOWNLINK_CHUNK);
                 let offset = offset as usize;
                 if offset == next && bytes.len() == expected && expected > 0 && !t.stored {
-                    if !t.writer.put(rram, bytes).await {
+                    if !writer.put(rram, bytes).await {
                         *transfer = None;
                         return Some(UpdateAnswer::Decline);
                     }
@@ -622,19 +637,19 @@ mod sink {
                 }
                 // Stored, or stored before and its answer lost.
                 Some(UpdateAnswer::Want {
-                    from: t.writer.next as u32,
+                    from: writer.next as u32,
                 })
             }
             UpdateMsg::Done => {
                 let Some(t) = transfer.as_mut() else {
                     return Some(UpdateAnswer::Decline);
                 };
-                if t.writer.next != t.header.len as usize {
+                if writer.next != t.header.len as usize {
                     return Some(UpdateAnswer::Decline);
                 }
                 if !t.stored {
                     // The whole image first: the last page is still in the writer.
-                    let stored = t.writer.flush(rram).await
+                    let stored = writer.flush(rram).await
                         && verify(&t.header, signing_key).await
                         && stage(rram, &t.header).await;
                     if !stored {

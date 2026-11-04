@@ -27,11 +27,13 @@ pub use navgrid_proto::{Beacon, NodeId, Role};
 /// Beacons a node remembers.
 pub const MAX_HEARD: usize = 32;
 /// Links a node can hold at once (architecture §5; the firmware's SDC configuration matches).
-pub const MAX_LINKS: usize = 14;
-/// Links a node can hold as central.
+/// Each costs the firmware about 6.5 KiB of RAM for its link task plus the controller's share;
+/// 8 is what fits the nRF54L15 beside the mesh state (spike 2026-11-04-firmware-ram-budget).
+pub const MAX_LINKS: usize = 8;
+/// Links a node can hold as central: all of an anchor's anchor links, when it is the lowest.
 pub const CENTRAL_LINKS: u8 = 6;
-/// Links a node can hold as peripheral.
-pub const PERIPHERAL_LINKS: u8 = 8;
+/// Links a node can hold as peripheral: anchor links from lower anchors, and tags.
+pub const PERIPHERAL_LINKS: u8 = 6;
 /// Procedures a burst can hold.
 pub const BURST_MAX: usize = 32;
 /// Below this a burst's spread is not believed (DEF-7).

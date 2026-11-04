@@ -4,6 +4,20 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**The firmware fits again** ([spike](spikes/2026-11-04-firmware-ram-budget.md)). Nothing had
+linked since the mesh rewrite (clippy doesn't link): the TAG build was 125 KiB over RAM and
+13 KiB over flash, the DK 141 KiB over. Measured with `-Zprint-type-sizes`: the 14 link tasks
+took 151 KiB (11 KiB each, mostly the update receiver's 4 KiB page and two 860 B `Sync` values),
+the mesh state 48 KiB in `.data`, the SDC 97 KiB. Now: records and the outbox in byte arenas of
+encoded records (DEF-29 fixed, `navgrid_mesh::Arena`, ~50 B a record; `Table` hands entries out
+by value), summaries packed to 11 B, the update page one static of 1 KiB, session frames one
+static pair with messages decoded and encoded under the state lock, the state in uninitialised
+RAM, 8 links per node (DEF-65; the link simulator shows no loss at 500/100), `opt-level = "s"`
+(673 → 491 KiB). Both boards link with about 22 KiB between the statics and the top of RAM,
+which the boot log prints (DEF-68). The sink's capacity (DEF-67) and the delta memory cap
+(DEF-66) are recorded. `mesh-sim` prints the encoded sizes too, and with the device's old
+outbox of 32 the 500-node mesh refused 678 pushes; at 80 (the TAG's now) 7, as without limits.
+
 **Updates: resume, re-offer, and the build a node should run** (DEF-39 fixed; FR-O2). A
 transfer that breaks off is remembered (build and whole pages stored, in RAM: DEF-63) and the
 next offer of the same build is asked for from there, which the sender already honoured

@@ -269,6 +269,9 @@ struct Sim<'a> {
     sent_by_node: Vec<u64>,
     /// Most records, outbox entries and routes each node held.
     peak: Vec<[usize; 3]>,
+    /// Most bytes each node's records and outbox took encoded, as a device keeps them (DEF-29);
+    /// sampled every few minutes.
+    peak_encoded: Vec<usize>,
     sessions: u64,
     held_back: u64,
     refused: u64,
@@ -341,6 +344,7 @@ impl<'a> Sim<'a> {
             totals: Traffic::default(),
             sent_by_node: vec![0; n],
             peak: vec![[0; 3]; n],
+            peak_encoded: vec![0; n],
             sessions: 0,
             held_back: 0,
             refused: 0,
@@ -766,6 +770,19 @@ impl<'a> Sim<'a> {
     }
 
     fn sample(&mut self, now: u64) {
+        for (n, node) in self.nodes.iter().enumerate() {
+            // Each entry's encoding plus its 4-byte index entry.
+            let mut buf = [0u8; 256];
+            let bytes = node
+                .records()
+                .map(|s| 4 + postcard::to_slice(&s, &mut buf).map_or(0, |e| e.len()))
+                .sum::<usize>()
+                + node
+                    .outbox()
+                    .map(|p| 4 + postcard::to_slice(&p, &mut buf).map_or(0, |e| e.len()))
+                    .sum::<usize>();
+            self.peak_encoded[n] = self.peak_encoded[n].max(bytes);
+        }
         let near = self.layout.neighbourhoods();
         let mut samples: [Vec<f32>; 3] = Default::default();
         for (x, observers) in near.iter().enumerate() {
@@ -978,15 +995,27 @@ impl<'a> Sim<'a> {
             kb.last().unwrap_or(&0.0),
             size_of::<Stored>()
         );
+        let mut encoded: Vec<f32> = nodes.iter().map(|&n| self.peak_encoded[n] as f32 / 1024.0).collect();
+        encoded.sort_by(f32::total_cmp);
+        println!(
+            "  encoded, as a device keeps them: p50 {:.1} KiB, max {:.1} KiB",
+            if encoded.is_empty() {
+                0.0
+            } else {
+                quantile(&encoded, 0.5)
+            },
+            encoded.last().unwrap_or(&0.0)
+        );
         for &s in &self.layout.sinks {
             let p = self.peak[s];
             println!(
-                "  sink {:012x}: records {}, outbox {}, routes {}; {:.1} KiB",
+                "  sink {:012x}: records {}, outbox {}, routes {}; {:.1} KiB, encoded {:.1} KiB",
                 self.ids[s].0,
                 p[0],
                 p[1],
                 p[2],
-                bytes(&p) as f32 / 1024.0
+                bytes(&p) as f32 / 1024.0,
+                self.peak_encoded[s] as f32 / 1024.0
             );
         }
         if self.write_errors > 0 {

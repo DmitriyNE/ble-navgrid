@@ -18,6 +18,8 @@ debug = 2
 debug = 2
 lto = "fat"
 codegen-units = 1
+# Size: at `3` the image was 673 KiB of the 720 KiB slot (spike 2026-11-04-firmware-ram-budget).
+opt-level = "s"
 
 # D-8: Channel Sounding needs bt-hci 0.11 plus our CS patches (architecture §6), so bt-hci and
 # nrf-sdc come from our forks and trouble-host from GreatKet (node/Cargo.toml). Embassy stays at the

@@ -102,10 +102,9 @@ pub fn run(args: &MeshViewArgs) -> Result<()> {
         return Ok(());
     }
     println!("{lines} record lines, {taken} kept as newest\n");
-    let records: Vec<&Record> = replica
+    let records: Vec<Record> = replica
         .records()
-        .iter()
-        .map(|s| s.record())
+        .map(|s| s.record().clone())
         .filter(|r| r.origin != host)
         .collect();
     println!(
@@ -175,7 +174,7 @@ pub fn run(args: &MeshViewArgs) -> Result<()> {
             );
         }
     }
-    let positions: Vec<&&Record> = records.iter().filter(|r| matches!(r.body, Body::Position(_))).collect();
+    let positions: Vec<&Record> = records.iter().filter(|r| matches!(r.body, Body::Position(_))).collect();
     if !positions.is_empty() {
         println!(
             "\n{:<10} {:<8} {:>8} {:>8} {:>8} {:>6} {:>5}",
@@ -196,7 +195,7 @@ pub fn run(args: &MeshViewArgs) -> Result<()> {
             }
         }
     }
-    let desired: Vec<&&Record> = records.iter().filter(|r| matches!(r.body, Body::Desired(_))).collect();
+    let desired: Vec<&Record> = records.iter().filter(|r| matches!(r.body, Body::Desired(_))).collect();
     if !desired.is_empty() {
         println!("\n{:<8} {:<32} {:<12} reported", "target", "command", "version");
         for r in desired {

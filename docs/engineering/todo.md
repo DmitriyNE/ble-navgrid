@@ -125,7 +125,14 @@ epoch in RRAM, `navgrid provision`, the FR-M4 beacon, and fleet-key link keys (l
 
 Protocol follow-ups, in the simulator first:
 
-- [ ] **Compact device layout** for stored records (DEF-29): 48-bit IDs, `u8` lengths.
+- [x] **Compact device layout** for stored records (DEF-29, 2026-11-04): byte arenas of encoded
+      records on devices.
+- [ ] **A sink that forwards without keeping** (DEF-67): the host holds the replica; the sink
+      keeps its neighbourhood and passes the rest through.
+- [ ] **Delta memory** (DEF-66): measure the fallback rate in `mesh-sim`; pack or raise it.
+- [ ] **RAM for 14 links** (DEF-65): the offer and channel buffers out of the link tasks, the
+      driver's class list packed; then `SDC_MEM` from the boot log.
+- [ ] **A stack guard** (DEF-68).
 - [ ] **Fleet key at rest** (DEF-33): APPROTECT on provisioned devices, and the key in the KMU.
 
 ## Firmware updates (FR-O2, architecture §13)

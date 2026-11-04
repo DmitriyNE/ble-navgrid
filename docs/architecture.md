@@ -190,7 +190,7 @@ and antenna paths, and P0 must measure it.
 |---|---|
 | CS is scheduled relative to connection events. The SDC default central ACL event spacing is 90 ms with CS on. | A tag's per-link rate is limited. Measure how many links × Hz one central sustains. |
 | A node serving many tags is peripheral to many centrals whose anchor points collide. | Expect dropped CS events under load. Measure; adapt rates; advertise capacity (FR-M4). |
-| Connections cost RAM and SDC configuration (`cs_count`, `central_count`, `peripheral_count`). | Per-node budget of about 6 mesh + 8 tag links *(to validate)*. |
+| Connections cost RAM and SDC configuration (`cs_count`, `central_count`, `peripheral_count`). | Per-node budget of about 6 mesh + 8 tag links *(to validate)*. Built: 8 links (6 central, 6 peripheral), what fits the nRF54L15 beside the mesh state (DEF-65, [spike](engineering/spikes/2026-11-04-firmware-ram-budget.md)). |
 
 Crowds are the hard case: many tags near the same few nodes. Mitigations: tag-side node selection
 weighted by advertised capacity and battery, adaptive per-tag rates, and fewer steps per procedure
@@ -534,12 +534,14 @@ replica keeps a class whole or not at all.
   order.
 - **Size, measured** ([spike](engineering/spikes/2026-11-02-mesh-state-sim.md)):
   - **Wire:** a record is 20–40 B.
-  - **RAM:** a record is 136 B as the crate holds it today (DEF-29).
-  - **A node:** peaks at 111 records with 20 nodes and 143 with 500, set by degree rather than
-    mesh size. That is 13–17 KiB at p50, and up to ~34 KiB at the busiest relays at 500 nodes
-    with 4 sinks. Routes reach about 75 there.
-  - **A sink:** 173 records (26 KiB) at 20 nodes, which fits a DK. At 500 nodes, each of 4 sinks
-    holds 145–185 KiB, more than a DK can spare next to the SDC, so the host holds the replica.
+  - **RAM:** a device keeps records and outbox entries postcard-encoded in byte arenas
+    (`Arena`, DEF-29 fixed), about 50 B a record; the host keeps structs of 160 B.
+  - **A node:** peaks at 111 records with 20 nodes and 141 with 500, set by degree rather than
+    mesh size; the outbox at 74 at the busiest relays. A TAG's tables are 16 KiB for 320 records
+    and 6 KiB for 80 in custody ([spike](engineering/spikes/2026-11-04-firmware-ram-budget.md)).
+  - **A sink:** 173 records (7.9 KiB encoded) at 20 nodes; 920–1180 (43–56 KiB) at 500 nodes
+    with 4 sinks. A DK's 24 KiB arena holds about 500, a mesh of some 60 nodes (DEF-67); the
+    host holds the replica of everything.
 
 ### Sync on contacts
 

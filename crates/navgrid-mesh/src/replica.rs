@@ -8,6 +8,7 @@
 
 use heapless::Vec;
 use navgrid_proto::NodeId;
+use serde::{Deserialize, Serialize};
 
 use crate::table::{Storage, Table};
 use crate::wire::{Header, Summary};
@@ -129,7 +130,7 @@ impl Config {
 }
 
 /// A record as a replica keeps it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stored {
     class: Class,
     /// Its age is as of `since_ms`.
@@ -157,14 +158,14 @@ impl Stored {
 }
 
 /// Where a record in the outbox is going.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Toward {
     Sinks,
     Node(NodeId),
 }
 
 /// A record in a replica's custody.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pending {
     record: Record,
     since_ms: u64,
@@ -271,16 +272,43 @@ pub struct Replica<S: Storage> {
 impl<S: Storage> Replica<S> {
     /// A fresh replica, which writes its node record. `epoch` must be greater than at any earlier
     /// boot (see [`Version`]); `node`'s hop count and neighbours are the replica's to fill in.
-    pub fn new(cfg: Config, epoch: u32, mut node: NodeInfo, now_ms: u64) -> Self {
+    pub fn new(cfg: Config, epoch: u32, node: NodeInfo, now_ms: u64) -> Self
+    where
+        S::Records: Default,
+        S::Outbox: Default,
+        S::Routes: Default,
+    {
+        Self::with_tables(
+            cfg,
+            epoch,
+            node,
+            now_ms,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        )
+    }
+
+    /// [`new`](Self::new) over tables given, empty: a device lends its static arenas
+    /// ([`Device`](crate::Device)).
+    pub fn with_tables(
+        cfg: Config,
+        epoch: u32,
+        mut node: NodeInfo,
+        now_ms: u64,
+        records: S::Records,
+        outbox: S::Outbox,
+        routes: S::Routes,
+    ) -> Self {
         node.hops = if cfg.sink { 0 } else { UNREACHABLE };
         node.neighbours.clear();
         let mut replica = Self {
             writer: Writer::new(cfg.id, epoch),
             cfg,
             node: node.clone(),
-            records: Default::default(),
-            outbox: Default::default(),
-            routes: Default::default(),
+            records,
+            outbox,
+            routes,
             peers: Vec::new(),
         };
         let _ = replica.write(Body::Node(node), now_ms);
@@ -338,31 +366,32 @@ impl<S: Storage> Replica<S> {
         header
     }
 
-    pub fn records(&self) -> &[Stored] {
-        &self.records
+    /// The records held, by class then key. By value: a device holds them encoded.
+    pub fn records(&self) -> impl ExactSizeIterator<Item = Stored> + '_ {
+        self.records.entries()
     }
 
-    pub fn outbox(&self) -> &[Pending] {
-        &self.outbox
+    pub fn outbox(&self) -> impl ExactSizeIterator<Item = Pending> + '_ {
+        self.outbox.entries()
     }
 
-    pub fn routes(&self) -> &[Route] {
-        &self.routes
+    pub fn routes(&self) -> impl ExactSizeIterator<Item = Route> + '_ {
+        self.routes.entries()
     }
 
     pub fn peers(&self) -> &[Peer] {
         &self.peers
     }
 
-    pub fn get(&self, key: &Key) -> Option<&Stored> {
+    pub fn get(&self, key: &Key) -> Option<Stored> {
         let class = key.class(self.cfg.controller)?;
-        self.find(class, key).ok().map(|i| &self.records[i])
+        self.find(class, key).ok().map(|i| self.records.entry(i))
     }
 
     /// The peer toward `node`, from the records of `node` this replica carried.
     pub fn route(&self, node: NodeId) -> Option<NodeId> {
-        let i = self.routes.binary_search_by_key(&node, |r| r.origin).ok()?;
-        Some(self.routes[i].via)
+        let i = self.routes.binary_search_by(|r| r.origin.cmp(&node)).ok()?;
+        Some(self.routes.entry(i).via)
     }
 
     /// Writes one of this node's own records. Records for sinks also go into the outbox.
@@ -526,7 +555,7 @@ impl<S: Storage> Replica<S> {
     pub fn summary(&self, theirs: Option<&[Summary]>, now_ms: u64, out: &mut impl Table<Summary>) {
         if let (true, Some(theirs)) = (self.cfg.sink, theirs) {
             for s in theirs {
-                if out.push(self.summarise(s.class, now_ms)).is_err() {
+                if out.push(self.summarise(s.class(), now_ms)).is_err() {
                     return;
                 }
             }
@@ -615,7 +644,7 @@ impl<S: Storage> Replica<S> {
             let mut last = None;
             while let Some(p) = self
                 .outbox
-                .iter()
+                .entries()
                 .filter(|p| p.urgent() == urgent && last.is_none_or(|l| p.order() > l) && go(p))
                 .min_by_key(|p| p.order())
             {
@@ -671,7 +700,7 @@ impl<S: Storage> Replica<S> {
     pub fn pushed(&mut self, accepted: impl IntoIterator<Item = (Key, Version)>) {
         for (key, version) in accepted {
             if let Ok(i) = self.outbox_find(&key)
-                && self.outbox[i].record.version == version
+                && self.outbox.with(i, |p| p.record.version) == version
             {
                 self.outbox.remove(i);
             }
@@ -700,8 +729,8 @@ impl<S: Storage> Replica<S> {
     /// Desired state for this node that it hasn't reported acting on: `(version, command)`.
     pub fn pending_commands(&self) -> impl Iterator<Item = (Version, Command)> + '_ {
         let me = self.cfg.id;
-        self.records[self.class_range(Class::Desired(me))]
-            .iter()
+        self.class_range(Class::Desired(me))
+            .map(move |i| self.records.entry(i))
             .filter_map(move |s| {
                 let Body::Desired(d) = &s.record.body else {
                     return None;
@@ -726,32 +755,30 @@ impl<S: Storage> Replica<S> {
         self.records.partition_point(|s| s.class < class)..self.records.partition_point(|s| s.class <= class)
     }
 
-    fn live(&self, class: Class, now_ms: u64) -> impl Iterator<Item = &Stored> {
-        self.records[self.class_range(class)]
-            .iter()
-            .filter(move |s| !self.cfg.ttl.expired(&s.record.body.topic(), s.age_ms(now_ms)))
+    fn live(&self, class: Class, now_ms: u64) -> impl Iterator<Item = Stored> + '_ {
+        let ttl = self.cfg.ttl;
+        self.class_range(class)
+            .map(move |i| self.records.entry(i))
+            .filter(move |s| !ttl.expired(&s.record.body.topic(), s.age_ms(now_ms)))
     }
 
     fn summarise(&self, class: Class, now_ms: u64) -> Summary {
         let hash = self.live(class, now_ms).fold(0u32, |h, s| {
             h.wrapping_add(entry_hash(&s.record.key(), s.record.version))
         });
-        Summary {
-            class,
-            hash: hash.to_le_bytes(),
-        }
+        Summary::new(class, hash.to_le_bytes())
     }
 
     fn outbox_find(&self, key: &Key) -> Result<usize, usize> {
         self.outbox.binary_search_by(|p| p.record.key().cmp(key))
     }
 
-    fn node_info(&self, node: NodeId) -> Option<&NodeInfo> {
+    fn node_info(&self, node: NodeId) -> Option<NodeInfo> {
         let key = Key {
             origin: node,
             topic: Topic::Node,
         };
-        match &self.get(&key)?.record.body {
+        match self.get(&key)?.record.body {
             Body::Node(info) => Some(info),
             _ => None,
         }
@@ -785,9 +812,9 @@ impl<S: Storage> Replica<S> {
             since_ms: now_ms,
         };
         let received = match self.find(class, &stored.record.key()) {
-            Ok(i) if self.records[i].record.version >= stored.record.version => Ok(Received::Stale),
+            Ok(i) if self.records.with(i, |s| s.record.version) >= stored.record.version => Ok(Received::Stale),
             Ok(i) => {
-                self.records[i] = stored;
+                self.records.set(i, stored).map_err(|_| Error::Full)?;
                 Ok(Received::Updated)
             }
             Err(_) if self.records.len() >= self.cfg.limits.records => Err(Error::Full),
@@ -833,10 +860,10 @@ impl<S: Storage> Replica<S> {
             toward,
         };
         match self.outbox_find(&pending.record.key()) {
-            Ok(i) if self.outbox[i].record.version >= pending.record.version => Ok(Received::Stale),
+            Ok(i) if self.outbox.with(i, |p| p.record.version) >= pending.record.version => Ok(Received::Stale),
             Ok(i) => {
-                pending.queued_ms = self.outbox[i].queued_ms;
-                self.outbox[i] = pending;
+                pending.queued_ms = self.outbox.with(i, |p| p.queued_ms);
+                self.outbox.set(i, pending).map_err(|_| Error::Full)?;
                 Ok(Received::Relayed)
             }
             Err(_) if self.outbox.len() >= self.cfg.limits.outbox => Err(Error::Full),
@@ -853,12 +880,14 @@ impl<S: Storage> Replica<S> {
             via,
             since_ms: now_ms,
         };
-        match self.routes.binary_search_by_key(&origin, |r| r.origin) {
-            Ok(i) => self.routes[i] = route,
+        match self.routes.binary_search_by(|r| r.origin.cmp(&origin)) {
+            Ok(i) => {
+                let _ = self.routes.set(i, route);
+            }
             Err(mut i) => {
                 if self.routes.len() >= self.cfg.limits.routes {
                     // Forget the stalest route.
-                    let Some(old) = (0..self.routes.len()).min_by_key(|&j| self.routes[j].since_ms) else {
+                    let Some(old) = (0..self.routes.len()).min_by_key(|&j| self.routes.with(j, |r| r.since_ms)) else {
                         return;
                     };
                     self.routes.remove(old);
@@ -920,9 +949,11 @@ impl<S: Storage> Replica<S> {
         let mut neighbourhood: Vec<NodeId, MAX_NEIGHBOURHOOD> = Vec::new();
         for p in &self.peers {
             let _ = neighbourhood.push(p.id);
-            for &n in self.node_info(p.id).map_or(&[][..], |i| &i.neighbours[..]) {
-                if n != self.cfg.id {
-                    let _ = neighbourhood.push(n);
+            if let Some(info) = self.node_info(p.id) {
+                for &n in &info.neighbours {
+                    if n != self.cfg.id {
+                        let _ = neighbourhood.push(n);
+                    }
                 }
             }
         }

@@ -44,11 +44,45 @@ pub struct Header {
 }
 
 /// A class one side keeps, and an order-free hash of the keys and versions it holds in it.
+/// Packed to 11 bytes, the class as a kind byte and a 48-bit node ID: a node holds a few hundred
+/// of these in its session driver and its memory of each peer's last session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Summary {
-    pub class: Class,
+    kind: u8,
+    node: [u8; 6],
     pub hash: [u8; 4],
+}
+
+impl Summary {
+    pub fn new(class: Class, hash: [u8; 4]) -> Self {
+        let (kind, node) = match class {
+            Class::Global => (0, NodeId(0)),
+            Class::Desired(n) => (1, n),
+            Class::About(n) => (2, n),
+            Class::Near(n) => (3, n),
+            Class::Up(n) => (4, n),
+        };
+        debug_assert!(node.0 >> 48 == 0, "node IDs are 48-bit");
+        let b = node.0.to_le_bytes();
+        Self {
+            kind,
+            node: [b[0], b[1], b[2], b[3], b[4], b[5]],
+            hash,
+        }
+    }
+
+    pub fn class(&self) -> Class {
+        let b = self.node;
+        let node = NodeId(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], 0, 0]));
+        match self.kind {
+            1 => Class::Desired(node),
+            2 => Class::About(node),
+            3 => Class::Near(node),
+            4 => Class::Up(node),
+            _ => Class::Global,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -80,6 +114,12 @@ pub fn decode(frame: &mut [u8]) -> Result<Sync, Error> {
     postcard::from_bytes_cobs(frame)
 }
 
+/// Whether an encoded frame is a [`Sync::Hello`], without decoding it: the hello is the first
+/// variant, so its tag byte is zero, which COBS writes as a leading code byte of 1.
+pub fn is_hello(frame: &[u8]) -> bool {
+    frame.first() == Some(&1)
+}
+
 /// The entries a side sends when both remember the last exchange: the classes of `full` whose
 /// hash differs from `memory` or that `memory` lacks, and the classes `memory` has that `full`
 /// no longer does, with an all-zero hash. Both lists must be in class order.
@@ -87,12 +127,12 @@ pub fn delta<const N: usize>(full: &[Summary], memory: &[Summary], out: &mut Vec
     let (mut i, mut j) = (0, 0);
     while i < full.len() || j < memory.len() {
         let push = match (full.get(i), memory.get(j)) {
-            (Some(f), Some(m)) if f.class == m.class => {
+            (Some(f), Some(m)) if f.class() == m.class() => {
                 i += 1;
                 j += 1;
                 (f.hash != m.hash).then_some(*f)
             }
-            (Some(f), Some(m)) if f.class < m.class => {
+            (Some(f), Some(m)) if f.class() < m.class() => {
                 i += 1;
                 Some(*f)
             }
@@ -102,10 +142,7 @@ pub fn delta<const N: usize>(full: &[Summary], memory: &[Summary], out: &mut Vec
             }
             (_, Some(m)) => {
                 j += 1;
-                Some(Summary {
-                    class: m.class,
-                    hash: [0; 4],
-                })
+                Some(Summary::new(m.class(), [0; 4]))
             }
             (None, None) => break,
         };
@@ -123,12 +160,12 @@ pub fn reconstruct<const N: usize>(memory: &[Summary], entries: &[Summary], out:
     let (mut i, mut j) = (0, 0);
     while i < memory.len() || j < entries.len() {
         let next = match (memory.get(i), entries.get(j)) {
-            (Some(m), Some(e)) if m.class == e.class => {
+            (Some(m), Some(e)) if m.class() == e.class() => {
                 i += 1;
                 j += 1;
                 (e.hash != [0; 4]).then_some(*e)
             }
-            (Some(m), Some(e)) if m.class < e.class => {
+            (Some(m), Some(e)) if m.class() < e.class() => {
                 i += 1;
                 Some(*m)
             }
@@ -157,14 +194,14 @@ pub fn differing<'a>(a: &'a [Summary], b: &'a [Summary]) -> impl Iterator<Item =
     core::iter::from_fn(move || {
         while i < a.len() && j < b.len() {
             let (x, y) = (&a[i], &b[j]);
-            match x.class.cmp(&y.class) {
+            match x.class().cmp(&y.class()) {
                 core::cmp::Ordering::Less => i += 1,
                 core::cmp::Ordering::Greater => j += 1,
                 core::cmp::Ordering::Equal => {
                     i += 1;
                     j += 1;
                     if x.hash != y.hash {
-                        return Some(x.class);
+                        return Some(x.class());
                     }
                 }
             }
@@ -175,6 +212,21 @@ pub fn differing<'a>(a: &'a [Summary], b: &'a [Summary]) -> impl Iterator<Item =
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hello_frame_is_told_by_its_first_byte() {
+        let mut buf = [0u8; 64];
+        let hello = Sync::Hello(Header {
+            node: ID,
+            role: navgrid_proto::Role::Anchor,
+            hops: 1,
+            sink: false,
+            delta: false,
+        });
+        assert!(is_hello(encode(&hello, &mut buf).unwrap()));
+        assert!(!is_hello(encode(&Sync::SummaryDone, &mut buf).unwrap()));
+        assert!(!is_hello(&[]));
+    }
+
     use navgrid_proto::{Firmware, PointMm, Role};
 
     use super::*;
@@ -197,10 +249,7 @@ mod tests {
     }
 
     fn worst_case() -> [Sync; 7] {
-        let summary = Summary {
-            class: Class::Near(ID),
-            hash: [0xff; 4],
-        };
+        let summary = Summary::new(Class::Near(ID), [0xff; 4]);
         let mut summaries = Vec::new();
         while summaries.push(summary).is_ok() {}
         let mut versions = Vec::new();
@@ -267,7 +316,7 @@ mod tests {
 
     #[test]
     fn differing_skips_classes_only_one_side_lists() {
-        let s = |class, h| Summary { class, hash: [h; 4] };
+        let s = |class, h| Summary::new(class, [h; 4]);
         let a = [
             s(Class::Global, 1),
             s(Class::Near(NodeId(1)), 2),

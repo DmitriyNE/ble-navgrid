@@ -5,6 +5,7 @@
 //! replica. A sink mirrors every record it keeps to the host as `Message::Record`.
 
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{info, warn};
 use embassy_sync::blocking_mutex::Mutex;
@@ -12,17 +13,47 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Instant, Timer};
 use navgrid_mesh::wire::Header;
 use navgrid_mesh::{
-    Body, CONTROLLER, Command, Config, Driver, Fixed, Health, Key, NodeId, NodeInfo, Received, Record, Replica,
-    Reported, Status, Topic, auth,
+    Arena, Body, CONTROLLER, Command, Config, Device, Driver, Health, Key, Lent, NodeId, NodeInfo, Pending, Received,
+    Record, Replica, Reported, Status, Stored, Topic, auth,
 };
 use navgrid_proto::{MESH_RECORD_LEN, MeshRecord, Message};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 
 use crate::{report, status, update};
 
-/// Records, outbox entries and routes a node keeps: the 2-hop neighbourhood at degree 6 peaks at
-/// about 110 records with 20 nodes, 143 with 500 (architecture §12).
-pub type Store = Fixed<160, 32, 48>;
+/// The tables a node keeps, as static arenas of encoded records (about 50 B each, DEF-29): the
+/// 2-hop neighbourhood at degree 6 peaks at about 110 records with 20 nodes, 141 with 500, and
+/// the outbox at 74 in custody (architecture §12). A sink keeps every record of its mesh: about
+/// 1100 at 500 nodes with 4 sinks, so a DK sink's tables serve a mesh of a few hundred nodes.
+#[cfg(feature = "board-dk")]
+mod tables {
+    pub const RECORD_BYTES: usize = 24 * 1024;
+    pub const RECORDS: usize = 480;
+    pub const OUTBOX_BYTES: usize = 6 * 1024;
+    pub const OUTBOX: usize = 80;
+    pub const ROUTES: usize = 128;
+}
+#[cfg(not(feature = "board-dk"))]
+mod tables {
+    pub const RECORD_BYTES: usize = 16 * 1024;
+    pub const RECORDS: usize = 320;
+    pub const OUTBOX_BYTES: usize = 6 * 1024;
+    pub const OUTBOX: usize = 80;
+    pub const ROUTES: usize = 64;
+}
+pub type Store = Device<
+    { tables::RECORD_BYTES },
+    { tables::RECORDS },
+    { tables::OUTBOX_BYTES },
+    { tables::OUTBOX },
+    { tables::ROUTES },
+>;
+
+// The tables live in `.bss`, not in the replica, which is built on the stack at boot.
+static mut RECORDS: Arena<Stored, { tables::RECORD_BYTES }, { tables::RECORDS }> = Arena::new();
+static mut OUTBOX: Arena<Pending, { tables::OUTBOX_BYTES }, { tables::OUTBOX }> = Arena::new();
+static mut ROUTES: heapless::Vec<navgrid_mesh::Route, { tables::ROUTES }> = heapless::Vec::new();
+static TABLES_LENT: AtomicBool = AtomicBool::new(false);
 
 struct State {
     replica: Replica<Store>,
@@ -32,7 +63,10 @@ struct State {
     controller_key: Option<[u8; 16]>,
 }
 
-static STATE: Mutex<CriticalSectionRawMutex, RefCell<Option<State>>> = Mutex::new(RefCell::new(None));
+/// The state, once [`init`] has built it in `STATE_STORE`. (An `Option<State>` here would be
+/// 50 KiB of `.data`, copied from flash at boot, as `None` isn't all zeros.)
+static STATE: Mutex<CriticalSectionRawMutex, RefCell<Option<&'static mut State>>> = Mutex::new(RefCell::new(None));
+static mut STATE_STORE: core::mem::MaybeUninit<State> = core::mem::MaybeUninit::uninit();
 
 /// Between health records.
 const HEALTH_EVERY: Duration = Duration::from_secs(30 * 60);
@@ -46,22 +80,43 @@ pub fn now_ms() -> u64 {
     Instant::now().as_millis()
 }
 
-/// Starts the replica at boot.
+/// Starts the replica at boot, once.
 pub fn init(node: NodeId, sink: bool, epoch: u32, info: NodeInfo) {
-    let replica = Replica::new(Config::new(node, CONTROLLER, sink), epoch, info, now_ms());
+    assert!(!TABLES_LENT.swap(true, Ordering::AcqRel), "the mesh state starts once");
+    // SAFETY: the statics are named only here, and this runs once (checked above), so these are
+    // the only references to them, for the rest of the run.
+    let (records, outbox, routes) = unsafe {
+        (
+            Lent(&mut *core::ptr::addr_of_mut!(RECORDS)),
+            Lent(&mut *core::ptr::addr_of_mut!(OUTBOX)),
+            Lent(&mut *core::ptr::addr_of_mut!(ROUTES)),
+        )
+    };
+    let replica = Replica::with_tables(
+        Config::new(node, CONTROLLER, sink),
+        epoch,
+        info,
+        now_ms(),
+        records,
+        outbox,
+        routes,
+    );
     // The controller's key goes in with `set_controller_key`, once the fleet key is read.
     if sink {
         for s in replica.records() {
             mirror(s.record());
         }
     }
-    STATE.lock(|s| {
-        *s.borrow_mut() = Some(State {
-            replica,
-            session: None,
-            controller_key: None,
-        })
-    });
+    // SAFETY: the store is named only here, once (TABLES_LENT above); the fields are written in
+    // place, each once, before the reference is handed out.
+    let state: &'static mut State = unsafe {
+        let p = core::ptr::addr_of_mut!(STATE_STORE) as *mut State;
+        core::ptr::addr_of_mut!((*p).replica).write(replica);
+        core::ptr::addr_of_mut!((*p).session).write(None);
+        core::ptr::addr_of_mut!((*p).controller_key).write(None);
+        &mut *p
+    };
+    STATE.lock(|s| *s.borrow_mut() = Some(state));
     status::set_hops(if sink { 0 } else { u8::MAX });
 }
 
@@ -301,35 +356,54 @@ pub fn end_session(peer: NodeId) -> Option<Header> {
 }
 
 /// The session's next frame to send, if any (`None` also when no session runs).
-pub fn session_out() -> Option<navgrid_mesh::wire::Sync> {
+/// Encodes the session's next frame into `out`, giving its length, or `None` when the driver
+/// has nothing to send now. (The message itself stays on the stack, under the lock: a `Sync`
+/// is most of a kilobyte, too much for each link's future to hold.)
+pub fn session_out_frame(out: &mut [u8]) -> Result<Option<usize>, navgrid_mesh::wire::Error> {
     let now = now_ms();
     STATE.lock(|s| {
         let mut s = s.borrow_mut();
-        let s = s.as_mut()?;
+        let Some(s) = s.as_mut() else {
+            return Ok(None);
+        };
         let State { replica, session, .. } = s;
-        session.as_mut()?.next_out(replica, now)
+        let Some(msg) = session.as_mut().and_then(|d| d.next_out(replica, now)) else {
+            return Ok(None);
+        };
+        navgrid_mesh::wire::encode(&msg, out).map(|frame| Some(frame.len()))
     })
 }
 
-/// A frame from the session's peer. A sink mirrors what it keeps to the host.
-pub fn session_in(msg: navgrid_mesh::wire::Sync) -> Result<(), navgrid_mesh::Protocol> {
+/// What went wrong with a frame from the peer.
+#[derive(Clone, Copy, Debug, defmt::Format)]
+pub enum FrameError {
+    Decode,
+    Protocol(navgrid_mesh::Protocol),
+}
+
+/// A frame from the session's peer, decoded in place and fed to the driver. A sink mirrors what
+/// it keeps to the host.
+pub fn session_in_frame(frame: &mut [u8]) -> Result<(), FrameError> {
     let now = now_ms();
     let mut kept: heapless::Vec<Record, 4> = heapless::Vec::new();
     let result = STATE.lock(|s| {
         let mut s = s.borrow_mut();
         let Some(s) = s.as_mut() else {
-            return Err(navgrid_mesh::Protocol::OutOfOrder);
+            return Err(FrameError::Protocol(navgrid_mesh::Protocol::OutOfOrder));
         };
         let State { replica, session, .. } = s;
         let sink = replica.is_sink();
         let Some(driver) = session.as_mut() else {
-            return Err(navgrid_mesh::Protocol::OutOfOrder);
+            return Err(FrameError::Protocol(navgrid_mesh::Protocol::OutOfOrder));
         };
-        driver.on_frame(replica, msg, now, |rec, rx| {
-            if sink && rx.kept() {
-                let _ = kept.push(rec.clone());
-            }
-        })
+        let msg = navgrid_mesh::wire::decode(frame).map_err(|_| FrameError::Decode)?;
+        driver
+            .on_frame(replica, msg, now, |rec, rx| {
+                if sink && rx.kept() {
+                    let _ = kept.push(rec.clone());
+                }
+            })
+            .map_err(FrameError::Protocol)
     });
     for rec in &kept {
         mirror(rec);

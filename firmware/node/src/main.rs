@@ -379,6 +379,10 @@ async fn main(spawner: Spawner) {
             node_cfg
         ),
     }
+    info!(
+        "ram: {=usize} B between the statics and the top of the stack",
+        stack_headroom()
+    );
     if let Some(p) = provisioning
         && (p.peer.is_some() || p.sink.is_some())
     {
@@ -587,4 +591,14 @@ async fn wait_encrypted(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacke
             _ => {}
         }
     }
+}
+
+/// RAM left for the stack: from the end of the statics to its start (the top of RAM). The
+/// statics take most of the part (spike 2026-11-04-firmware-ram-budget), so this is watched.
+fn stack_headroom() -> usize {
+    unsafe extern "C" {
+        static _stack_start: u32;
+        static __euninit: u32;
+    }
+    core::ptr::addr_of!(_stack_start) as usize - core::ptr::addr_of!(__euninit) as usize
 }

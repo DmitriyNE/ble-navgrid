@@ -239,7 +239,6 @@ pub fn run(args: &SolveArgs) -> Result<()> {
     let name = |id: NodeId| node_name(id, registry.as_ref());
     let by_name: BTreeMap<String, NodeId> = replica
         .records()
-        .iter()
         .map(|s| s.record().origin)
         .filter(|&o| o != CONTROLLER && o != crate::mesh_view::HOST)
         .map(|o| (name(o), o))

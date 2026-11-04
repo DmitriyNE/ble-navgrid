@@ -152,7 +152,7 @@ fn links_spread_to_the_neighbourhood_and_reach_the_sink() {
     assert_eq!(version_at(&nodes[1], k), written, "2 hops");
     assert_eq!(version_at(&nodes[0], k), written, "sink");
     // In custody only until handed downhill.
-    assert!(nodes.iter().all(|n| n.outbox().iter().all(|p| p.record().key() != k)));
+    assert!(nodes.iter().all(|n| n.outbox().all(|p| p.record().key() != k)));
 }
 
 #[test]
@@ -326,7 +326,7 @@ fn the_budget_holds_records_back_for_the_next_session() {
     for peer in 10..20 {
         assert!(nodes[0].get(&key(2, Topic::Link(NodeId(peer)))).is_some());
     }
-    assert!(nodes[1].outbox().is_empty());
+    assert_eq!(nodes[1].outbox().len(), 0);
 }
 
 #[test]
@@ -346,12 +346,12 @@ fn a_full_relay_keeps_pushes_with_their_sender() {
         session(&mut left[1], &mut right[0], (2 + i as u64) * MINUTE, 4096, |_, _, _| {});
     }
     assert_eq!(nodes[1].outbox().len(), 2);
-    assert!(!nodes[2].outbox().is_empty(), "the sender kept what node 2 refused");
+    assert_ne!(nodes[2].outbox().len(), 0, "the sender kept what node 2 refused");
     // The sink comes back and everything drains.
     for t in 10..20 {
         round(&mut nodes, t * MINUTE);
     }
-    assert!(nodes[1].outbox().is_empty() && nodes[2].outbox().is_empty());
+    assert!(nodes[1].outbox().len() == 0 && nodes[2].outbox().len() == 0);
     assert!(nodes[0].get(&key(3, Topic::Link(NodeId(14)))).is_some());
 }
 
@@ -506,10 +506,7 @@ fn a_retire_record_drops_the_node_everywhere_and_refuses_it_after() {
     }
     for n in &nodes[..3] {
         assert!(n.is_retired(NodeId(4)), "node {:?} has the retire record", n.id());
-        assert!(
-            n.records().iter().all(|s| s.record().origin != NodeId(4)),
-            "and nothing of 4"
-        );
+        assert!(n.records().all(|s| s.record().origin != NodeId(4)), "and nothing of 4");
         assert!(n.peers().iter().all(|p| p.id != NodeId(4)));
     }
     // Whatever 4 sends now is refused.

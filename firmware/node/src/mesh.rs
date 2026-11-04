@@ -26,7 +26,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use navgrid_link::{Action, Beacon, MAX_LINKS, NodeId, Policy, Role, Settings};
 use navgrid_mesh::Body;
-use navgrid_mesh::wire::{self, Header, SYNC_SPSM, Sync};
+use navgrid_mesh::wire::{self, Header, SYNC_SPSM};
 use navgrid_proto::{TELEMETRY_SPSM, UPDATE_SPSM};
 use nrf_sdc::SoftdeviceController;
 use trouble_host::prelude::*;
@@ -71,6 +71,18 @@ const SESSION_IDLE: Duration = Duration::from_secs(30);
 const FIRST_HELLO_WITHIN: Duration = Duration::from_secs(45);
 /// How long a side waits for the node's one session slot.
 const SESSION_SLOT_WAIT: Duration = Duration::from_secs(20);
+
+/// The frame buffers of the session under way: one pair, as one session runs at a time, in a
+/// static rather than in each link's future.
+static FRAMES: Mutex<CriticalSectionRawMutex, Frames> = Mutex::new(Frames {
+    out: [0; wire::MAX_FRAME_LEN],
+    inb: [0; 255],
+});
+
+struct Frames {
+    out: [u8; wire::MAX_FRAME_LEN],
+    inb: [u8; 255],
+}
 /// Sessions failing in a row before the link is dropped and made again.
 const SESSION_FAILURES: u8 = 3;
 /// How long a connection parameter update may take (six intervals at a 1 s slow interval).
@@ -529,8 +541,9 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             Ok(Some(channel)) => channel,
             _ => return None,
         };
-        let first = match with_timeout(FIRST_HELLO_WITHIN, receive_frame(self.stack, &mut channel)).await {
-            Ok(Ok(msg)) => msg,
+        let mut hello = [0u8; 255];
+        let n = match with_timeout(FIRST_HELLO_WITHIN, receive_frame(self.stack, &mut channel, &mut hello)).await {
+            Ok(Ok(n)) => n,
             Ok(Err(e)) => {
                 warn!("first hello from {=u64:012x}: {}", peer.0, e);
                 return None;
@@ -544,7 +557,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 return None;
             }
         };
-        match self.session(&mut channel, Some(first), peer).await {
+        match self.session(&mut channel, Some(&mut hello[..n]), peer).await {
             Ok(theirs) => Some((channel, theirs)),
             Err(e) => {
                 warn!("first session with {=u64:012x}: {}", peer.0, e);
@@ -558,6 +571,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     /// [`SESSION_FAILURES`] times in a row, or the channel dies.
     async fn sessions(&self, channel: &mut L2capChannel<'s, DefaultPacketPool>, central: bool, peer: NodeId) {
         let mut failures = 0u8;
+        let mut hello = [0u8; 255];
         loop {
             let first = if central {
                 Timer::after(if self.role == Role::Anchor {
@@ -568,8 +582,8 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 .await;
                 None
             } else {
-                match receive_frame(self.stack, channel).await {
-                    Ok(msg @ Sync::Hello(_)) => Some(msg),
+                match receive_frame(self.stack, channel, &mut hello).await {
+                    Ok(n) if wire::is_hello(&hello[..n]) => Some(n),
                     Ok(_) => continue,
                     Err(e) => {
                         warn!("sync channel to {=u64:012x}: {}", peer.0, e);
@@ -577,7 +591,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                     }
                 }
             };
-            match self.session(channel, first, peer).await {
+            match self.session(channel, first.map(|n| &mut hello[..n]), peer).await {
                 Ok(_) => failures = 0,
                 Err(e) => {
                     warn!("session with {=u64:012x}: {}", peer.0, e);
@@ -595,7 +609,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     async fn session(
         &self,
         channel: &mut L2capChannel<'s, DefaultPacketPool>,
-        first: Option<Sync>,
+        first: Option<&mut [u8]>,
         peer: NodeId,
     ) -> Result<Header, SessionError> {
         let started = Instant::now();
@@ -617,27 +631,27 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     async fn exchange(
         &self,
         channel: &mut L2capChannel<'s, DefaultPacketPool>,
-        first: Option<Sync>,
+        first: Option<&mut [u8]>,
     ) -> Result<(), SessionError> {
-        let mut out = [0u8; wire::MAX_FRAME_LEN];
-        if let Some(msg) = first {
-            state::session_in(msg).map_err(SessionError::Protocol)?;
+        let mut frames = FRAMES.lock().await;
+        let Frames { out, inb } = &mut *frames;
+        if let Some(frame) = first {
+            state::session_in_frame(frame).map_err(SessionError::from)?;
         }
         loop {
-            while let Some(msg) = state::session_out() {
-                let frame = wire::encode(&msg, &mut out).map_err(|_| SessionError::Encode)?;
+            while let Some(n) = state::session_out_frame(out).map_err(|_| SessionError::Encode)? {
                 channel
-                    .send(self.stack, frame)
+                    .send(self.stack, &out[..n])
                     .await
                     .map_err(|_| SessionError::Channel)?;
             }
             if state::session_complete() {
                 return Ok(());
             }
-            let msg = with_timeout(SESSION_IDLE, receive_frame(self.stack, channel))
+            let n = with_timeout(SESSION_IDLE, receive_frame(self.stack, channel, inb))
                 .await
                 .map_err(|_| SessionError::Timeout)??;
-            state::session_in(msg).map_err(SessionError::Protocol)?;
+            state::session_in_frame(&mut inb[..n]).map_err(SessionError::from)?;
         }
     }
 
@@ -892,19 +906,25 @@ enum SessionError {
     NoHello,
 }
 
+impl From<state::FrameError> for SessionError {
+    fn from(e: state::FrameError) -> Self {
+        match e {
+            state::FrameError::Decode => Self::Decode,
+            state::FrameError::Protocol(p) => Self::Protocol(p),
+        }
+    }
+}
+
 /// One frame from the sync channel, decoded.
+/// Receives one sync frame into `buf`, giving its length without the terminator.
 async fn receive_frame(
     stack: &Host<'_, '_>,
     channel: &mut L2capChannel<'_, DefaultPacketPool>,
-) -> Result<Sync, SessionError> {
-    let mut buf = [0u8; 255];
-    let len = channel
-        .receive(stack, &mut buf)
-        .await
-        .map_err(|_| SessionError::Channel)?;
+    buf: &mut [u8; 255],
+) -> Result<usize, SessionError> {
+    let len = channel.receive(stack, buf).await.map_err(|_| SessionError::Channel)?;
     // The frame's terminator may or may not be in the SDU.
-    let end = buf[..len].iter().position(|&b| b == 0).unwrap_or(len);
-    wire::decode(&mut buf[..end]).map_err(|_| SessionError::Decode)
+    Ok(buf[..len].iter().position(|&b| b == 0).unwrap_or(len))
 }
 
 /// Waits for a link that was told to disconnect to actually go.

@@ -539,11 +539,7 @@ mod tests {
     }
 
     fn keys(r: &Node) -> StdVec<(Key, Version)> {
-        let mut v: StdVec<_> = r
-            .records()
-            .iter()
-            .map(|s| (s.record().key(), s.record().version))
-            .collect();
+        let mut v: StdVec<_> = r.records().map(|s| (s.record().key(), s.record().version)).collect();
         v.sort_by_key(|(k, v)| (k.origin.0, format!("{:?}", k.topic), v.epoch, v.counter));
         v
     }
@@ -575,9 +571,9 @@ mod tests {
             "the sink sends the same bytes"
         );
         assert_eq!(db.side().sent.total(), out.b.sent.total(), "and the node");
-        assert!(sb.outbox().is_empty(), "a sink keeps nothing in custody");
+        assert_eq!(sb.outbox().len(), 0, "a sink keeps nothing in custody");
         assert!(
-            nb.outbox().is_empty(),
+            nb.outbox().len() == 0,
             "the node's health and links were pushed and accepted"
         );
     }
@@ -608,7 +604,7 @@ mod tests {
         let node_summary_classes: StdVec<Class> = sent_n
             .iter()
             .filter_map(|m| match m {
-                Sync::Summary(v) => Some(v.iter().map(|s| s.class).collect::<StdVec<_>>()),
+                Sync::Summary(v) => Some(v.iter().map(|s| s.class()).collect::<StdVec<_>>()),
                 _ => None,
             })
             .flatten()
@@ -616,7 +612,7 @@ mod tests {
         let sink_summary_classes: StdVec<Class> = sent_s
             .iter()
             .filter_map(|m| match m {
-                Sync::Summary(v) => Some(v.iter().map(|s| s.class).collect::<StdVec<_>>()),
+                Sync::Summary(v) => Some(v.iter().map(|s| s.class()).collect::<StdVec<_>>()),
                 _ => None,
             })
             .flatten()
