@@ -4,6 +4,20 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Moving the fleet to the mesh build without a probe on the TAGs.** The question was whether
+the fleet resets: no. Provisioning format 5 reads formats 1–4, the Sink role maps to anchor plus
+sink, the keys, node IDs and registry carry over, and the bootloader and the update protocol
+(header format 2, SPSM 0x0083, the host's upload to the sink) are unchanged. What doesn't carry
+over is the air protocol (DEF-64): old and new builds can't link, so all five devices move
+together. The four TAGs on 770ae73f connect to the DK and open their telemetry channel, then
+listen for update offers on that link, which is how they got 770ae73f. So a link now serves the
+peer's channels and this node's offers from encryption on, through the first session, and a
+peripheral keeps a peer that opened channels but sent no hello for up to 15 minutes. The
+procedure: flash the DK by its probe (`cargo dk`), upload the TAG build through it (`navgrid
+update … --sink`), and the old TAGs take it on their sink links, restart into the mesh build,
+link to the DK (the lowest ID, so it connects) and confirm. A TAG that fails to confirm reverts
+to 770ae73f after 5 minutes, and the probe remains the fallback.
+
 **The firmware fits again** ([spike](spikes/2026-11-04-firmware-ram-budget.md)). Nothing had
 linked since the mesh rewrite (clippy doesn't link): the TAG build was 125 KiB over RAM and
 13 KiB over flash, the DK 141 KiB over. Measured with `-Zprint-type-sizes`: the 14 link tasks

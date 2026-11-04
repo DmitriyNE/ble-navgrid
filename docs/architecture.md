@@ -813,7 +813,11 @@ starts, stay direct.
 - **Compatibility (rule, not yet code; DEF-64):** nothing on the air names the protocol version,
   so within a rollout the formats of frames, records and sessions must stay compatible, or a
   format change rolls out one hop from the sink, which carries without running. A protocol
-  version in the beacon and the hello, decoding N−1, is the fix.
+  version in the beacon and the hello, decoding N−1, is the fix. What holds across versions is
+  the update channel itself: a link serves the peer's channels and offers the carried update from
+  encryption on, before the hello, and a peripheral keeps a peer that opens channels but never
+  sends a hello for 15 minutes, so a node on an older build that connects to a sink still takes
+  the update the sink carries.
 - **Cost:** about 400 KB received per node and a little more sent, a few µAh. Time is hops ×
   (wait for a contact + about 10 s per transfer).
 

@@ -110,21 +110,32 @@ struct NewLink<'a> {
 }
 
 /// One of the node's link slots: what the link tasks and the policy's driver share.
-struct Slot {
+struct Slot<'s> {
     peer: Cell<Option<NodeId>>,
     burst: Signal<NoopRawMutex, ()>,
     drop: Signal<NoopRawMutex, ()>,
     /// A connection parameter update ended, and whether it succeeded.
     params: Signal<NoopRawMutex, bool>,
+    /// The sync channel the peer opened, from the channel dispatcher to the first session.
+    sync: Channel<NoopRawMutex, L2capChannel<'s, DefaultPacketPool>, 1>,
+    /// The peer opened a channel other than sync on this link.
+    served: Cell<bool>,
 }
 
-impl Slot {
+/// How long a peripheral keeps serving a peer that opened channels but never sent a hello: a
+/// node on a build whose mesh protocol this one can't read, which can still take the update
+/// this node carries over its own channels (DEF-64). Long enough for one transfer.
+const LEGACY_LINK_FOR: Duration = Duration::from_secs(15 * 60);
+
+impl Slot<'_> {
     const fn new() -> Self {
         Self {
             peer: Cell::new(None),
             burst: Signal::new(),
             drop: Signal::new(),
             params: Signal::new(),
+            sync: Channel::new(),
+            served: Cell::new(false),
         }
     }
 }
@@ -147,7 +158,7 @@ pub struct Mesh<'s, 'a, 'd> {
     policy: BlockingMutex<NoopRawMutex, RefCell<Policy>>,
     central: Mutex<NoopRawMutex, Central<'s, SoftdeviceController<'d>, DefaultPacketPool>>,
     new_links: Channel<NoopRawMutex, NewLink<'s>, 1>,
-    slots: [Slot; MAX_LINKS],
+    slots: [Slot<'s>; MAX_LINKS],
     /// A link went down: the advertiser may have room again.
     freed: Signal<NoopRawMutex, ()>,
     /// The sink's UART, for the telemetry it forwards.
@@ -248,7 +259,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         }
     }
 
-    fn slot_of(&self, peer: NodeId) -> Option<&Slot> {
+    fn slot_of(&self, peer: NodeId) -> Option<&Slot<'s>> {
         self.slots.iter().find(|s| s.peer.get() == Some(peer))
     }
 
@@ -369,7 +380,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
 
     /// One link, from its connection to its end: features, encryption, the hello each way, then
     /// its channels, telemetry, bursts and updates until it drops.
-    async fn serve_link(&self, slot: &Slot, link: NewLink<'s>) {
+    async fn serve_link(&self, slot: &Slot<'s>, link: NewLink<'s>) {
         let NewLink { conn, central } = link;
         let peer = node_id(conn.peer_address().addr.raw());
         let handle = conn.handle();
@@ -408,15 +419,39 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 return;
             }
         }
+        // The peer's channels and this node's offers run from here on, through the first session
+        // and after it: a peer on a build whose hello this one can't read still opens its own
+        // channels and can take the update this node carries over them (DEF-64), and a transfer
+        // that starts early isn't cut when the hello completes.
+        slot.served.set(false);
+        while slot.sync.try_receive().is_ok() {}
+        let serving = join(self.channels(&conn, slot), self.offers(&conn));
+        let mut serving = core::pin::pin!(serving);
         // The first session: its hellos say who the peer is.
-        let (mut sync, theirs) = match if central {
-            self.first_session_as_central(&conn, peer).await
-        } else {
-            self.first_session_as_peripheral(&conn, peer).await
-        } {
+        let first = async {
+            if central {
+                self.first_session_as_central(&conn, peer).await
+            } else {
+                self.first_session_as_peripheral(slot, peer).await
+            }
+        };
+        let first = match select(first, serving.as_mut()).await {
+            Either::First(first) => first,
+            Either::Second(_) => None,
+        };
+        let (mut sync, theirs) = match first {
             Some(ok) => ok,
             None => {
-                warn!("link to {=u64:012x}: no first session", peer.0);
+                if !central && slot.served.get() {
+                    warn!(
+                        "link from {=u64:012x}: channels but no hello: a node on another build; serving it up to {} min",
+                        peer.0,
+                        LEGACY_LINK_FOR.as_secs() / 60
+                    );
+                    let _ = with_timeout(LEGACY_LINK_FOR, select(self.events(&conn, slot), serving.as_mut())).await;
+                } else {
+                    warn!("link to {=u64:012x}: no first session", peer.0);
+                }
                 if central {
                     self.with_policy(|p| p.connect_failed(peer, Self::now_ms()));
                 }
@@ -444,7 +479,6 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         self.links_changed();
 
         let events = self.events(&conn, slot);
-        let channels = self.channels(&conn);
         let telemetry = async {
             if theirs.sink && !self.sink {
                 self.uplink(&conn).await
@@ -462,7 +496,6 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 }
             }
         };
-        let offers = self.offers(&conn);
         let dropping = async {
             slot.drop.wait().await;
             info!("link to {=u64:012x}: dropping it", peer.0);
@@ -472,10 +505,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         let sessions = self.sessions(&mut sync, central, peer);
         if let Either::Second(Either::First(())) = select(
             events,
-            select(
-                sessions,
-                join3(join(channels, telemetry), bursts, join(offers, dropping)),
-            ),
+            select(sessions, join3(join(serving.as_mut(), telemetry), bursts, dropping)),
         )
         .await
         {
@@ -513,33 +543,20 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         }
     }
 
-    /// The peripheral's first session: takes the sync channel the central opens and its hello,
-    /// and runs the session from there.
+    /// The peripheral's first session: takes the sync channel the central opens (from the
+    /// channel dispatcher) and its hello, and runs the session from there.
     async fn first_session_as_peripheral(
         &self,
-        conn: &Connection<'s, DefaultPacketPool>,
+        slot: &Slot<'s>,
         peer: NodeId,
     ) -> Option<(L2capChannel<'s, DefaultPacketPool>, Header)> {
-        let accepted = with_timeout(FIRST_HELLO_WITHIN, async {
-            loop {
-                let pending = match L2capChannel::listen(self.stack, conn).next().await {
-                    Ok(pending) => pending,
-                    Err(e) => {
-                        warn!("sync channel: {:?}", e);
-                        return None;
-                    }
-                };
-                if pending.spsm() != SYNC_SPSM {
-                    warn!("channel {=u16:#06x} before the first session", pending.spsm());
-                    continue;
-                }
-                return pending.accept(self.stack, &Default::default()).await.ok();
-            }
-        })
-        .await;
-        let mut channel = match accepted {
-            Ok(Some(channel)) => channel,
-            _ => return None,
+        let Ok(mut channel) = with_timeout(FIRST_HELLO_WITHIN, slot.sync.receive()).await else {
+            warn!(
+                "no sync channel from {=u64:012x} within {} s",
+                peer.0,
+                FIRST_HELLO_WITHIN.as_secs()
+            );
+            return None;
         };
         let mut hello = [0u8; 255];
         let n = match with_timeout(FIRST_HELLO_WITHIN, receive_frame(self.stack, &mut channel, &mut hello)).await {
@@ -656,7 +673,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     }
 
     /// Handles the link's connection events until it drops. Drops a peer outside the fleet.
-    async fn events(&self, conn: &Connection<'s, DefaultPacketPool>, slot: &Slot) {
+    async fn events(&self, conn: &Connection<'s, DefaultPacketPool>, slot: &Slot<'s>) {
         loop {
             let event = conn.next().await;
             if crate::outsider(&event, conn, self.fleet) {
@@ -707,7 +724,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
 
     /// Takes the channels the peer opens on the link and gives each to its owner: updates to
     /// `update`, telemetry to the sink's UART, another hello to a reply.
-    async fn channels(&self, conn: &Connection<'s, DefaultPacketPool>) {
+    async fn channels(&self, conn: &Connection<'s, DefaultPacketPool>, slot: &Slot<'s>) {
         loop {
             let pending = match L2capChannel::listen(self.stack, conn).next().await {
                 Ok(pending) => pending,
@@ -726,6 +743,9 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                     continue;
                 }
             };
+            if spsm != SYNC_SPSM {
+                slot.served.set(true);
+            }
             match spsm {
                 // Mesh links run full-length packets throughout (2M, 251 octets).
                 UPDATE_SPSM => update::take(self.stack, conn, channel, self.rram, false).await,
@@ -736,7 +756,12 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 },
                 #[cfg(not(feature = "board-dk"))]
                 TELEMETRY_SPSM => info!("telemetry channel on a node that isn't a sink: closing it"),
-                SYNC_SPSM => info!("a second sync channel from the peer: closing it"),
+                // The first session takes it; after that there is one for the link's life.
+                SYNC_SPSM => {
+                    if slot.sync.try_send(channel).is_err() {
+                        info!("a second sync channel from the peer: closing it");
+                    }
+                }
                 _ => info!("channel {=u16:#06x} opened by the peer: closing it", spsm),
             }
         }
@@ -784,7 +809,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
 
     /// One burst on a link this node is central on: to the fast parameters if the link idles
     /// slow, the procedures, the Link record, back to the slow parameters.
-    async fn burst(&self, conn: &Connection<'s, DefaultPacketPool>, slot: &Slot, peer: NodeId) {
+    async fn burst(&self, conn: &Connection<'s, DefaultPacketPool>, slot: &Slot<'s>, peer: NodeId) {
         let (switches, procedures, slow, fast) = self.with_policy(|p| {
             let s = *p.settings();
             (
@@ -862,7 +887,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     async fn set_params(
         &self,
         conn: &Connection<'s, DefaultPacketPool>,
-        slot: &Slot,
+        slot: &Slot<'s>,
         (interval_1250, latency): (u16, u16),
     ) -> bool {
         let interval = Duration::from_micros(u64::from(interval_1250) * 1250);
