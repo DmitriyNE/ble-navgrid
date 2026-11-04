@@ -17,6 +17,8 @@ static LINKS: AtomicU8 = AtomicU8::new(0);
 static SINK_LINKS: AtomicU8 = AtomicU8::new(0);
 /// Links the node can still take, as the mesh policy counts them (for the beacon, FR-M4).
 static FREE_LINKS: AtomicU8 = AtomicU8::new(0);
+/// Hops to the nearest sink, as the replica knows them (for the beacon); 255 with no path.
+static HOPS: AtomicU8 = AtomicU8::new(u8::MAX);
 /// Uptime in seconds when a link last failed to encrypt (another fleet key), 0 if never.
 static FOREIGN_S: AtomicU32 = AtomicU32::new(0);
 static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
@@ -77,6 +79,16 @@ pub fn free_links() -> u8 {
     FREE_LINKS.load(Ordering::Relaxed)
 }
 
+pub fn set_hops(hops: u8) {
+    if HOPS.swap(hops, Ordering::Relaxed) != hops {
+        BEACON_CHANGED.signal(());
+    }
+}
+
+pub fn hops() -> u8 {
+    HOPS.load(Ordering::Relaxed)
+}
+
 /// A link failed to encrypt or its peer turned out not to be in the fleet.
 pub fn foreign() {
     FOREIGN_S.store(uptime_s().max(1), Ordering::Relaxed);
@@ -120,6 +132,10 @@ pub fn connectivity() -> Connectivity {
     }
     if SINK.load(Ordering::Relaxed) {
         return Connectivity::Sink(0);
+    }
+    let hops = hops();
+    if hops != u8::MAX {
+        return Connectivity::Sink(hops);
     }
     if SINK_LINKS.load(Ordering::Relaxed) > 0 {
         return Connectivity::Sink(1);

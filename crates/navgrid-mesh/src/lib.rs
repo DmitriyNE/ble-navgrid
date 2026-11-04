@@ -29,6 +29,10 @@ mod table;
 pub mod wire;
 
 pub use driver::{Driver, Protocol};
+
+/// The controller's node ID, which Desired records and the frame are written under, until
+/// provisioning carries it (DEF-27).
+pub const CONTROLLER: NodeId = NodeId(0xc0ff_ee00_0000);
 pub use navgrid_proto::{NodeId, PointMm, Role};
 pub use record::{
     Body, Class, Command, Desired, Environment, Frame, Health, Key, Link, MAX_NEIGHBOURS, NodeInfo, Position, Record,

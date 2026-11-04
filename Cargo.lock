@@ -745,6 +745,7 @@ dependencies = [
  "navgrid-ranging",
  "navgrid-solver",
  "object",
+ "postcard",
  "qrcode",
  "rustc-demangle",
  "serde",

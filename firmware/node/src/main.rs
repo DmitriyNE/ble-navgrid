@@ -23,6 +23,7 @@ mod keys;
 mod logger;
 mod mesh;
 mod report;
+mod state;
 mod status;
 mod store;
 #[cfg(feature = "board-tag")]
@@ -338,6 +339,25 @@ async fn main(spawner: Spawner) {
 
     let node = node_id_from_ficr();
     let addr = node.address();
+    {
+        // The node record: what the controller sees of this node's configuration is a hash.
+        let mut cfg_bytes = [0u8; 64];
+        let config = postcard::to_slice(&node_cfg, &mut cfg_bytes).map_or(0, |b| navgrid_proto::crc32(b));
+        state::init(
+            node,
+            node_cfg.sink,
+            epoch,
+            navgrid_mesh::NodeInfo {
+                role: node_cfg.role,
+                number,
+                firmware: FIRMWARE,
+                config,
+                hops: 0,
+                frame: 0,
+                neighbours: Default::default(),
+            },
+        );
+    }
     match number {
         Some(n) => info!(
             "navgrid node N{=u16:03} {=u64:012x} on {}, firmware {}, boot {=u32}, {}",
@@ -447,7 +467,7 @@ async fn main(spawner: Spawner) {
         };
         #[cfg(not(feature = "board-dk"))]
         let sink = async {};
-        embassy_futures::join::join3(mesh.run(), sink, report::health(mpsl, node, FIRMWARE)).await;
+        embassy_futures::join::join4(mesh.run(), sink, report::health(mpsl, node, FIRMWARE), state::run(mpsl)).await;
     };
     // The runner returns only on an error, e.g. an HCI event bt-hci can't parse; everything stops
     // then, so say why.

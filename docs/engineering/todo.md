@@ -91,19 +91,20 @@ epoch in RRAM, `navgrid provision`, the FR-M4 beacon, and fleet-key link keys (l
        bench shows. Then: the beacon's hop count from the policy, surveys on motion from the
        accelerometer (DEF-58), the tag's rest and settling (FR-T6), the CS-slot limit in the
        beacon (DEF-59), and measure ranging rate and energy per link count.
-4. [ ] **Sync over the links:**
-       - `navgrid_mesh::wire` sessions on SPSM `0x0082` per mesh link, a session every 60 s with
-         a 2 KB budget (replaces DEF-1's dedicated uplink; health and environment records carry
-         their age, DEF-10). A session completes only when both sides have seen the other's
-         `Done`;
-       - the sink mirrors its replica to the host over VCOM1, and takes Desired records back
-         (UART RX);
-       - `navgrid monitor` mesh-state view (FR-S5);
-       - a controller CLI with the first commands: LED blink, BME688 on and period, diversity;
+4. [ ] **Sync over the links** (partly done, log 2026-11-04): the `Driver` runs the session
+       frame by frame on devices (DEF-62); every link runs a session at link-up (its hellos are
+       the role exchange) and then every 60 s, started by the central, with a 2 KB budget; nodes
+       write their node record (neighbours from the links, hops from the sessions), health every
+       30 min and a Link record per burst; the sink mirrors what it keeps to the host as
+       `Message::Record`, and the beacon's hop count comes from the replica. Left:
+       - the host takes Desired records from the controller CLI (LED blink, BME688 on and period,
+         diversity) through the sink's UART into its replica (`inject`), and nodes apply them
+         and write Reported records;
        - the controller key from the fleet key, and a MAC on desired state (DEF-27);
-       - the beacon's hop count from the mesh state, and neighbour discovery from beacons
-         (FR-M1, DEF-11).
-       - Exit: commands and records cross partitions and several hops on the bench mesh;
+       - `navgrid monitor` mesh-state view (FR-S5): nodes, links, health and positions as a
+         table from the mirrored records, with ages;
+       - the mesh `Environment` record once the BME688 is read.
+       - Exit: commands and records cross partitions and several hops on the desk mesh;
          latency and bytes per contact against the simulator.
 5. [ ] **Positions:** the host solver over Link records (FR-M6) publishes Position records with
        the frame version; then distributed on-node solving (FR-M2), validated against the host.

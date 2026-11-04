@@ -479,7 +479,11 @@ mod tests {
     }
 
     fn keys(r: &Node) -> StdVec<(Key, Version)> {
-        let mut v: StdVec<_> = r.records().iter().map(|s| (s.record().key(), s.record().version)).collect();
+        let mut v: StdVec<_> = r
+            .records()
+            .iter()
+            .map(|s| (s.record().key(), s.record().version))
+            .collect();
         v.sort_by_key(|(k, v)| (k.origin.0, format!("{:?}", k.topic), v.epoch, v.counter));
         v
     }
@@ -505,10 +509,17 @@ mod tests {
         assert_eq!(sa.outbox().len(), sb.outbox().len());
         assert_eq!(na.outbox().len(), nb.outbox().len());
         assert_eq!((da.side().took, db.side().took), (out.a.took, out.b.took));
-        assert_eq!(da.side().sent.total(), out.a.sent.total(), "the sink sends the same bytes");
+        assert_eq!(
+            da.side().sent.total(),
+            out.a.sent.total(),
+            "the sink sends the same bytes"
+        );
         assert_eq!(db.side().sent.total(), out.b.sent.total(), "and the node");
         assert!(sb.outbox().is_empty(), "a sink keeps nothing in custody");
-        assert!(nb.outbox().is_empty(), "the node's health and links were pushed and accepted");
+        assert!(
+            nb.outbox().is_empty(),
+            "the node's health and links were pushed and accepted"
+        );
     }
 
     #[test]
@@ -519,7 +530,8 @@ mod tests {
         let (_, _, sent_s, sent_n) = run(&mut s, &mut n, now + 1, 4096);
         for sent in [&sent_s, &sent_n] {
             assert!(
-                sent.iter().all(|m| !matches!(m, Sync::Record(_) | Sync::Push(_) | Sync::Versions { .. })),
+                sent.iter()
+                    .all(|m| !matches!(m, Sync::Record(_) | Sync::Push(_) | Sync::Versions { .. })),
                 "{sent:?}"
             );
             assert!(matches!(sent.last(), Some(Sync::Accepted(0))));
@@ -563,7 +575,10 @@ mod tests {
         run(&mut s, &mut n, now + 1, 120);
         run(&mut s, &mut n, now + 2, 4096);
         assert!(keys(&s).len() > before);
-        assert_eq!(keys(&s).iter().filter(|(k, _)| k.origin == NodeId(2)).count(), keys(&n).iter().filter(|(k, _)| k.origin == NodeId(2)).count());
+        assert_eq!(
+            keys(&s).iter().filter(|(k, _)| k.origin == NodeId(2)).count(),
+            keys(&n).iter().filter(|(k, _)| k.origin == NodeId(2)).count()
+        );
     }
 
     fn node_pair_with_many_links() -> (Node, Node) {
@@ -578,6 +593,9 @@ mod tests {
     fn a_frame_before_the_hello_is_a_protocol_error() {
         let (mut s, _) = fixtures();
         let mut d = Driver::new(s.header(), 4096);
-        assert_eq!(d.on_frame(&mut s, Sync::SummaryDone, 0, |_, _| {}), Err(Protocol::NoHello));
+        assert_eq!(
+            d.on_frame(&mut s, Sync::SummaryDone, 0, |_, _| {}),
+            Err(Protocol::NoHello)
+        );
     }
 }

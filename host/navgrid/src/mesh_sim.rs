@@ -83,7 +83,7 @@ const TICK_EVERY: u64 = MINUTE;
 const SAMPLE_EVERY: u64 = 5 * MINUTE;
 const RETRY_AFTER: u64 = 15 * MINUTE;
 const WARM_UP: u64 = HOUR;
-const CONTROLLER: NodeId = NodeId(0xc0ff_ee00_0000);
+const CONTROLLER: NodeId = navgrid_mesh::CONTROLLER;
 
 /// Node positions, mesh links and sinks.
 struct Layout {

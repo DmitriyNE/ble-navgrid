@@ -50,7 +50,7 @@ impl Beacons {
             sink: self.cfg.sink,
             attention: status::attention_left_s() > 0,
             install: false,
-            hops: if self.cfg.sink { 0 } else { u8::MAX },
+            hops: if self.cfg.sink { 0 } else { status::hops() },
             free_links: status::free_links(),
             battery_mv: status::battery_mv(),
             pressure_dpa: None,

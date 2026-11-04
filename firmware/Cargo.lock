@@ -1288,6 +1288,7 @@ dependencies = [
  "navgrid-solver",
  "nrf-mpsl",
  "nrf-sdc",
+ "postcard",
  "rand_chacha",
  "static_cell",
  "trouble-host",

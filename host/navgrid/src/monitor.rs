@@ -115,6 +115,12 @@ impl View {
             Message::Boot(b) => Some(b.node),
             Message::Log(l) => Some(l.node),
             Message::Tones(t) => Some(t.node),
+            Message::Record(_) => None,
+        };
+        // A mesh record the sink mirrors: decoded here, as the device can't name its type.
+        let record = match &msg {
+            Message::Record(r) => postcard::from_bytes::<navgrid_mesh::Record>(&r.bytes).ok(),
+            _ => None,
         };
         // Note the mismatch before learning, so the line still shows what the registry had.
         let firmware_note = match &msg {
@@ -140,6 +146,15 @@ impl View {
             _ => None,
         };
         if json {
+            if let Some(record) = &record {
+                let mut v = serde_json::json!({ "Record": record });
+                if let Some(o) = v.as_object_mut()
+                    && let Some(d) = self.registry.as_ref().and_then(|r| r.by_id(record.origin))
+                {
+                    o.insert("number".into(), label_name(d.number).into());
+                }
+                return Ok(v.to_string());
+            }
             let mut v = serde_json::to_value(&msg)?;
             if let Some(o) = v.as_object_mut() {
                 if let Some(mm) = calibrated {
@@ -204,6 +219,17 @@ impl View {
                 t.first,
                 usize::from(t.first) + t.pct.len() / 3 - 1
             ),
+            (Message::Record(_), _) => match &record {
+                Some(r) => format!(
+                    "{} record v{}.{} age {} s: {:?}",
+                    self.name(r.origin),
+                    r.version.epoch,
+                    r.version.counter,
+                    r.age_ms / 1000,
+                    r.body
+                ),
+                None => "a mesh record the host can't decode".into(),
+            },
             (Message::Log(l), _) => match &decoded {
                 Some(text) => format!("{} log: {text}", self.name(l.node)),
                 None => format!(

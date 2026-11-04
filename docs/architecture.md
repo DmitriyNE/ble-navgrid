@@ -307,7 +307,8 @@ host/
                             link-sim; later replay, central solver, controller
 firmware/                   separate cargo workspace, thumbv8m.main-none-eabihf
   node/                     single firmware image; role from provisioning (D-2)
-    src/mesh.rs             the links: beacons, policy, connects, hellos, bursts, telemetry (§3)
+    src/mesh.rs             the links: beacons, policy, connects, sessions, bursts, telemetry (§3)
+    src/state.rs            the node's replica of the mesh state, one session at a time (§12)
     src/cs.rs               Channel Sounding per link: configuration, bursts, estimates
     src/board.rs            board-dk / board-tag: DC/DC, crystal caps, antenna switch (D-13)
     src/store.rs            provisioning page and boot epoch log in the top 8 KiB of RRAM
@@ -540,9 +541,10 @@ replica keeps a class whole or not at all.
 
 ### Sync on contacts
 
-- **When:** a session runs over each mesh link's L2CAP channel (SPSM `0x0082`) when the link is
-  awake (D-10), never on a dedicated wake-up (FR-S4). The simulator's starting point is a
-  session every 60 s.
+- **When:** a session runs over each mesh link's L2CAP channel (SPSM `0x0082`) at link-up, its
+  hellos doubling as the role exchange, and every 60 s after, started by the central, never on a
+  dedicated wake-up (FR-S4). One session at a time on a node (`state`, the `Driver` beside the
+  replica); a sink mirrors what it keeps to the host as it arrives.
 - **How** (`navgrid_mesh::wire`):
   1. Hello: hop count and sink flag.
   2. A **summary** from each side: an order-free hash (the sum of per-record hashes of key and

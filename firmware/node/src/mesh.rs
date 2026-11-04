@@ -5,17 +5,19 @@
 //! members the policy admits; it scans now and then (`cs::Events` passes the beacons it hears to
 //! [`HEARD`]) and connects, as central, to the neighbours the policy wants, with its role's
 //! connection parameters and, for a tag, the k-th link's event spacing (DEF-26). Every link
-//! starts with a hello each way over the sync channel, so both ends know the other's role and
-//! sink flag. The central runs the bursts the policy schedules, switching an anchor link to the
-//! fast parameters for the burst and back. Telemetry rides any link whose peer is a sink; a sink
-//! forwards what arrives to its UART. Updates ride any link, offered by whoever carries one.
+//! starts with a sync session over the sync channel (`state`), whose hellos tell both ends the
+//! other's role and sink flag, and the central runs one every minute after; one session at a
+//! time on a node. The central runs the bursts the policy schedules, switching an anchor link to
+//! the fast parameters for the burst and back, and writes a Link record per burst. Telemetry
+//! rides any link whose peer is a sink; a sink forwards what arrives to its UART. Updates ride
+//! any link, offered by whoever carries one.
 
 use core::cell::{Cell, RefCell};
 
 use bt_hci::param::LeConnRole;
 use defmt::{info, warn};
 use embassy_futures::join::{join, join3, join4, join_array};
-use embassy_futures::select::select;
+use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::channel::Channel;
@@ -23,6 +25,7 @@ use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use navgrid_link::{Action, Beacon, MAX_LINKS, NodeId, Policy, Role, Settings};
+use navgrid_mesh::Body;
 use navgrid_mesh::wire::{self, Header, SYNC_SPSM, Sync};
 use navgrid_proto::{TELEMETRY_SPSM, UPDATE_SPSM};
 use nrf_sdc::SoftdeviceController;
@@ -31,7 +34,7 @@ use trouble_host::prelude::*;
 use crate::beacon::Beacons;
 use crate::firmware::Rram;
 use crate::keys::Fleet;
-use crate::{Host, cs, report, status, update};
+use crate::{Host, cs, report, state, status, update};
 
 /// Beacons heard while scanning, from the event handler to the policy: who, what, how loud.
 pub static HEARD: Channel<CriticalSectionRawMutex, (NodeId, Beacon, i8), 8> = Channel::new();
@@ -40,8 +43,19 @@ pub static HEARD: Channel<CriticalSectionRawMutex, (NodeId, Beacon, i8), 8> = Ch
 const TICK: Duration = Duration::from_millis(500);
 /// How long a connection attempt may take; the policy gives up on it at the same time.
 const CONNECT_WITHIN: Duration = Duration::from_secs(10);
-/// How long each end waits for the other's hello.
-const HELLO_WITHIN: Duration = Duration::from_secs(5);
+/// Between sync sessions on a link, which the central starts.
+const SESSION_EVERY: Duration = Duration::from_secs(60);
+/// Bytes of records and pushes a side sends per session (architecture §12).
+const SESSION_BUDGET: u32 = 2048;
+/// How long a side waits for the peer's next frame within a session: a slow link with
+/// peripheral latency answers in seconds.
+const SESSION_IDLE: Duration = Duration::from_secs(30);
+/// How long the peripheral waits for the central's first hello on a new link.
+const FIRST_HELLO_WITHIN: Duration = Duration::from_secs(45);
+/// How long a side waits for the node's one session slot.
+const SESSION_SLOT_WAIT: Duration = Duration::from_secs(20);
+/// Sessions failing in a row before the link is dropped and made again.
+const SESSION_FAILURES: u8 = 3;
 /// How long a connection parameter update may take (six intervals at a 1 s slow interval).
 const PARAMS_WITHIN: Duration = Duration::from_secs(15);
 /// Anchors scan this long every so often; tags for 1 s every 5 s.
@@ -159,10 +173,17 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         Instant::now().as_millis()
     }
 
-    /// The beacon's free-link count follows the policy.
+    /// The beacon's free-link count follows the policy, and the node record's neighbours.
     fn links_changed(&self) {
-        let free = self.with_policy(|p| p.free_links());
+        let (free, neighbours) = self.with_policy(|p| {
+            let mut n: heapless::Vec<NodeId, MAX_LINKS> = heapless::Vec::new();
+            for l in p.links() {
+                let _ = n.push(l.peer);
+            }
+            (p.free_links(), n)
+        });
         status::set_free_links(free);
+        state::set_neighbours(neighbours.into_iter());
         status::BEACON_CHANGED.signal(());
     }
 
@@ -356,25 +377,22 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 return;
             }
         }
-        let mine = Header {
-            node: self.node,
-            role: self.role,
-            hops: self.with_policy(|p| p.hops()),
-            sink: self.sink,
-        };
-        let theirs = if central {
-            self.hello_as_central(&conn, mine).await
+        // The first session: its hellos say who the peer is.
+        let (mut sync, theirs) = match if central {
+            self.first_session_as_central(&conn, peer).await
         } else {
-            self.hello_as_peripheral(&conn, mine).await
-        };
-        let Some(theirs) = theirs else {
-            warn!("link to {=u64:012x}: no hello", peer.0);
-            if central {
-                self.with_policy(|p| p.connect_failed(peer, Self::now_ms()));
+            self.first_session_as_peripheral(&conn, peer).await
+        } {
+            Some(ok) => ok,
+            None => {
+                warn!("link to {=u64:012x}: no first session", peer.0);
+                if central {
+                    self.with_policy(|p| p.connect_failed(peer, Self::now_ms()));
+                }
+                conn.disconnect();
+                drain(&conn).await;
+                return;
             }
-            conn.disconnect();
-            drain(&conn).await;
-            return;
         };
         if !central && !self.with_policy(|p| p.accepts(peer, theirs.role)) {
             warn!("link from {=u64:012x} ({}): no room", peer.0, theirs.role);
@@ -420,7 +438,14 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             conn.disconnect();
             core::future::pending::<()>().await
         };
-        select(events, join3(join(channels, telemetry), bursts, join(offers, dropping))).await;
+        let sessions = self.sessions(&mut sync, central, peer);
+        if let Either::Second(Either::First(())) =
+            select(events, select(sessions, join3(join(channels, telemetry), bursts, join(offers, dropping)))).await
+        {
+            // The sessions gave up: make the link anew.
+            conn.disconnect();
+            drain(&conn).await;
+        }
 
         slot.peer.set(None);
         cs::forget(handle);
@@ -429,8 +454,12 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         self.freed.signal(());
     }
 
-    /// The central's hello: opens the sync channel, sends its header, takes the peer's.
-    async fn hello_as_central(&self, conn: &Connection<'s, DefaultPacketPool>, mine: Header) -> Option<Header> {
+    /// The central's first session: opens the sync channel and runs a session on it.
+    async fn first_session_as_central(
+        &self,
+        conn: &Connection<'s, DefaultPacketPool>,
+        peer: NodeId,
+    ) -> Option<(L2capChannel<'s, DefaultPacketPool>, Header)> {
         let mut channel = match L2capChannel::create(self.stack, conn, SYNC_SPSM, &Default::default()).await {
             Ok(channel) => channel,
             Err(e) => {
@@ -438,15 +467,23 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 return None;
             }
         };
-        if !send_hello(self.stack, &mut channel, mine).await {
-            return None;
+        match self.session(&mut channel, None, peer).await {
+            Ok(theirs) => Some((channel, theirs)),
+            Err(e) => {
+                warn!("first session with {=u64:012x}: {}", peer.0, e);
+                None
+            }
         }
-        receive_hello(self.stack, &mut channel).await
     }
 
-    /// The peripheral's hello: takes the sync channel the central opens, its header, and answers.
-    async fn hello_as_peripheral(&self, conn: &Connection<'s, DefaultPacketPool>, mine: Header) -> Option<Header> {
-        let accepted = with_timeout(HELLO_WITHIN, async {
+    /// The peripheral's first session: takes the sync channel the central opens and its hello,
+    /// and runs the session from there.
+    async fn first_session_as_peripheral(
+        &self,
+        conn: &Connection<'s, DefaultPacketPool>,
+        peer: NodeId,
+    ) -> Option<(L2capChannel<'s, DefaultPacketPool>, Header)> {
+        let accepted = with_timeout(FIRST_HELLO_WITHIN, async {
             loop {
                 let pending = match L2capChannel::listen(self.stack, conn).next().await {
                     Ok(pending) => pending,
@@ -456,7 +493,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                     }
                 };
                 if pending.spsm() != SYNC_SPSM {
-                    warn!("channel {=u16:#06x} before the hello", pending.spsm());
+                    warn!("channel {=u16:#06x} before the first session", pending.spsm());
                     continue;
                 }
                 return pending.accept(self.stack, &Default::default()).await.ok();
@@ -467,8 +504,103 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             Ok(Some(channel)) => channel,
             _ => return None,
         };
-        let theirs = receive_hello(self.stack, &mut channel).await?;
-        send_hello(self.stack, &mut channel, mine).await.then_some(theirs)
+        let first = match with_timeout(FIRST_HELLO_WITHIN, receive_frame(self.stack, &mut channel)).await {
+            Ok(Ok(msg)) => msg,
+            Ok(Err(e)) => {
+                warn!("first hello from {=u64:012x}: {}", peer.0, e);
+                return None;
+            }
+            Err(_) => {
+                warn!("first hello from {=u64:012x}: none within {} s", peer.0, FIRST_HELLO_WITHIN.as_secs());
+                return None;
+            }
+        };
+        match self.session(&mut channel, Some(first), peer).await {
+            Ok(theirs) => Some((channel, theirs)),
+            Err(e) => {
+                warn!("first session with {=u64:012x}: {}", peer.0, e);
+                None
+            }
+        }
+    }
+
+    /// The sessions after the first: the central starts one every [`SESSION_EVERY`]; the
+    /// peripheral answers each hello it receives. Returns when sessions fail
+    /// [`SESSION_FAILURES`] times in a row, or the channel dies.
+    async fn sessions(&self, channel: &mut L2capChannel<'s, DefaultPacketPool>, central: bool, peer: NodeId) {
+        let mut failures = 0u8;
+        loop {
+            let first = if central {
+                Timer::after(SESSION_EVERY).await;
+                None
+            } else {
+                match receive_frame(self.stack, channel).await {
+                    Ok(msg @ Sync::Hello(_)) => Some(msg),
+                    Ok(_) => continue,
+                    Err(e) => {
+                        warn!("sync channel to {=u64:012x}: {}", peer.0, e);
+                        return;
+                    }
+                }
+            };
+            match self.session(channel, first, peer).await {
+                Ok(_) => failures = 0,
+                Err(e) => {
+                    warn!("session with {=u64:012x}: {}", peer.0, e);
+                    failures += 1;
+                    if failures >= SESSION_FAILURES {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// One session over `channel`, with `first` a frame already received from the peer. Waits
+    /// for the node's session slot, then exchanges frames until the driver is done.
+    async fn session(
+        &self,
+        channel: &mut L2capChannel<'s, DefaultPacketPool>,
+        first: Option<Sync>,
+        peer: NodeId,
+    ) -> Result<Header, SessionError> {
+        let started = Instant::now();
+        let mine = state::header(self.role, self.sink);
+        while !state::begin_session(mine, SESSION_BUDGET) {
+            if started.elapsed() > SESSION_SLOT_WAIT {
+                return Err(SessionError::Busy);
+            }
+            Timer::after(Duration::from_millis(200)).await;
+        }
+        let result = self.exchange(channel, first).await;
+        let side = state::session_side();
+        let theirs = state::end_session();
+        state::log_session(peer, side, started.elapsed().as_millis());
+        result.and_then(|()| theirs.ok_or(SessionError::NoHello))
+    }
+
+    async fn exchange(
+        &self,
+        channel: &mut L2capChannel<'s, DefaultPacketPool>,
+        first: Option<Sync>,
+    ) -> Result<(), SessionError> {
+        let mut out = [0u8; wire::MAX_FRAME_LEN];
+        if let Some(msg) = first {
+            state::session_in(msg).map_err(SessionError::Protocol)?;
+        }
+        loop {
+            while let Some(msg) = state::session_out() {
+                let frame = wire::encode(&msg, &mut out).map_err(|_| SessionError::Encode)?;
+                channel.send(self.stack, frame).await.map_err(|_| SessionError::Channel)?;
+            }
+            if state::session_complete() {
+                return Ok(());
+            }
+            let msg = with_timeout(SESSION_IDLE, receive_frame(self.stack, channel))
+                .await
+                .map_err(|_| SessionError::Timeout)??;
+            state::session_in(msg).map_err(SessionError::Protocol)?;
+        }
     }
 
     /// Handles the link's connection events until it drops. Drops a peer outside the fleet.
@@ -552,6 +684,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 },
                 #[cfg(not(feature = "board-dk"))]
                 TELEMETRY_SPSM => info!("telemetry channel on a node that isn't a sink: closing it"),
+                SYNC_SPSM => info!("a second sync channel from the peer: closing it"),
                 _ => info!("channel {=u16:#06x} opened by the peer: closing it", spsm),
             }
         }
@@ -615,16 +748,19 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             Ok(burst) => {
                 let (ok, failed) = (burst.estimates(), burst.failures);
                 match burst.finish() {
-                    Some(link) => info!(
-                        "burst with {=u64:012x}: {=u32} mm ± {=u32}, quality {=u8}, {=usize} of {=u16} procedures in {=u64} ms",
-                        peer.0,
-                        link.distance_mm,
-                        link.sigma_mm,
-                        link.quality,
-                        ok,
-                        link.procedures,
-                        started.elapsed().as_millis()
-                    ),
+                    Some(link) => {
+                        info!(
+                            "burst with {=u64:012x}: {=u32} mm ± {=u32}, quality {=u8}, {=usize} of {=u16} procedures in {=u64} ms",
+                            peer.0,
+                            link.distance_mm,
+                            link.sigma_mm,
+                            link.quality,
+                            ok,
+                            link.procedures,
+                            started.elapsed().as_millis()
+                        );
+                        state::write(Body::Link(link));
+                    }
                     None => warn!(
                         "burst with {=u64:012x}: nothing from {=u16} procedures",
                         peer.0,
@@ -672,47 +808,33 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     }
 }
 
-async fn send_hello(stack: &Host<'_, '_>, channel: &mut L2capChannel<'_, DefaultPacketPool>, hello: Header) -> bool {
-    let mut buf = [0u8; wire::MAX_FRAME_LEN];
-    let Ok(frame) = wire::encode(&Sync::Hello(hello), &mut buf) else {
-        return false;
-    };
-    match channel.send(stack, frame).await {
-        Ok(()) => true,
-        Err(e) => {
-            warn!("hello: {:?}", e);
-            false
-        }
-    }
+/// Why a session ended early.
+#[derive(Clone, Copy, Debug, defmt::Format)]
+enum SessionError {
+    /// The node's session slot stayed taken.
+    Busy,
+    /// The peer sent nothing for [`SESSION_IDLE`].
+    Timeout,
+    /// The channel failed.
+    Channel,
+    Encode,
+    Decode,
+    /// The peer broke the protocol.
+    Protocol(navgrid_mesh::Protocol),
+    /// The session ended without the peer's hello.
+    NoHello,
 }
 
-async fn receive_hello(stack: &Host<'_, '_>, channel: &mut L2capChannel<'_, DefaultPacketPool>) -> Option<Header> {
-    let mut buf = [0u8; wire::MAX_FRAME_LEN];
-    let received = with_timeout(HELLO_WITHIN, channel.receive(stack, &mut buf)).await;
-    let len = match received {
-        Ok(Ok(len)) => len,
-        Ok(Err(e)) => {
-            warn!("hello: {:?}", e);
-            return None;
-        }
-        Err(_) => {
-            warn!("hello: none within {} s", HELLO_WITHIN.as_secs());
-            return None;
-        }
-    };
+/// One frame from the sync channel, decoded.
+async fn receive_frame(
+    stack: &Host<'_, '_>,
+    channel: &mut L2capChannel<'_, DefaultPacketPool>,
+) -> Result<Sync, SessionError> {
+    let mut buf = [0u8; 255];
+    let len = channel.receive(stack, &mut buf).await.map_err(|_| SessionError::Channel)?;
     // The frame's terminator may or may not be in the SDU.
     let end = buf[..len].iter().position(|&b| b == 0).unwrap_or(len);
-    match wire::decode(&mut buf[..end]) {
-        Ok(Sync::Hello(h)) => Some(h),
-        Ok(_) => {
-            warn!("hello: another message first");
-            None
-        }
-        Err(_) => {
-            warn!("hello: undecodable");
-            None
-        }
-    }
+    wire::decode(&mut buf[..end]).map_err(|_| SessionError::Decode)
 }
 
 /// Waits for a link that was told to disconnect to actually go.

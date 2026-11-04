@@ -12,10 +12,10 @@ extern crate std;
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change to [`Message`] or to what a sink takes from the host.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 /// Upper bound for one encoded frame, including COBS overhead and the `0x00` terminator.
-pub const MAX_FRAME_LEN: usize = 128;
+pub const MAX_FRAME_LEN: usize = 192;
 
 /// L2CAP LE credit-based channel (SPSM) that carries telemetry toward a sink (D-6). Each SDU is
 /// one encoded frame, terminator included.
@@ -829,6 +829,18 @@ pub enum Message {
     /// One antenna path's raw tones from one procedure, a chunk of consecutive channels
     /// (diagnostics; `navgrid tones` runs the host estimators on them).
     Tones(Tones),
+    /// A mesh-state record a sink holds (`navgrid-mesh`, architecture §12), as the sink mirrors
+    /// its replica to the host: the record encoded with postcard, opaque here.
+    Record(MeshRecord),
+}
+
+/// Room for a mesh record on the wire: a node record with its eight neighbours is the largest.
+pub const MESH_RECORD_LEN: usize = 144;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct MeshRecord {
+    pub bytes: heapless::Vec<u8, MESH_RECORD_LEN>,
 }
 
 /// One `defmt` frame from a device's log, as its logger wrote it: the string index, the timestamp

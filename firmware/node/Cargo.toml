@@ -28,6 +28,7 @@ cortex-m = "0.7.7"
 cortex-m-rt = "0.7.5"
 static_cell = "2"
 heapless = "0.9.3"
+postcard = { version = "1.1", default-features = false }
 
 # Pairing (CS needs an encrypted link): TrouBLE's security manager takes its crypto from
 # embassy-crypto drivers, at the revision TrouBLE itself uses.

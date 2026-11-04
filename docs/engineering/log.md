@@ -4,6 +4,17 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Sync sessions on devices** (stage 4, first half; DEF-62). The mesh crate's session runs frame by
+frame now (`Driver`, bounded buffers: two classes of the peer's versions, records and pushes drawn
+from the replica as they go), checked byte for byte against the in-memory session. The firmware
+keeps a replica (`state`: 160 records, an outbox of 32, 48 routes) with the node record, health
+every 30 min and a Link record per burst; every link runs a session at link-up, whose hellos are
+the role exchange, and the central starts one every minute after, one session at a time on a
+node. A sink mirrors each record it keeps to the host (`Message::Record`, protocol 6, frames up to
+192 B) and all of them every 5 min; the monitor prints them. The beacon's hop count comes from the
+replica. The dedicated sink link is gone for good (DEF-1 fixed). Untested on hardware with the
+links; the controller's commands, the MAC and the mesh view are next.
+
 **The mesh firmware** (stage 3, D-37; DEF-57). `mesh.rs` replaces the bring-up roles: every node
 advertises its beacon while it has room, scans now and then, connects as central to the
 neighbours the policy wants with its role's parameters and, for a tag, the k-th link's event
