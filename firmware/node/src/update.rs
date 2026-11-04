@@ -74,7 +74,39 @@ pub fn wanted() -> Option<Firmware> {
 /// Offers what this node can pass on, if anything, to the peer on `conn`, and streams it if the
 /// peer wants it. An image the node runs goes out only once it's confirmed here: a bad one would
 /// otherwise spread before the bootloader reverts it.
-pub async fn offer(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPool>, rram: &'static Rram) {
+/// The connection parameters a transfer asks for, and the link's own to go back to if the
+/// transfer fails (after one that completes, the peer restarts into the image).
+#[derive(Clone, Copy)]
+pub struct TransferParams {
+    pub fast: (u16, u16),
+    pub back: (u16, u16),
+}
+
+async fn request_params(
+    stack: &Stack<'_, '_>,
+    conn: &Connection<'_, DefaultPacketPool>,
+    (interval_1250, latency): (u16, u16),
+) {
+    let interval = Duration::from_micros(u64::from(interval_1250) * 1250);
+    let timeout_ms = (u64::from(interval_1250) * 1250 / 1000 * u64::from(latency + 1) * 6).clamp(4_000, 32_000);
+    let params = RequestedConnParams {
+        min_connection_interval: interval,
+        max_connection_interval: interval,
+        max_latency: latency,
+        supervision_timeout: Duration::from_millis(timeout_ms),
+        ..Default::default()
+    };
+    if let Err(e) = conn.update_connection_params(stack, &params).await {
+        warn!("update: connection parameters: {:?}", e);
+    }
+}
+
+pub async fn offer(
+    stack: &Stack<'_, '_>,
+    conn: &Connection<'_, DefaultPacketPool>,
+    rram: &'static Rram,
+    params: Option<TransferParams>,
+) {
     let Some((header, at)) = firmware::servable() else {
         return;
     };
@@ -117,6 +149,28 @@ pub async fn offer(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPoo
         );
         return;
     }
+    // A fast link for the transfer: an anchor link idles at 1 s, which would take half an hour.
+    // Not on a link the policy doesn't know (a peer on another build): the request ended one
+    // such link with an LL response timeout (log 2026-11-04).
+    if let Some(params) = params {
+        request_params(stack, conn, params.fast).await;
+    }
+    let done = stream(stack, &mut channel, &mut buf, &mut answer, header, at, from).await;
+    if let (false, Some(params)) = (done, params) {
+        request_params(stack, conn, params.back).await;
+    }
+}
+
+/// Streams the image from byte `from` and waits for the peer's `Done`: `true` once it has it.
+async fn stream(
+    stack: &Stack<'_, '_>,
+    channel: &mut L2capChannel<'_, DefaultPacketPool>,
+    buf: &mut [u8; UPDATE_CHUNK + 5],
+    answer: &mut [u8; 16],
+    header: UpdateHeader,
+    at: u32,
+    from: usize,
+) -> bool {
     info!("update: sending {} from byte {=usize}", header.firmware, from);
     // SAFETY: memory-mapped RRAM: the running image, which nothing writes while it runs, or the
     // update slot, checked below before each chunk.
@@ -127,14 +181,14 @@ pub async fn offer(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPoo
         // A sink's update slot changes when the host sends another update.
         if at == DFU && firmware::carried() != Some(header) {
             warn!("update: no longer carrying {}, stopping", header.firmware);
-            return;
+            return false;
         }
         let end = (offset + UPDATE_CHUNK).min(image.len());
         let data = UpdateMsg::Data {
             offset: offset as u32,
             bytes: &image[offset..end],
         };
-        let mut send = core::pin::pin!(channel.send(stack, data.encode(&mut buf)));
+        let mut send = core::pin::pin!(channel.send(stack, data.encode(&mut buf[..])));
         let sent = match with_timeout(STALL_AFTER, send.as_mut()).await {
             Ok(sent) => sent,
             Err(_) => {
@@ -143,28 +197,32 @@ pub async fn offer(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPoo
                     Ok(sent) => sent,
                     Err(_) => {
                         warn!("update: sending at byte {=usize}: given up", offset);
-                        return;
+                        return false;
                     }
                 }
             }
         };
         if let Err(e) = sent {
             warn!("update: sending at byte {=usize}: {:?}", offset, e);
-            return;
+            return false;
         }
         if end / LOG_EVERY != offset / LOG_EVERY {
             info!("update: sent {=usize} KiB", end / 1024);
         }
         offset = end;
     }
-    if channel.send(stack, UpdateMsg::Done.encode(&mut buf)).await.is_err() {
-        return;
+    if channel.send(stack, UpdateMsg::Done.encode(&mut buf[..])).await.is_err() {
+        return false;
     }
-    match with_timeout(ANSWER_WITHIN, channel.receive(stack, &mut answer)).await {
+    match with_timeout(ANSWER_WITHIN, channel.receive(stack, &mut answer[..])).await {
         Ok(Ok(n)) if UpdateMsg::decode(&answer[..n]) == Some(UpdateMsg::Done) => {
-            info!("update: sent {} in {=u64} ms", header.firmware, t.elapsed().as_millis())
+            info!("update: sent {} in {=u64} ms", header.firmware, t.elapsed().as_millis());
+            true
         }
-        _ => warn!("update: the peer didn't confirm {}", header.firmware),
+        _ => {
+            warn!("update: the peer didn't confirm {}", header.firmware);
+            false
+        }
     }
 }
 

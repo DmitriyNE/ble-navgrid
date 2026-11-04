@@ -111,8 +111,10 @@ fn tone_antenna_config(local: u8, peer: u8) -> (u8, u8) {
     match (local >= 2, peer >= 2) {
         (true, true) => (7, 0b11),
         (true, false) => (1, 0b01),
-        (false, true) => (4, 0b11),
-        (false, false) => (0, 0b01),
+        // A one-antenna node's controller is configured for one path (`cs_cfg` in main); asking
+        // for the peer's second antenna made every procedure's parameters fail on the DK (log
+        // 2026-11-04). The peer uses both of its antennas when it is the initiator.
+        (false, _) => (0, 0b01),
     }
 }
 

@@ -2,7 +2,46 @@
 
 Newest first. Conventions: [README](README.md).
 
+## 2026-11-05
+
+**The mesh works end to end on one TAG.** N001, flashed by probe with the night's build, booted
+with 40 KiB of stack room (29 KiB used by the boot line; its SDC asked for 92,728 bytes, which
+`SDC_MEM` now gives it), was connected by the DK 49 s later, ran its first session (10 frames,
+222 B, 3.3 s) and a delta session a minute on (7 frames, 58 B), and its node record, boot and
+health reached the host through the DK. Before the reflash the same TAG had gone silent on the
+build it took over the air: alone by its LED, not advertising, hearing nothing, though it booted
+cleanly; a debugger reset alone brought it back (DEF-71).
+
 ## 2026-11-04
+
+**Three from the DK connecting out to the old TAGs.** The DK, the lowest ID, connects to every
+node it hears, old build or not; a first session with an old-build peer times out after 30 s
+and the policy retried 10 s later, so a slot and a connection churned. The policy now leaves a
+peer whose first session failed alone for 5 min. The transfer's fast-interval request on a link
+the policy doesn't know (a hello-less peer) ended that link with an LL response timeout, so an
+offer asks only on links the policy knows. And the channel dispatcher ran a transfer or the
+telemetry forward inside its accept loop, so the peer's sync channel waited behind a transfer
+and the first session failed under an update at link-up; transfers and forwards now run beside
+the acceptor.
+
+**Two more from the first bursts and transfers between mesh nodes.** The DK's bursts as an
+initiator failed at "set procedure parameters": a one-antenna node asked for the peer's two
+antennas (tone antenna configuration 4, two paths) while its controller is configured for one
+path; it now asks for one path and the two-antenna peer uses both when it initiates. And an
+update over an anchor link would run at the link's idle interval of 1 s, half an hour for an
+image: the sender now asks the link for the fast interval once the peer wants the image, and
+puts it back if the transfer fails (after one that completes the peer restarts anyway). Delta
+sync seen on hardware: a first session 9 frames and 179 B, the next ones 8 frames and 120 B,
+then 6 frames and 42 B.
+
+**First sessions on hardware, and a nested borrow at the first burst.** N001 and N005 came up on
+the mesh build from the DK's transfers, the DK connected to them as central (it has the lowest
+ID), and the first session with N001 completed: 9 frames, 179 B sent, 3.9 s on a fresh 125 ms
+link (DEF-62 is now measured once). The first burst then panicked both ends with "RefCell
+already borrowed": `burst` asked the policy whether the peer is a sink from inside another
+policy call. `with_policy` now names the nested caller's line in the crash record, and the burst
+asks in one borrow. N001 confirmed its image before the crash; the DK rebooted every 10 s until
+the fix.
 
 **The old TAGs take the mesh build from the DK.** After a power cycle of the four TAGs (DEF-70),
 the DK's next offers were taken: three transfers at once at about 2.3 KB/s each, from byte 0.

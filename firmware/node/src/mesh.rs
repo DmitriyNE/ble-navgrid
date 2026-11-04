@@ -210,8 +210,27 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         }
     }
 
+    /// What a transfer to `peer` asks of the link, and what the link goes back to; `None` for a
+    /// link the policy doesn't know (a peer that sent no hello).
+    fn transfer_params(&self, peer: NodeId) -> Option<update::TransferParams> {
+        self.with_policy(|p| {
+            let s = *p.settings();
+            let link = p.link(peer)?;
+            Some(update::TransferParams {
+                fast: (s.fast_interval_1250us, 0),
+                back: p.connect_params(link.peer_sink),
+            })
+        })
+    }
+
+    #[track_caller]
     fn with_policy<R>(&self, f: impl FnOnce(&mut Policy) -> R) -> R {
-        self.policy.lock(|p| f(&mut p.borrow_mut()))
+        let caller = core::panic::Location::caller();
+        self.policy.lock(|p| match p.try_borrow_mut() {
+            Ok(mut p) => f(&mut p),
+            // The crash record then names the call that nested (log 2026-11-04).
+            Err(_) => panic!("policy borrowed again from line {}", caller.line()),
+        })
     }
 
     fn now_ms() -> u64 {
@@ -438,7 +457,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         // that starts early isn't cut when the hello completes.
         slot.served.set(false);
         while slot.sync.try_receive().is_ok() {}
-        let serving = join(self.channels(&conn, slot), self.offers(&conn));
+        let serving = join(self.channels(&conn, slot), self.offers(&conn, peer));
         let mut serving = core::pin::pin!(serving);
         // The first session: its hellos say who the peer is.
         let first = async {
@@ -466,7 +485,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                     warn!("link to {=u64:012x}: no first session", peer.0);
                 }
                 if central {
-                    self.with_policy(|p| p.connect_failed(peer, Self::now_ms()));
+                    self.with_policy(|p| p.first_session_failed(peer, Self::now_ms()));
                 }
                 conn.disconnect();
                 drain(&conn).await;
@@ -738,46 +757,77 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     /// Takes the channels the peer opens on the link and gives each to its owner: updates to
     /// `update`, telemetry to the sink's UART, another hello to a reply.
     async fn channels(&self, conn: &Connection<'s, DefaultPacketPool>, slot: &Slot<'s>) {
-        loop {
-            let pending = match L2capChannel::listen(self.stack, conn).next().await {
-                Ok(pending) => pending,
-                Err(_) => return core::future::pending().await,
-            };
-            let spsm = pending.spsm();
-            let config = match spsm {
-                UPDATE_SPSM => update::RECEIVING,
-                TELEMETRY_SPSM => TELEMETRY_RECEIVING,
-                _ => L2capChannelConfig::default(),
-            };
-            let channel = match pending.accept(self.stack, &config).await {
-                Ok(channel) => channel,
-                Err(e) => {
-                    warn!("channel {=u16:#06x}: {:?}", spsm, e);
-                    continue;
+        // Each kind of channel is served beside the acceptor, not inside it: a transfer or the
+        // telemetry forward runs for minutes, and the peer's sync channel has to be taken
+        // meanwhile, or the first session fails under an update (log 2026-11-04).
+        let updates: Channel<NoopRawMutex, L2capChannel<'s, DefaultPacketPool>, 1> = Channel::new();
+        let telemetry: Channel<NoopRawMutex, L2capChannel<'s, DefaultPacketPool>, 1> = Channel::new();
+        let accept = async {
+            loop {
+                let pending = match L2capChannel::listen(self.stack, conn).next().await {
+                    Ok(pending) => pending,
+                    Err(_) => return core::future::pending().await,
+                };
+                let spsm = pending.spsm();
+                let config = match spsm {
+                    UPDATE_SPSM => update::RECEIVING,
+                    TELEMETRY_SPSM => TELEMETRY_RECEIVING,
+                    _ => L2capChannelConfig::default(),
+                };
+                let channel = match pending.accept(self.stack, &config).await {
+                    Ok(channel) => channel,
+                    Err(e) => {
+                        warn!("channel {=u16:#06x}: {:?}", spsm, e);
+                        continue;
+                    }
+                };
+                if spsm != SYNC_SPSM {
+                    slot.served.set(true);
                 }
-            };
-            if spsm != SYNC_SPSM {
-                slot.served.set(true);
+                match spsm {
+                    UPDATE_SPSM => {
+                        if updates.try_send(channel).is_err() {
+                            info!("a second update channel from the peer: closing it");
+                        }
+                    }
+                    TELEMETRY_SPSM => {
+                        if telemetry.try_send(channel).is_err() {
+                            info!("a second telemetry channel from the peer: closing it");
+                        }
+                    }
+                    // The first session takes it; after that there is one for the link's life.
+                    SYNC_SPSM => {
+                        if slot.sync.try_send(channel).is_err() {
+                            info!("a second sync channel from the peer: closing it");
+                        }
+                    }
+                    _ => info!("channel {=u16:#06x} opened by the peer: closing it", spsm),
+                }
             }
-            match spsm {
+        };
+        let take = async {
+            loop {
+                let channel = updates.receive().await;
                 // Mesh links run full-length packets throughout (2M, 251 octets).
-                UPDATE_SPSM => update::take(self.stack, conn, channel, self.rram, false).await,
+                update::take(self.stack, conn, channel, self.rram, false).await;
+            }
+        };
+        let forward = async {
+            loop {
+                let channel = telemetry.receive().await;
                 #[cfg(feature = "board-dk")]
-                TELEMETRY_SPSM => match self.uart {
+                match self.uart {
                     Some(uart) => report::forward(self.stack, uart, channel, conn.handle().raw()).await,
                     None => info!("telemetry channel on a node that isn't a sink: closing it"),
-                },
-                #[cfg(not(feature = "board-dk"))]
-                TELEMETRY_SPSM => info!("telemetry channel on a node that isn't a sink: closing it"),
-                // The first session takes it; after that there is one for the link's life.
-                SYNC_SPSM => {
-                    if slot.sync.try_send(channel).is_err() {
-                        info!("a second sync channel from the peer: closing it");
-                    }
                 }
-                _ => info!("channel {=u16:#06x} opened by the peer: closing it", spsm),
+                #[cfg(not(feature = "board-dk"))]
+                {
+                    let _ = channel;
+                    info!("telemetry channel on a node that isn't a sink: closing it");
+                }
             }
-        }
+        };
+        join3(accept, take, forward).await;
     }
 
     /// Carries the outbox over the link while its peer is a sink, opening the telemetry channel
@@ -798,14 +848,14 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     /// Offers the update this node carries, if any, once the link is up and every few minutes
     /// after (DEF-39), and on a sink as soon as it starts carrying another (taken from the host).
     #[cfg(feature = "board-dk")]
-    async fn offers(&self, conn: &Connection<'s, DefaultPacketPool>) {
+    async fn offers(&self, conn: &Connection<'s, DefaultPacketPool>, peer: NodeId) {
         let Some(mut carrying) = update::CARRYING.receiver() else {
             warn!("no receiver left for carried updates");
             return core::future::pending().await;
         };
         let _ = carrying.try_get();
         loop {
-            update::offer(self.stack, conn, self.rram).await;
+            update::offer(self.stack, conn, self.rram, self.transfer_params(peer)).await;
             select(carrying.changed(), Timer::after(update::OFFER_EVERY)).await;
         }
     }
@@ -813,9 +863,9 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     /// Offers the update this node carries, if any, once the link is up and every few minutes
     /// after (DEF-39).
     #[cfg(not(feature = "board-dk"))]
-    async fn offers(&self, conn: &Connection<'s, DefaultPacketPool>) {
+    async fn offers(&self, conn: &Connection<'s, DefaultPacketPool>, peer: NodeId) {
         loop {
-            update::offer(self.stack, conn, self.rram).await;
+            update::offer(self.stack, conn, self.rram, self.transfer_params(peer)).await;
             Timer::after(update::OFFER_EVERY).await;
         }
     }
@@ -825,10 +875,13 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     async fn burst(&self, conn: &Connection<'s, DefaultPacketPool>, slot: &Slot<'s>, peer: NodeId) {
         let (switches, procedures, slow, fast) = self.with_policy(|p| {
             let s = *p.settings();
+            // In one borrow: a nested `with_policy` here panicked at the first burst on hardware
+            // (log 2026-11-04).
+            let peer_sink = p.link(peer).is_some_and(|l| l.peer_sink);
             (
                 p.switches_for_burst(peer),
                 p.burst_length(peer),
-                p.connect_params(self.with_sink_peer(peer)),
+                p.connect_params(peer_sink),
                 (s.fast_interval_1250us, 0u16),
             )
         });
@@ -890,10 +943,6 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             self.set_params(conn, slot, slow).await;
         }
         self.with_policy(|p| p.burst_done(peer, Self::now_ms()));
-    }
-
-    fn with_sink_peer(&self, peer: NodeId) -> bool {
-        self.with_policy(|p| p.link(peer).is_some_and(|l| l.peer_sink))
     }
 
     /// Asks the controller for new connection parameters and waits for the update.

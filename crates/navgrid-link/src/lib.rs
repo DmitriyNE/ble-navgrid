@@ -40,6 +40,8 @@ pub const BURST_MAX: usize = 32;
 pub const SIGMA_FLOOR_MM: u32 = 50;
 /// A connection attempt older than this has failed.
 pub const CONNECT_TIMEOUT_MS: u64 = 10_000;
+/// How long a peer whose first session failed is left alone.
+pub const FIRST_SESSION_RETRY_MS: u64 = 5 * 60_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -361,6 +363,14 @@ impl Policy {
         if self.role == Role::Anchor {
             self.defer(peer, now_ms + u64::from(self.settings.retry_ms) / 4);
         }
+    }
+
+    /// The link to `peer` came up but its first session failed: a node on another build, or a
+    /// broken one. Not tried again for a while, so it doesn't hold a slot and a connection every
+    /// few seconds (log 2026-11-04).
+    pub fn first_session_failed(&mut self, peer: NodeId, now_ms: u64) {
+        self.pending.retain(|(p, _)| *p != peer);
+        self.defer(peer, now_ms + FIRST_SESSION_RETRY_MS);
     }
 
     /// A connection attempt to `peer` failed.

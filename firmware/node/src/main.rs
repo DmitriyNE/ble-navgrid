@@ -66,7 +66,7 @@ use cs::CS_LINKS;
 /// SDC memory pool. The TAG figure (2 antennas, 4 paths) is what its SDC reported; one antenna
 /// saves 1 KiB per CS link for each of the 3 extra paths. If this is off, the SDC logs the exact
 /// requirement at boot.
-const SDC_MEM: usize = if board::ANTENNAS > 1 { 99_072 } else { 74_296 };
+const SDC_MEM: usize = if board::ANTENNAS > 1 { 92_728 } else { 74_296 };
 
 #[embassy_executor::task]
 async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
