@@ -42,7 +42,7 @@ use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer, with_timeout};
-use navgrid_proto::{Firmware, NodeConfig, NodeId, ProvisioningError, Role};
+use navgrid_proto::{Firmware, NodeConfig, NodeId, ProvisioningError};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 use nrf_sdc::{self as sdc, SoftdeviceController, mpsl};
 use static_cell::StaticCell;
@@ -245,7 +245,7 @@ async fn main(spawner: Spawner) {
     logger::set_level(provisioning.map_or_else(Default::default, |p| p.report_level));
     let node_cfg = provisioning.map_or_else(NodeConfig::default, |p| p.config);
     let number = provisioning.and_then(|p| p.number);
-    status::set_identity(provisioning.is_some(), node_cfg.role == Role::Sink);
+    status::set_identity(provisioning.is_some(), node_cfg.sink);
     #[cfg(feature = "board-tag")]
     {
         let boot = match (provisioning.is_some(), corrupt) {
@@ -405,7 +405,7 @@ async fn main(spawner: Spawner) {
     let role = async {
         log_cs_capabilities(&stack).await;
         #[cfg(feature = "board-dk")]
-        if node_cfg.role == Role::Sink {
+        if node_cfg.sink {
             // USB-powered: advertise fast so nodes find it quickly.
             let sink_params = AdvertisementParameters {
                 interval_min: Duration::from_millis(100),

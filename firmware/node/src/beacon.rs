@@ -10,7 +10,7 @@
 use defmt::unwrap;
 use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Timer};
-use navgrid_proto::{BEACON_COMPANY, Beacon, BeaconPosition, NodeConfig, Role};
+use navgrid_proto::{BEACON_COMPANY, Beacon, BeaconPosition, NodeConfig};
 use nrf_sdc::SoftdeviceController;
 use trouble_host::prelude::*;
 
@@ -48,9 +48,10 @@ impl Beacons {
         let dm = |mm: i32| (mm / 100).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
         Beacon {
             role: self.cfg.role,
+            sink: self.cfg.sink,
             attention: status::attention_left_s() > 0,
             install: false,
-            hops: if self.cfg.role == Role::Sink { 0 } else { u8::MAX },
+            hops: if self.cfg.sink { 0 } else { u8::MAX },
             free_links: self.max_links.saturating_sub(status::links()),
             battery_mv: status::battery_mv(),
             pressure_dpa: None,

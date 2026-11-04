@@ -23,7 +23,7 @@ and commands, with the host as controller (§12).
               ┃              ┌──┴───┐ ·        ┌─────┐
          USB  ┃              │  P   │ · · · · ·│  A  │  direct link for the final approach
       ┌───────┴──┐           └──────┘          └─────┘
-      │ sink/host│           person tag         asset tag (keys)
+      │ sink/host│           mobile tag         asset tag (keys)
       └──────────┘           (HUD wearer)       still most of the time
 ```
 
@@ -33,7 +33,7 @@ and commands, with the host as controller (§12).
 - **Advertisements** carry each node's position, uncertainty, capacity, battery and pressure
   (FR-M4), so a tag needs no directory service. The layout is `navgrid_proto::Beacon`: 17 bytes
   of manufacturer-specific data, with the name in the scan response.
-- **The person↔asset direct link** serves the final approach of a find (§10).
+- **The mobile↔asset direct link** serves the final approach of a find (§10).
 
 ## 2. Roles on a link
 
@@ -41,7 +41,7 @@ and commands, with the host as controller (§12).
 |---|---|---|---|
 | node ↔ node | lower `NodeId` is central *(proposed)* | central initiates | initiator; it sends the result back over the link because both ends need it |
 | tag → node | tag is central (D-3) | tag initiates | tag |
-| person → asset | person tag is central | person tag initiates | person tag |
+| mobile → asset | mobile tag is central | mobile tag initiates | mobile tag |
 
 A device must be central on some links and peripheral on others at the same time, so the
 controller runs **multirole**. Nordic's SoftDevice Controller (SDC) has enabled initiator and
@@ -187,8 +187,8 @@ Per role, against the one-month budget:
 | Role | Estimate |
 |---|---|
 | **Asset tag** | Still: idle + advertising ≈ 15 µA, which is months. Carried: tracking only while moving. |
-| **Person tag** | Moving: 2 single-range updates/s ≈ 250 µA, which fits a month of near-continuous motion. Heading is the HUD's job. Optional gyro dead reckoning would add ≈ 0.5 mA, giving ~8 h/day of motion for a month. |
-| **Node** | Idle, advertising and ~6 mesh links ≈ 20 µA, plus ≈ 40 µA while a person walks nearby (round-robin over 6 nodes). Busy corridors drain first, so tags weigh advertised battery (FR-T1). |
+| **Mobile tag** | Moving: 2 single-range updates/s ≈ 250 µA, which fits a month of near-continuous motion. Heading is the HUD's job. Optional gyro dead reckoning would add ≈ 0.5 mA, giving ~8 h/day of motion for a month. |
+| **Anchor** | Idle, advertising and ~6 mesh links ≈ 20 µA, plus ≈ 40 µA while a person walks nearby (round-robin over 6 nodes). Busy corridors drain first, so tags weigh advertised battery (FR-T1). |
 | **Find session** | Direct person↔asset ranging at 4 Hz for a minute ≈ 30 mC on each side. Negligible. |
 
 Energy is no longer the binding constraint at a one-month goal, but the no-waste rules (NFR-6)
@@ -367,7 +367,7 @@ Monitoring is **our own small engineering tool** (D-16), not an external stack.
 ## 10. Find my keys
 
 ```
-asset tag (keys)                        person tag (HUD wearer)                  host
+asset tag (keys)                        mobile tag (HUD wearer)                  host
 ────────────────                        ───────────────────────                  ────
 still: advertise 1 s, near-zero cost
 moved: tracker (tier a)
@@ -389,8 +389,8 @@ within radio range:
 - **Pointer** (FR-F3, `frame::pointer`): bearing relative to the HUD's heading, elevation, and
   distance, all in the world frame. Error ≈ HUD heading error + mesh yaw error (§11) +
   (person σ ⊕ asset σ) / distance, which is why it degrades close in (R-13).
-- **Final approach** (D-20). When the asset is within radio range, the person tag ranges to it
-  directly (person initiates; the asset is connectable per FR-F5). CS gives distance to
+- **Final approach** (D-20). When the asset is within radio range, the mobile tag ranges to it
+  directly (the mobile tag initiates; the asset is connectable per FR-F5). CS gives distance to
   decimetres. Bearing comes from the direct ranges collected along the person's tracked path:
   `multilaterate` with the person's past positions as anchors (synthetic aperture). This needs
   ~1 m of movement. The HUD shows distance first and bearing once it converges.
@@ -851,7 +851,7 @@ The DK sink shows host link and connected nodes on its four LEDs.
 | ID | Decision | Status |
 |---|---|---|
 | D-1 | Rust everywhere: Embassy + `nrf-sdc` + `TrouBLE` + `bt-hci` on firmware; std Rust on host. | **Accepted** (user requirement; feasibility checked §6) |
-| D-2 | One firmware image; role (node / asset / person / sink), pinned coordinates and periods from provisioned `NodeConfig`. | **Accepted** (implemented 2026-11-02: `navgrid provision`) |
+| D-2 | One firmware image; role (anchor / asset / mobile) and the sink flag, pinned coordinates and periods from provisioned `NodeConfig`. | **Accepted** (implemented 2026-11-02: `navgrid provision`) |
 | D-3 | On tag links the tag is central + initiator and nodes are peripheral + reflector. This gives self-positioning, nodes stay unaware of tags, and per-tag compute lands on the tag. | Proposed |
 | D-4 | Reflector → initiator data: **inline PCT transfer (IPT) first.** All devices are ours, and it is faster (~30 ms vs 100–200 ms per estimate), has no GATT hop, and costs less energy per range. Its limits are mode 2 only and weaker relay-attack resistance. **RAS** comes when phones do, or as the fallback if IPT fails the R-8 checks. | Proposed |
 | D-5 | Wire format: postcard + COBS; telemetry types in `navgrid-proto`, mesh state and sync in `navgrid-mesh`. | Proposed |
@@ -869,7 +869,7 @@ The DK sink shows host link and connected nodes on its four LEDs.
 | D-17 | CR2032 no-waste rules (requirements NFR-6), against a 1-month goal / 1-week floor. | **Accepted** |
 | D-18 | Asset tags publish a fix when they settle; the host keeps the asset registry (§10). | Proposed |
 | D-19 | Heading comes from another sensor (the HUD's magnetometer), in the world frame; tags do not estimate it (§10). | **Accepted** (revised v0.5) |
-| D-20 | Final approach on direct person↔asset CS: distance direct, bearing by synthetic aperture over the person's track (§10). | Proposed |
+| D-20 | Final approach on direct mobile↔asset CS: distance direct, bearing by synthetic aperture over the person's track (§10). | Proposed |
 | D-21 | Engineering records live in `docs/engineering/`: log, known defects, todo, spikes. Design stays in requirements/architecture; evidence goes in spikes. | **Accepted** (repo rule) |
 | D-22 | Absolute referencing from **commissioning presets**: barometry for up; pins and/or preset node-pair bearings for yaw and handedness; one pin for origin. The host owns a versioned mesh→world transform, fitted from a site file (§11). Learning from HUD headings is a later option. | **Accepted** (revised: presets, Q15) |
 | D-23 | Monitoring gets a thin web UI later: one static page plus a JSON endpoint on the host tool, sharing `navgrid monitor`'s state (§9). | Proposed (later) |

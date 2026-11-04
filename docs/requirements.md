@@ -32,11 +32,11 @@ distance, from across the building down to the last metre.
 
 1. **The asset tag** on the keys is still most of the time and costs almost nothing. When it moves
    (carried in a pocket) it tracks itself. When it settles, it fixes its position and publishes it.
-2. **The person tag** tracks the wearer's 3D position while they move. Heading comes from the
+2. **The mobile tag** (on the HUD wearer) tracks their 3D position while they move. Heading comes from the
    HUD's own sensors (e.g. a magnetometer), in world coordinates.
 3. **Far away:** the pointer is the bearing from the person to the asset's last published
    position, both in the world frame (FR-A), relative to the HUD's heading.
-4. **Close in** (within radio range): the person tag ranges **directly** to the asset tag. CS
+4. **Close in** (within radio range): the mobile tag ranges **directly** to the asset tag. CS
    gives the distance between the two; the bearing is refined from how that distance changes as
    the person moves. The asset can blink its LED.
 
@@ -44,13 +44,14 @@ distance, from across the building down to the last metre.
 
 | Term | Meaning |
 |---|---|
-| **Node** | nRF54L15 member of the mesh. Ranges with neighbors, maintains its own position estimate. |
-| **Pinned node** | Node with surveyed coordinates. Pins fix the mesh to the building frame. |
+| **Node** | Any nRF54L15 member of the mesh, whatever its role. |
+| **Anchor** | The stationary role: ranges with its neighbours (the self-survey), maintains its own position estimate, serves as a reference for tags. |
+| **Pinned node** | Anchor with surveyed coordinates. Pins fix the mesh to the building frame. |
 | **Tag** / target | Device located against the mesh; does not contribute to node positions. Two kinds: |
 | **Asset tag** | Tag on a thing (keys, equipment). Mostly still. May be a single-antenna module. |
-| **Person tag** | Tag worn by a person with a HUD. Provides position; the HUD provides heading. |
+| **Mobile tag** | Tag on something that moves fast: a person with a HUD, a robot. Tracked continuously while it moves, and a consumer of positions; the HUD provides heading. |
 | **Mesh frame / world frame** | The frame the mesh solves in (its own) vs east-north-up (absolute). FR-A relates the two. |
-| **Sink** | USB-powered gateway attached to the host. Collects telemetry; serves the asset registry. |
+| **Sink** | Any node with a host link (USB), flagged as a sink in its configuration, whatever its role; usually an anchor too. Collects telemetry for the host; several per building. |
 | **Link** | BLE ACL connection between two devices; CS procedures and data both run over it. |
 | **Initiator / reflector** | CS roles on a link. The initiator computes the distance; it needs the reflector's step data. |
 | **Procedure** | One CS ranging exchange (many steps over many channels) → one distance estimate. |
@@ -68,7 +69,7 @@ distance, from across the building down to the last metre.
 | Phase | Goal | Exit criterion |
 |---|---|---|
 | **P0 — bring-up** | Rust firmware on nRF54L15 TAG boards runs CS between two boards, with antenna diversity; raw step data reaches the host. | Our estimator agrees with Nordic `cs_de` (NCS v3.4.1 `ipt_*` / `ras_*` samples) within 5 cm on the same captures. Ranging-rate and multi-link limits measured. Energy per activity measured. CR2032 sag and BME688 pressure noise measured. |
-| **P1 — find my keys, first cut** | One asset tag, one person tag, ≥4 nodes at hand-surveyed, north-aligned positions (pins, FR-A3a). 3D tracker with barometric height and IMU gating. Host view stands in for the HUD: pointer and distance. Direct person↔asset ranging for the final approach. | Position p90 (horizontal and vertical), pointer bearing error, and final-approach distance error measured on a test course. Diversity on vs off, IMU gating on vs off. Antenna-path combiner chosen from real captures. |
+| **P1 — find my keys, first cut** | One asset tag, one mobile tag, ≥4 anchors at hand-surveyed, north-aligned positions (pins, FR-A3a). 3D tracker with barometric height and IMU gating. Host view stands in for the HUD: pointer and distance. Direct person↔asset ranging for the final approach. | Position p90 (horizontal and vertical), pointer bearing error, and final-approach distance error measured on a test course. Diversity on vs off, IMU gating on vs off. Antenna-path combiner chosen from real captures. |
 | **P2 — self-survey** | Nodes range each other; positions solved, first centrally on host, then distributed on nodes. Mesh referenced from commissioning presets (FR-A3). | Distributed solution within 0.2 m of central reference; node p90 vs ground truth measured; frame yaw within NFR-11. |
 | **P3 — building** | Link scheduling, handover, many tags, routing to sinks, provisioning, OTA, HUD integration. | Capacity targets in NFR-4 met in a multi-room deployment. |
 
@@ -106,8 +107,8 @@ The order of work inside the phases and the test that closes each milestone: [ro
 
   2D (fixed height) remains available as a special case.
 - **FR-T3** Handover: as the tag moves it swaps nodes without a gap in position output.
-- **FR-T4** Nodes, asset tags, person tags and the sink run the same firmware, with the role from configuration. Tags are TAGs or single-antenna nRF54L modules.
-- **FR-T5** An **asset tag publishes its position when it settles** (after the settling burst, FR-T6) toward the sink. Person tags may publish theirs too.
+- **FR-T4** Anchors, asset tags and mobile tags run the same firmware, with the role from configuration; a sink is any of them with a host link, flagged in configuration. Tags are TAGs or single-antenna nRF54L modules.
+- **FR-T5** An **asset tag publishes its position when it settles** (after the settling burst, FR-T6) toward the sink. Mobile tags may publish theirs too.
 - **FR-T6** **Motion gating.** A tag ranges at its moving rate only while the IMU reports motion. On stopping it takes a short settling burst, then drops to a slow keep-alive rate. Wake-on-motion uses the ADXL367, so a still tag costs close to nothing.
 - **FR-T7** **IMU fusion**, in tiers. Tags do not need to produce heading: the HUD provides it (FR-F2).
   - (a) **All tags:** accelerometer still/moving detection drives FR-T6, zero-velocity updates and the filter's motion noise.
@@ -117,10 +118,10 @@ The order of work inside the phases and the test that closes each milestone: [ro
 ### Find (F)
 
 - **FR-F1** **Asset registry:** the last published position of each asset (with uncertainty and age) is available to the finder. It starts at the host, fed through the sink (FR-S); a mesh-local query comes later if needed.
-- **FR-F2** **Person pose:** the person tag provides 3D position; heading comes from another sensor, typically the HUD's magnetometer, in the world frame. Positions are converted to the world frame (FR-A) before the pointer is computed, so heading and bearing share a reference.
+- **FR-F2** **Person pose:** the mobile tag provides 3D position; heading comes from another sensor, typically the HUD's magnetometer, in the world frame. Positions are converted to the world frame (FR-A) before the pointer is computed, so heading and bearing share a reference.
 - **FR-F3** **Pointer:** bearing (azimuth and elevation) and distance from the person to the asset, in the person's frame, ready for a HUD to render. The host view renders it until a HUD is integrated.
-- **FR-F4** **Final approach:** within radio range, the person tag ranges directly with the asset tag over CS. Distance comes straight from CS; bearing comes from direct ranges taken along the person's tracked path (synthetic aperture). This replaces mesh-based pointing close in, where position errors would swamp the bearing (R-13).
-- **FR-F5** Asset tags stay connectable at a slow advertising interval, so a nearby person tag can start direct ranging without paging.
+- **FR-F4** **Final approach:** within radio range, the mobile tag ranges directly with the asset tag over CS. Distance comes straight from CS; bearing comes from direct ranges taken along the person's tracked path (synthetic aperture). This replaces mesh-based pointing close in, where position errors would swamp the bearing (R-13).
+- **FR-F5** Asset tags stay connectable at a slow advertising interval, so a nearby mobile tag can start direct ranging without paging.
 - **FR-F6** *(Optional)* An asset tag blinks its LED on request during the final approach.
 
 ### Absolute referencing (A)
@@ -199,7 +200,7 @@ at best", so P0 measurements will re-baseline these.
 | ID | Requirement |
 |---|---|
 | **NFR-1** Accuracy | Ranging p90 ≤ 0.5 m line-of-sight, ≤ 20 m. Tag position p90 ≤ 1.0 m horizontal and ≤ 1.0 m vertical inside covered areas, node error included. Floor identification ≥ 99 %. Self-survey node p90 ≤ 0.5 m. |
-| **NFR-2** Update rate | Moving person tag: pose output ≥ 2 Hz. In simulation, walking needs about 2 single-range updates per second without dead reckoning. A still tag may stop updating. Mesh links re-range rarely (minutes to hours) and whenever a node is moved. |
+| **NFR-2** Update rate | Moving mobile tag: pose output ≥ 2 Hz. In simulation, walking needs about 2 single-range updates per second without dead reckoning. A still tag may stop updating. Mesh links re-range rarely (minutes to hours) and whenever a node is moved. |
 | **NFR-3** Latency | Tag position ≤ 500 ms after the last contributing range. Asset registry update ≤ 1 min after the asset settles, when a sink path exists. |
 | **NFR-4** Scale | ≥ 500 nodes and ≥ 100 concurrent tags per building. Per-node connection count and airtime are bounded and enforced (admission control via FR-M4). |
 | **NFR-5** No time sync | Ranging and positioning need no network-wide clock sync (CS is two-way). |
@@ -283,10 +284,17 @@ Decided 2026-11-03 (firmware, architecture §13):
 | — | When over-the-air updates come | **Single hop soon**, before stage 3: the bootloader plus updates from a DK over one link, since stage 3 means reflashing many TAGs. Mesh-wide spreading after stage 4 (FR-O2). |
 | — | How images are authenticated | **A separate Ed25519 signing key** on the host; devices are provisioned with the public key and check every update against it. A leaked fleet key can't install firmware. |
 
+Decided 2026-11-04 (roles):
+
+| ID | Question | Decision |
+|---|---|---|
+| — | Device roles | **Three:** anchor (stationary, self-surveys, serves tags), asset tag (settle and publish), mobile tag (tracked continuously at the fast rate and a consumer of positions: a person with a HUD, a robot). "Node" is any mesh member. |
+| — | The sink | **A flag, not a role:** any device with a host link is a sink, whatever its role, and a powered stationary one is a good anchor. Several sinks per building. |
+
 Open:
 
 | ID | Question | Default until answered |
 |---|---|---|
 | Q3 | Are the NFR-1/2/4/10 numbers right for the product? | As proposed. |
 | Q5 | Routing transport: opportunistic over ranging contacts, or 802.15.4/Thread? | Opportunistic over BLE ranging contacts (D-6). |
-| Q7 | Who initiates on tag links? | The tag initiates (D-3); the person tag initiates on direct person↔asset links. |
+| Q7 | Who initiates on tag links? | The tag initiates (D-3); the mobile tag initiates on direct mobile↔asset links. |

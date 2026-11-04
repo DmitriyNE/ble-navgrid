@@ -49,6 +49,9 @@ pub struct Device {
     #[serde(with = "hex_id")]
     pub id: NodeId,
     pub role: Role,
+    /// It also has a host link (a sink).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sink: bool,
     /// UTC date of the last enrolment.
     pub enrolled: String,
     pub status: Status,
@@ -77,7 +80,7 @@ impl Registry {
 
     /// Records an enrolment: updates the device's entry or adds one. A number another device
     /// holds is refused.
-    pub fn enrol(&mut self, id: NodeId, number: u16, role: Role, date: String) -> Result<()> {
+    pub fn enrol(&mut self, id: NodeId, number: u16, role: Role, sink: bool, date: String) -> Result<()> {
         if let Some(other) = self.devices.iter().find(|d| d.number == number && d.id != id) {
             bail!("{} already belongs to {:012x}", label_name(number), other.id.0);
         }
@@ -85,6 +88,7 @@ impl Registry {
             Some(d) => {
                 d.number = number;
                 d.role = role;
+                d.sink = sink;
                 d.enrolled = date;
                 d.status = Status::Enrolled;
             }
@@ -92,6 +96,7 @@ impl Registry {
                 number,
                 id,
                 role,
+                sink,
                 enrolled: date,
                 status: Status::Enrolled,
                 firmware: None,
@@ -167,7 +172,19 @@ impl Fleet {
             return Ok(Registry::default());
         }
         let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+        let mut value: serde_json::Value =
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        // Registries from before the sink flag: the sink was a role.
+        if let Some(devices) = value.get_mut("devices").and_then(serde_json::Value::as_array_mut) {
+            for d in devices
+                .iter_mut()
+                .filter(|d| d.get("role").and_then(serde_json::Value::as_str) == Some("Sink"))
+            {
+                d["role"] = "Anchor".into();
+                d["sink"] = true.into();
+            }
+        }
+        serde_json::from_value(value).with_context(|| format!("parsing {}", path.display()))
     }
 
     pub fn save(&self, registry: &Registry) -> Result<()> {
@@ -297,10 +314,10 @@ pub fn list(args: &FleetArgs) -> Result<()> {
             _ => "firmware unknown".into(),
         };
         println!(
-            "{}  {:012x}  {:<6}  {:<8}  enrolment {}  {firmware}",
+            "{}  {:012x}  {:<13}  {:<8}  enrolment {}  {firmware}",
             label_name(d.number),
             d.id.0,
-            format!("{:?}", d.role),
+            format!("{:?}{}", d.role, if d.sink { " + sink" } else { "" }),
             format!("{:?}", d.status).to_lowercase(),
             d.enrolled
         );
@@ -333,14 +350,16 @@ mod tests {
     fn numbers_are_kept_and_never_reused() {
         let mut r = Registry::default();
         let (a, b) = (NodeId(0xc000_0000_0001), NodeId(0xc000_0000_0002));
-        r.enrol(a, r.next_number(), Role::Node, "2026-11-02".into()).unwrap();
-        r.enrol(b, r.next_number(), Role::Sink, "2026-11-02".into()).unwrap();
+        r.enrol(a, r.next_number(), Role::Anchor, false, "2026-11-02".into())
+            .unwrap();
+        r.enrol(b, r.next_number(), Role::Anchor, true, "2026-11-02".into())
+            .unwrap();
         assert_eq!(r.by_id(b).unwrap().number, 2);
         // Re-enrolling keeps the entry; taking another device's number is refused.
-        r.enrol(a, 1, Role::Asset, "2026-11-03".into()).unwrap();
+        r.enrol(a, 1, Role::Asset, false, "2026-11-03".into()).unwrap();
         assert_eq!(r.devices.len(), 2);
         assert_eq!(r.by_id(a).unwrap().role, Role::Asset);
-        assert!(r.enrol(a, 2, Role::Node, "2026-11-03".into()).is_err());
+        assert!(r.enrol(a, 2, Role::Anchor, false, "2026-11-03".into()).is_err());
         let back: Registry = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back, r);
         assert!(serde_json::to_string(&r).unwrap().contains("\"c00000000001\""));

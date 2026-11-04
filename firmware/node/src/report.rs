@@ -224,7 +224,7 @@ pub async fn serve_sink(
 
     let hello = Message::Hello {
         node,
-        role: navgrid_proto::Role::Sink,
+        role: beacons.beacon().role,
         protocol: navgrid_proto::PROTOCOL_VERSION,
         firmware: crate::FIRMWARE,
         antennas: 1,

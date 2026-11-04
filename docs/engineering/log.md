@@ -4,6 +4,16 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Roles: anchor, asset, mobile; the sink is a flag.** `Role` is now Anchor / Asset / Mobile (was
+Node / Asset / Person / Sink): "node" stays the word for any mesh member, "mobile" covers whatever
+is tracked at the fast rate (a HUD wearer, a robot), and any device with a host link is a sink
+whatever its role, since a powered, stationary device with a CS radio is a good anchor
+(requirements §8). Provisioning page format 5 carries `NodeConfig::sink`; formats 1–4 still decode
+(a stored Sink role becomes anchor + sink), the beacon carries the flag in bit 2 and reads role
+byte 3 from older firmware as anchor + sink, and the registry migrates `Sink` entries on load.
+`navgrid provision --role anchor|asset|mobile [--sink]`; the bring-up pointer is `--report-to`.
+Nothing flashed yet; no device needs re-provisioning.
+
 **Morning after: the estimators on the raw tones** ([spike](spikes/2026-11-03-four-tags-proximity.md),
 last section). Phase slope, windowed delay profile, matrix pencil and root-MUSIC side by side on the
 four tone captures (`scripts/tones_estimators.py`, `scripts/tones_components.py`). The 3–3.5 m

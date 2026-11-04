@@ -286,7 +286,7 @@ impl<'a> Sim<'a> {
                     cfg.limits.routes = routes;
                 }
                 let info = NodeInfo {
-                    role: if sink { Role::Sink } else { Role::Node },
+                    role: Role::Anchor,
                     number: Some(i as u16 + 1),
                     firmware: navgrid_proto::Firmware::new(0, 1, 0, 0, false),
                     config: 0,

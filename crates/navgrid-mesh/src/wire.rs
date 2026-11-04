@@ -145,7 +145,7 @@ mod tests {
                 versions,
             },
             Sync::Record(record(Body::Node(NodeInfo {
-                role: Role::Person,
+                role: Role::Mobile,
                 number: Some(u16::MAX),
                 firmware: Firmware::new(u8::MAX, u8::MAX, u8::MAX, u32::MAX, true),
                 config: u32::MAX,

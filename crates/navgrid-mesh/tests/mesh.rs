@@ -8,7 +8,7 @@ const MINUTE: u64 = 60_000;
 
 fn info() -> NodeInfo {
     NodeInfo {
-        role: Role::Node,
+        role: Role::Anchor,
         number: None,
         firmware: navgrid_proto::Firmware::new(0, 1, 0, 0, false),
         config: 0,

@@ -23,15 +23,18 @@ pub struct ProvisionArgs {
     /// Fleet number; by default the device keeps its own, or a new device gets the next one.
     #[arg(long)]
     number: Option<u16>,
-    #[arg(long, value_enum, default_value = "node")]
+    #[arg(long, value_enum, default_value = "anchor")]
     role: RoleArg,
+    /// Also a sink: a host link over USB, serving the host, whatever the role.
+    #[arg(long)]
+    sink: bool,
     /// Bring-up: range with this reflector as CS initiator (node ID as the device logs it, 12 hex
     /// digits).
     #[arg(long, value_parser = parse_node)]
     peer: Option<NodeId>,
     /// Bring-up: report ranges to this sink.
     #[arg(long, value_parser = parse_node)]
-    sink: Option<NodeId>,
+    report_to: Option<NodeId>,
     /// Hold the radio on antenna 0: one antenna path per link.
     #[arg(long)]
     no_diversity: bool,
@@ -57,10 +60,9 @@ pub struct ProvisionArgs {
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum RoleArg {
-    Node,
+    Anchor,
     Asset,
-    Person,
-    Sink,
+    Mobile,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -89,10 +91,9 @@ impl From<ReportLevelArg> for ReportLevel {
 impl From<RoleArg> for Role {
     fn from(r: RoleArg) -> Self {
         match r {
-            RoleArg::Node => Role::Node,
+            RoleArg::Anchor => Role::Anchor,
             RoleArg::Asset => Role::Asset,
-            RoleArg::Person => Role::Person,
-            RoleArg::Sink => Role::Sink,
+            RoleArg::Mobile => Role::Mobile,
         }
     }
 }
@@ -137,6 +138,7 @@ pub fn run(args: &ProvisionArgs) -> Result<()> {
     let p = Provisioning {
         config: NodeConfig {
             role: args.role.into(),
+            sink: args.sink,
             diversity: !args.no_diversity,
             pinned: args.pin,
             adv_interval_ms: args.adv_interval_ms,
@@ -145,7 +147,7 @@ pub fn run(args: &ProvisionArgs) -> Result<()> {
         },
         fleet_key: fleet.key()?,
         peer: args.peer,
-        sink: args.sink,
+        sink: args.report_to,
         number,
         signing_key,
         report_level: args.report_level.into(),
@@ -154,10 +156,11 @@ pub fn run(args: &ProvisionArgs) -> Result<()> {
     let page = navgrid_proto::encode_provisioning(&p, &mut buf)?;
     let hex = |id: Option<NodeId>| id.map_or("none".into(), |n| format!("{:012x}", n.0));
     println!(
-        "{} {}: {:?}, diversity {}, pin {:?}, peer {}, sink {}; {} bytes",
+        "{} {}: {:?}{}, diversity {}, pin {:?}, peer {}, reports to {}; {} bytes",
         number.map_or("unnumbered".into(), label_name),
         id.map_or("(no device)".into(), |id| format!("{:012x}", id.0)),
         p.config.role,
+        if p.config.sink { " + sink" } else { "" },
         if p.config.diversity { "on" } else { "off" },
         p.config.pinned,
         hex(p.peer),
@@ -173,7 +176,7 @@ pub fn run(args: &ProvisionArgs) -> Result<()> {
         unreachable!("a device to provision has an ID and a number")
     };
     // Refuse a taken number before touching the device.
-    registry.enrol(id, number, p.config.role, today())?;
+    registry.enrol(id, number, p.config.role, p.config.sink, today())?;
     // probe-rs reads the page from a file; it holds the fleet key, so it doesn't stay.
     let file = std::env::temp_dir().join(format!("navgrid-provision-{}.bin", std::process::id()));
     std::fs::write(&file, page).with_context(|| format!("writing {}", file.display()))?;

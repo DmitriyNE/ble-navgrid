@@ -410,7 +410,8 @@ mod tests {
             devices: vec![Device {
                 number: 42,
                 id,
-                role: navgrid_proto::Role::Node,
+                role: navgrid_proto::Role::Anchor,
+                sink: false,
                 enrolled: "2026-11-02".into(),
                 status: Status::Enrolled,
                 firmware: Some("0.1.0+00000001".into()),

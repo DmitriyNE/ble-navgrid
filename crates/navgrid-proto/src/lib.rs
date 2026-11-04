@@ -103,19 +103,21 @@ impl defmt::Format for Firmware {
 /// addresses have their top two bits set.
 pub const CONTROLLER: NodeId = NodeId(0);
 
-/// Numbered as in a [`Beacon`].
+/// What a device does in positioning. Numbered as in a [`Beacon`]. Any role can also be a sink
+/// ([`NodeConfig::sink`]): a device with a host link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
 pub enum Role {
-    /// Static mesh member: ranges with neighbors, serves as a reference for tags.
-    Node,
+    /// Stationary: ranges with its neighbours (the self-survey) and serves as a reference for tags.
+    #[serde(alias = "Node")]
+    Anchor,
     /// Tag on a thing (keys): still most of the time; fixes and publishes its position when it settles.
     Asset,
-    /// Tag worn by a person with a HUD: tracked continuously while moving, with heading.
-    Person,
-    /// USB-powered gateway that collects telemetry for the host.
-    Sink,
+    /// Tag on something that moves fast (a person with a HUD, a robot): tracked continuously
+    /// while it moves, at the fast rate, and a consumer of positions.
+    #[serde(alias = "Person")]
+    Mobile,
 }
 
 /// The hardware an image is built for. An update carries it, so no device installs another
@@ -166,6 +168,9 @@ pub struct PointMm {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NodeConfig {
     pub role: Role,
+    /// Also a sink: it has a host link (UART over USB) and serves the host with the mesh's state
+    /// and telemetry, whatever its role. A sink is usually an anchor too.
+    pub sink: bool,
     /// Use every antenna the board has. `false` holds the radio on antenna 0 and limits every
     /// link with this device to one antenna path: shorter procedures and less energy, no diversity.
     pub diversity: bool,
@@ -183,7 +188,8 @@ pub struct NodeConfig {
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
-            role: Role::Node,
+            role: Role::Anchor,
+            sink: false,
             diversity: true,
             pinned: None,
             adv_interval_ms: 1000,
@@ -230,10 +236,63 @@ pub enum ReportLevel {
     Trace,
 }
 
+/// Format 4 of the page, before the sink flag (the sink was a role).
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
+struct ProvisioningV4 {
+    config: NodeConfigV4,
+    fleet_key: [u8; 16],
+    peer: Option<NodeId>,
+    sink: Option<NodeId>,
+    number: Option<u16>,
+    signing_key: Option<[u8; 32]>,
+    report_level: ReportLevel,
+}
+
+/// `NodeConfig` as formats 1–4 of the page stored it.
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
+struct NodeConfigV4 {
+    role: RoleV4,
+    diversity: bool,
+    pinned: Option<PointMm>,
+    adv_interval_ms: u16,
+    env_interval_s: u16,
+    gas: bool,
+}
+
+/// `Role` as formats 1–4 of the page stored it: the sink was a role of its own.
+#[derive(Clone, Copy, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
+enum RoleV4 {
+    Node,
+    Asset,
+    Person,
+    Sink,
+}
+
+impl From<NodeConfigV4> for NodeConfig {
+    fn from(c: NodeConfigV4) -> Self {
+        Self {
+            role: match c.role {
+                RoleV4::Node | RoleV4::Sink => Role::Anchor,
+                RoleV4::Asset => Role::Asset,
+                RoleV4::Person => Role::Mobile,
+            },
+            sink: matches!(c.role, RoleV4::Sink),
+            diversity: c.diversity,
+            pinned: c.pinned,
+            adv_interval_ms: c.adv_interval_ms,
+            env_interval_s: c.env_interval_s,
+            gas: c.gas,
+        }
+    }
+}
+
 /// Format 3 of the page, before the report level.
 #[derive(Deserialize)]
 struct ProvisioningV3 {
-    config: NodeConfig,
+    config: NodeConfigV4,
     fleet_key: [u8; 16],
     peer: Option<NodeId>,
     sink: Option<NodeId>,
@@ -244,7 +303,7 @@ struct ProvisioningV3 {
 /// Format 2 of the page, before the signing key.
 #[derive(Deserialize)]
 struct ProvisioningV2 {
-    config: NodeConfig,
+    config: NodeConfigV4,
     fleet_key: [u8; 16],
     peer: Option<NodeId>,
     sink: Option<NodeId>,
@@ -254,7 +313,7 @@ struct ProvisioningV2 {
 /// Format 1 of the page, before fleet numbers.
 #[derive(Deserialize)]
 struct ProvisioningV1 {
-    config: NodeConfig,
+    config: NodeConfigV4,
     fleet_key: [u8; 16],
     peer: Option<NodeId>,
     sink: Option<NodeId>,
@@ -429,7 +488,7 @@ impl UpdateHeader {
 pub const PROVISIONING_ADDRESS: u32 = 0x0017_B000;
 /// The provisioning page's header: magic, format, payload length, CRC-32 of the payload.
 const PROVISIONING_MAGIC: [u8; 4] = *b"ngpv";
-const PROVISIONING_FORMAT: u8 = 4;
+const PROVISIONING_FORMAT: u8 = 5;
 const PROVISIONING_HEADER: usize = 12;
 /// Upper bound for an encoded provisioning page.
 pub const MAX_PROVISIONING_LEN: usize = 128;
@@ -484,7 +543,7 @@ pub fn decode_provisioning(page: &[u8]) -> Result<Provisioning, ProvisioningErro
     if format == 1 {
         let v1: ProvisioningV1 = postcard::from_bytes(payload).map_err(|_| ProvisioningError::Corrupt)?;
         return Ok(Provisioning {
-            config: v1.config,
+            config: v1.config.into(),
             fleet_key: v1.fleet_key,
             peer: v1.peer,
             sink: v1.sink,
@@ -496,7 +555,7 @@ pub fn decode_provisioning(page: &[u8]) -> Result<Provisioning, ProvisioningErro
     if format == 2 {
         let v2: ProvisioningV2 = postcard::from_bytes(payload).map_err(|_| ProvisioningError::Corrupt)?;
         return Ok(Provisioning {
-            config: v2.config,
+            config: v2.config.into(),
             fleet_key: v2.fleet_key,
             peer: v2.peer,
             sink: v2.sink,
@@ -508,13 +567,25 @@ pub fn decode_provisioning(page: &[u8]) -> Result<Provisioning, ProvisioningErro
     if format == 3 {
         let v3: ProvisioningV3 = postcard::from_bytes(payload).map_err(|_| ProvisioningError::Corrupt)?;
         return Ok(Provisioning {
-            config: v3.config,
+            config: v3.config.into(),
             fleet_key: v3.fleet_key,
             peer: v3.peer,
             sink: v3.sink,
             number: v3.number,
             signing_key: v3.signing_key,
             report_level: ReportLevel::default(),
+        });
+    }
+    if format == 4 {
+        let v4: ProvisioningV4 = postcard::from_bytes(payload).map_err(|_| ProvisioningError::Corrupt)?;
+        return Ok(Provisioning {
+            config: v4.config.into(),
+            fleet_key: v4.fleet_key,
+            peer: v4.peer,
+            sink: v4.sink,
+            number: v4.number,
+            signing_key: v4.signing_key,
+            report_level: v4.report_level,
         });
     }
     postcard::from_bytes(payload).map_err(|_| ProvisioningError::Corrupt)
@@ -554,13 +625,15 @@ pub const BATTERY_CRITICAL_MV: u16 = 2400;
 /// without a directory, and the field tool can list it (FR-O6).
 ///
 /// Layout after the company identifier, little-endian: format (2), role, flags (bit 0 attention,
-/// bit 1 install mode), hops, free links, battery (20 mV steps above 2.0 V), pressure (0.1 Pa,
+/// bit 1 install mode, bit 2 sink), hops, free links, battery (20 mV steps above 2.0 V), pressure (0.1 Pa,
 /// 3 bytes), fleet number (2 bytes), position x, y, z (decimetres, 2 bytes each), position σ
 /// (decimetres), frame version (2 bytes). All-ones fields are unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Beacon {
     pub role: Role,
+    /// It has a host link (it is a sink); its hop count is then 0.
+    pub sink: bool,
     /// Its button was pressed in the last 30 s (FR-O5).
     pub attention: bool,
     /// It is in install mode (architecture §13).
@@ -591,7 +664,7 @@ impl Beacon {
         let mut b = [0xffu8; BEACON_LEN];
         b[0] = BEACON_FORMAT;
         b[1] = self.role as u8;
-        b[2] = u8::from(self.attention) | (u8::from(self.install) << 1);
+        b[2] = u8::from(self.attention) | (u8::from(self.install) << 1) | (u8::from(self.sink) << 2);
         b[3] = self.hops;
         b[4] = self.free_links;
         if let Some(mv) = self.battery_mv {
@@ -618,11 +691,12 @@ impl Beacon {
         if b[0] != BEACON_FORMAT {
             return None;
         }
-        let role = match b[1] {
-            0 => Role::Node,
-            1 => Role::Asset,
-            2 => Role::Person,
-            3 => Role::Sink,
+        let (role, legacy_sink) = match b[1] {
+            0 => (Role::Anchor, false),
+            1 => (Role::Asset, false),
+            2 => (Role::Mobile, false),
+            // Firmware before the sink flag advertised the sink as a role.
+            3 => (Role::Anchor, true),
             _ => return None,
         };
         let i16_at = |i: usize| i16::from_le_bytes([b[i], b[i + 1]]);
@@ -630,6 +704,7 @@ impl Beacon {
         let number = u16::from_le_bytes([b[9], b[10]]);
         Some(Self {
             role,
+            sink: legacy_sink || b[2] & 4 != 0,
             attention: b[2] & 1 != 0,
             install: b[2] & 2 != 0,
             hops: b[3],
@@ -932,7 +1007,7 @@ mod tests {
         [
             Message::Hello {
                 node: id,
-                role: Role::Person,
+                role: Role::Mobile,
                 protocol: u16::MAX,
                 firmware: Firmware::new(u8::MAX, u8::MAX, u8::MAX, u32::MAX, true),
                 antennas: u8::MAX,
@@ -1033,7 +1108,8 @@ mod tests {
     fn provisioning_roundtrips_and_rejects_damage() {
         let p = Provisioning {
             config: NodeConfig {
-                role: Role::Sink,
+                role: Role::Anchor,
+                sink: true,
                 pinned: Some(PointMm { x: 1, y: 2, z: 3 }),
                 ..NodeConfig::default()
             },
@@ -1056,25 +1132,37 @@ mod tests {
         assert_eq!(decode_provisioning(&flipped), Err(ProvisioningError::Corrupt));
         assert_eq!(decode_provisioning(&[0xff; 64]), Err(ProvisioningError::Blank));
         let mut newer = page.clone();
-        newer[4] = 5;
-        assert_eq!(decode_provisioning(&newer), Err(ProvisioningError::Format(5)));
+        newer[4] = 6;
+        assert_eq!(decode_provisioning(&newer), Err(ProvisioningError::Format(6)));
         assert_eq!(
             decode_provisioning(&page[..page.len() - 1]),
             Err(ProvisioningError::Corrupt)
         );
     }
 
+    /// A default `NodeConfig` as formats 1–4 stored it.
+    fn legacy_config() -> NodeConfigV4 {
+        NodeConfigV4 {
+            role: RoleV4::Node,
+            diversity: true,
+            pinned: None,
+            adv_interval_ms: 1000,
+            env_interval_s: 60,
+            gas: false,
+        }
+    }
+
     #[test]
     fn reads_format_1_pages() {
         #[derive(Serialize)]
         struct V1 {
-            config: NodeConfig,
+            config: NodeConfigV4,
             fleet_key: [u8; 16],
             peer: Option<NodeId>,
             sink: Option<NodeId>,
         }
         let v1 = V1 {
-            config: NodeConfig::default(),
+            config: legacy_config(),
             fleet_key: [7; 16],
             peer: None,
             sink: Some(NodeId(0xc000_0000_0001)),
@@ -1094,7 +1182,7 @@ mod tests {
     fn reads_format_3_pages_at_error_level() {
         #[derive(Serialize)]
         struct V3 {
-            config: NodeConfig,
+            config: NodeConfigV4,
             fleet_key: [u8; 16],
             peer: Option<NodeId>,
             sink: Option<NodeId>,
@@ -1102,7 +1190,7 @@ mod tests {
             signing_key: Option<[u8; 32]>,
         }
         let v3 = V3 {
-            config: NodeConfig::default(),
+            config: legacy_config(),
             fleet_key: [7; 16],
             peer: None,
             sink: None,
@@ -1220,7 +1308,8 @@ mod tests {
     #[test]
     fn beacon_roundtrips_with_unknowns() {
         let full = Beacon {
-            role: Role::Node,
+            role: Role::Anchor,
+            sink: false,
             attention: true,
             install: false,
             number: Some(42),
@@ -1236,7 +1325,8 @@ mod tests {
         };
         assert_eq!(Beacon::decode(&full.encode()), Some(full));
         let bare = Beacon {
-            role: Role::Sink,
+            role: Role::Mobile,
+            sink: true,
             attention: false,
             install: true,
             number: None,
@@ -1248,6 +1338,58 @@ mod tests {
         };
         assert_eq!(Beacon::decode(&bare.encode()), Some(bare));
         assert_eq!(Beacon::decode(&[9; BEACON_LEN]), None);
+        // A beacon from firmware that still advertised the sink as role 3.
+        let mut legacy = bare.encode();
+        legacy[1] = 3;
+        legacy[2] = 0;
+        let decoded = Beacon::decode(&legacy).unwrap();
+        assert_eq!((decoded.role, decoded.sink), (Role::Anchor, true));
+    }
+
+    #[test]
+    fn format_4_pages_decode_with_the_sink_as_a_flag() {
+        let v4 = ProvisioningV4 {
+            config: NodeConfigV4 {
+                role: RoleV4::Sink,
+                diversity: false,
+                pinned: Some(PointMm { x: 1, y: 2, z: 3 }),
+                adv_interval_ms: 500,
+                env_interval_s: 0,
+                gas: true,
+            },
+            fleet_key: [0xa5; 16],
+            peer: None,
+            sink: Some(NodeId(7)),
+            number: Some(3),
+            signing_key: None,
+            report_level: ReportLevel::Info,
+        };
+        let mut page = [0xffu8; MAX_PROVISIONING_LEN];
+        let mut payload = [0u8; MAX_PROVISIONING_LEN];
+        let len = postcard::to_slice(&v4, &mut payload).unwrap().len();
+        page[..4].copy_from_slice(&PROVISIONING_MAGIC);
+        page[4] = 4;
+        page[5] = 0;
+        page[6..8].copy_from_slice(&(len as u16).to_le_bytes());
+        page[8..12].copy_from_slice(&crc32(&payload[..len]).to_le_bytes());
+        page[PROVISIONING_HEADER..PROVISIONING_HEADER + len].copy_from_slice(&payload[..len]);
+        let p = decode_provisioning(&page).unwrap();
+        assert_eq!(
+            p.config,
+            NodeConfig {
+                role: Role::Anchor,
+                sink: true,
+                diversity: false,
+                pinned: Some(PointMm { x: 1, y: 2, z: 3 }),
+                adv_interval_ms: 500,
+                env_interval_s: 0,
+                gas: true,
+            }
+        );
+        assert_eq!(
+            (p.sink, p.number, p.report_level),
+            (Some(NodeId(7)), Some(3), ReportLevel::Info)
+        );
     }
 
     #[test]

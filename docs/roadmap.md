@@ -62,7 +62,7 @@ The host becomes a service: the global replica, the asset registry (FR-F1), desi
 with reported state, the registry operations (place, replace, retire), identify and button events.
 The thin web UI (D-23): floor plan with nodes and tags, mesh links and health, sideband, pin and
 preset placement, the asset registry, and the find-my-keys flow as the HUD stand-in: pointer and
-distance from the person to the asset, the final approach on direct person↔asset ranging (FR-F4)
+distance from the person to the asset, the final approach on direct mobile↔asset ranging (FR-F4)
 with the bearing refined from motion and the asset's LED blinking.
 
 Exit: the whole find-my-keys flow runs end to end on the desk mesh (a pendant hung from the
@@ -88,7 +88,7 @@ One campaign, with everything above in place to ingest and display it:
    Exit: line-of-sight p90 ≤ 0.5 m from 1 to 6 m; the unit-to-unit spread known (if over 0.3 m,
    calibration becomes an enrolment step).
 2. **Energy and sag** with a power profiler against the firmware's own counters; CR2032 sag during
-   a procedure (R-9). Exit: the asset and person tag budgets against NFR-6; if a person tag cannot
+   a procedure (R-9). Exit: the asset and mobile tag budgets against NFR-6; if a mobile tag cannot
    reach a week, it goes rechargeable (Q1 revisited).
 3. **Link capacity:** ranges per second per link count, measured (R-2, DEF-26); the scheduler's
    settings tuned.
@@ -102,7 +102,7 @@ One campaign, with everything above in place to ingest and display it:
 ### S6 — custom hardware and the building (P2 hardware, P3)
 
 The node variant (vertical antenna, ceiling mount about a metre down, power per Q1), the
-single-antenna asset module, the person tag; node-to-node under the ceiling checked before the
+single-antenna asset module, the mobile tag; node-to-node under the ceiling checked before the
 mount is fixed; then a multi-room deployment with capacity measured and the HUD's heading in place
 of the host view.
 
@@ -123,5 +123,5 @@ tones rate and combiner as settings, sub-mode 1 aborts, the `cs_de` cross-check)
   the same code with the same settings).
 - **The desk mesh validates protocol, not accuracy.** Positions on the desk are only consistent,
   not right; the solver's accuracy claims wait for S5.
-- **Energy could still force a design change** (a rechargeable person tag, or coarser gating); the
+- **Energy could still force a design change** (a rechargeable mobile tag, or coarser gating); the
   firmware keeps every activity switchable so that is a settings change too.

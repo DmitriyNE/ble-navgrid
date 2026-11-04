@@ -76,7 +76,7 @@ The order of work and the exit test per milestone are in [the roadmap](../roadma
 
 Staged; each stage ends with something measured. It runs alongside the rest of P0, and replaces
 the old telemetry, configuration, mesh-link, routing and self-survey items. Bench deployment from
-the 20 TAGs: about 8 nodes, a person tag, 2–3 asset tags, and the DK sink.
+the 20 TAGs: about 8 anchors, a mobile tag, 2–3 asset tags, and the DK sink.
 
 Stage 1, the `navgrid-mesh` crate and `navgrid mesh-sim`, is done
 ([spike](spikes/2026-11-02-mesh-state-sim.md)).
@@ -193,7 +193,7 @@ Left over from them:
       bearings, declination). Fit with `fit_pins` / `fit_bearings` + `Frame::anchored`; the host
       owns the `Frame` and its version; positions carry the frame version (FR-A5).
 - [ ] **Host asset registry and pointer** (FR-F1, FR-F3) in the host view.
-- [ ] **Final approach:** direct person↔asset ranging and synthetic-aperture bearing (D-20).
+- [ ] **Final approach:** direct mobile↔asset ranging and synthetic-aperture bearing (D-20).
       Optional: asset LED blink.
 - [ ] **Simulator:** full-fix vs single-range tracking side by side; GDOP/battery-aware node
       selection; a find-my-keys scenario with pointer-error statistics.
