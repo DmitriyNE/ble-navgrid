@@ -4,6 +4,13 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**The pointer and the anchors' own fixes.** `navgrid find --from N009 --to N010 --heading-deg 90`
+gives the find-my-keys pointer (bearing relative to the seeker's heading, elevation, distance)
+from the mirrored positions: a node's own fix first, else the controller's. An anchor without a
+pin places itself once a minute from its links to pinned or controller-placed neighbours, held
+near their height, and writes its own Position record (FR-M2, first cut); the beacon still
+advertises the controller's position when there is one, so the host can compare the two (D-28).
+
 **Positions, first cut** (S2). `navgrid_solver::mesh` solves every node at once from the links:
 seeded outward from the pins by multilateration (two-anchor seeds by clearance from the nodes
 already placed), refined jointly with a robust cut that starts wide and halves down to three

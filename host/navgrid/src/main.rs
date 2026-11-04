@@ -2,6 +2,7 @@ mod builds;
 mod calibration;
 mod capture;
 mod control;
+mod find;
 mod fix;
 mod flash;
 mod fleet;
@@ -78,6 +79,8 @@ enum Cmd {
     /// The central solver over the mirrored links: every node's position, pins fixed; written
     /// back to the mesh through a sink with --sink.
     Solve(solve::SolveArgs),
+    /// The find-my-keys pointer from a mobile tag to an asset, from the mirrored positions.
+    Find(find::FindArgs),
     /// Enrol a device through its probe: fleet key, fleet number, role, bring-up peer and sink.
     Provision(provision::ProvisionArgs),
     /// Flash firmware through one or more probes at once, and record the build in the registry.
@@ -129,6 +132,7 @@ fn main() -> Result<()> {
         Cmd::LinkSim(args) => link_sim::run(&args),
         Cmd::Mesh(args) => mesh_view::run(&args),
         Cmd::Solve(args) => solve::run(&args),
+        Cmd::Find(args) => find::run(&args),
         Cmd::Provision(args) => provision::run(&args),
         Cmd::Flash(args) => flash::run(&args),
         Cmd::Sign(args) => sign::run_sign(&args),

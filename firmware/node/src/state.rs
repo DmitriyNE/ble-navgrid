@@ -348,6 +348,7 @@ pub async fn run(mpsl: &MultiprotocolServiceLayer<'_>) -> ! {
         .unwrap_or((false, u8::MAX, None));
         status::set_hops(hops);
         status::set_position(position);
+        self_fix();
         if last_health.elapsed() >= HEALTH_EVERY {
             last_health = Instant::now();
             let t = mpsl.get_temperature();
@@ -371,6 +372,117 @@ pub async fn run(mpsl: &MultiprotocolServiceLayer<'_>) -> ! {
         }
     }
 }
+
+/// Distributed solving, first cut (FR-M2): an anchor without a pin places itself from its own
+/// links to neighbours the controller has placed or that are pinned, held near their height,
+/// and writes the fix as its own Position record. The controller's solve, when there is one, is
+/// what the beacon advertises; this fix stands in where there is none, and lets the host
+/// compare the two (D-28).
+fn self_fix() {
+    use navgrid_solver::{Height, Options, RangeObs, multilaterate};
+    let now = now_ms();
+    let fix = with(|r| {
+        let me = r.id();
+        let own = r.node();
+        if own.role != navgrid_proto::Role::Anchor || own.pinned.is_some() {
+            return None;
+        }
+        let position_of = |peer: NodeId| -> Option<([f32; 3], f32)> {
+            let pinned = r
+                .get(&Key {
+                    origin: peer,
+                    topic: Topic::Node,
+                })
+                .and_then(|s| match &s.record().body {
+                    Body::Node(n) => n.pinned.map(|p| (p, 100u32)),
+                    _ => None,
+                });
+            let solved = r
+                .get(&Key {
+                    origin: CONTROLLER,
+                    topic: Topic::Position(peer),
+                })
+                .and_then(|s| match &s.record().body {
+                    Body::Position(p) => Some((p.point, *p.sigma_mm.iter().max().unwrap_or(&0))),
+                    _ => None,
+                });
+            let (p, sigma_mm) = pinned.or(solved)?;
+            Some((
+                [p.x as f32 / 1000.0, p.y as f32 / 1000.0, p.z as f32 / 1000.0],
+                sigma_mm as f32 / 1000.0,
+            ))
+        };
+        let mut obs: heapless::Vec<RangeObs, { navgrid_mesh::MAX_NEIGHBOURS }> = heapless::Vec::new();
+        let mut z_sum = 0.0f32;
+        for s in r.records() {
+            let rec = s.record();
+            if rec.origin != me {
+                continue;
+            }
+            let Body::Link(l) = &rec.body else {
+                continue;
+            };
+            if s.age_ms(now) > 30 * 60 * 1000 {
+                continue;
+            }
+            let Some((anchor, _)) = position_of(l.peer) else {
+                continue;
+            };
+            z_sum += anchor[2];
+            let _ = obs.push(RangeObs {
+                anchor,
+                distance_m: (l.distance_mm as f32 / 1000.0 - LINK_OFFSET_M).max(0.0),
+                sigma_m: (l.sigma_mm as f32 / 1000.0).max(0.3),
+            });
+        }
+        if obs.len() < 3 {
+            return None;
+        }
+        let z = z_sum / obs.len() as f32;
+        let mut initial = [0.0f32; 3];
+        for o in &obs {
+            for (ci, ai) in initial.iter_mut().zip(o.anchor) {
+                *ci += ai / obs.len() as f32;
+            }
+        }
+        initial[0] += 0.5;
+        initial[1] += 0.3;
+        initial[2] = z;
+        multilaterate(
+            &obs,
+            initial,
+            &Options {
+                height: Height::Observed { z, sigma_m: 0.3 },
+                ..Options::default()
+            },
+        )
+        .map(|f| (me, f))
+    })
+    .flatten();
+    let Some((me, f)) = fix else {
+        return;
+    };
+    info!(
+        "self fix: {=f32} {=f32} {=f32} m, sigma {=f32} {=f32} {=f32}",
+        f.position[0], f.position[1], f.position[2], f.sigma_m[0], f.sigma_m[1], f.sigma_m[2]
+    );
+    let mm = |v: f32| (v * 1000.0) as i32;
+    let smm = |v: f32| (v.max(0.0) * 1000.0) as u32;
+    write(Body::Position(navgrid_mesh::Position {
+        of: me,
+        point: navgrid_proto::PointMm {
+            x: mm(f.position[0]),
+            y: mm(f.position[1]),
+            z: mm(f.position[2]),
+        },
+        sigma_mm: [smm(f.sigma_m[0]), smm(f.sigma_m[1]), smm(f.sigma_m[2])],
+        frame: 1,
+    }));
+}
+
+/// Taken off a link's distance before it places a node: the chip's delay, until the calibration
+/// (DEF-6) puts the right figure on the device.
+const LINK_OFFSET_M: f32 = 1.5;
 
 /// How a session went, for the log.
 pub fn log_session(peer: NodeId, side: Option<navgrid_mesh::session::Side>, took_ms: u64) {
