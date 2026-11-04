@@ -64,13 +64,19 @@ impl Beacons {
     }
 
     /// Advertises until a central connects, starting over with fresh data whenever the beacon
-    /// changes, and at 100 ms while the attention flag is up.
+    /// changes, at the interval `status` holds (a setting, FR-C5) and at 100 ms while the
+    /// attention flag is up.
     pub async fn advertise<'d>(
         &self,
         peripheral: &mut Peripheral<'d, SoftdeviceController<'_>, DefaultPacketPool>,
-        slow: &AdvertisementParameters,
     ) -> Connection<'d, DefaultPacketPool> {
         loop {
+            let interval = Duration::from_millis(u64::from(status::adv_interval_ms()));
+            let slow = &AdvertisementParameters {
+                interval_min: interval,
+                interval_max: interval,
+                ..Default::default()
+            };
             let beacon = self.beacon().encode();
             let mut adv_data = [0; 31];
             let adv_len = unwrap!(AdStructure::encode_slice(

@@ -115,8 +115,6 @@ pub struct Mesh<'s, 'a, 'd> {
     node: NodeId,
     role: Role,
     sink: bool,
-    antennas: u8,
-    adv_params: AdvertisementParameters,
     policy: BlockingMutex<NoopRawMutex, RefCell<Policy>>,
     central: Mutex<NoopRawMutex, Central<'s, SoftdeviceController<'d>, DefaultPacketPool>>,
     new_links: Channel<NoopRawMutex, NewLink<'s>, 1>,
@@ -138,8 +136,6 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         node: NodeId,
         role: Role,
         sink: bool,
-        antennas: u8,
-        adv_params: AdvertisementParameters,
         uart: Uart<'s>,
     ) -> Self {
         let mut policy = Policy::with_sink(node, role, sink, Settings::default());
@@ -154,8 +150,6 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             node,
             role,
             sink,
-            antennas,
-            adv_params,
             policy: BlockingMutex::new(RefCell::new(policy)),
             central: Mutex::new(stack.central()),
             new_links: Channel::new(),
@@ -319,7 +313,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 self.freed.wait().await;
                 continue;
             }
-            let conn = self.beacons.advertise(&mut peripheral, &self.adv_params).await;
+            let conn = self.beacons.advertise(&mut peripheral).await;
             self.new_links.send(NewLink { conn, central: false }).await;
         }
     }
@@ -744,7 +738,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             return;
         }
         let started = Instant::now();
-        match cs::burst(self.stack, conn.handle(), self.node, peer, self.antennas, procedures).await {
+        match cs::burst(self.stack, conn.handle(), self.node, peer, status::antennas(), procedures).await {
             Ok(burst) => {
                 let (ok, failed) = (burst.estimates(), burst.failures);
                 match burst.finish() {

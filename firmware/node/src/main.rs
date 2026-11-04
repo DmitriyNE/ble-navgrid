@@ -392,13 +392,9 @@ async fn main(spawner: Spawner) {
     let beacons = beacon::Beacons::new(node_cfg, number);
 
     // CR2032: advertise slowly; NodeConfig trades target acquisition time for idle current. A
-    // sink is USB-powered: fast, so nodes find it quickly.
-    let adv_interval = Duration::from_millis(if node_cfg.sink { 100 } else { u64::from(node_cfg.adv_interval_ms) });
-    let adv_params = AdvertisementParameters {
-        interval_min: adv_interval,
-        interval_max: adv_interval,
-        ..Default::default()
-    };
+    // sink is USB-powered: fast, so nodes find it quickly. Both are settings from here on.
+    status::set_adv_interval_ms(if node_cfg.sink { 100 } else { node_cfg.adv_interval_ms });
+    status::set_antennas(antennas);
     // The sink writes frames to UART20 (TX P1.04, 115200 baud), which the DK's debugger exposes as
     // VCOM1, and takes the host's on its RX (P1.05). Frames from the host end at an idle line,
     // which TIMER21 times.
@@ -429,8 +425,6 @@ async fn main(spawner: Spawner) {
         node,
         node_cfg.role,
         node_cfg.sink,
-        antennas,
-        adv_params,
         sink_uart,
     );
     let role = async {

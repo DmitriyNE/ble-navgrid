@@ -127,8 +127,24 @@ pub fn apply_commands() -> usize {
                     status::attention();
                     Status::Applied
                 }
-                Command::Environment { .. } | Command::Diversity(_) | Command::Advertising { .. } => {
-                    warn!("command {:?}: not applied yet (settings at runtime to come)", command);
+                Command::Diversity(on) => {
+                    let antennas = if on { crate::board::ANTENNAS } else { 1 };
+                    info!("command: diversity {}: {=u8} antenna(s) from the next burst", on, antennas);
+                    status::set_antennas(antennas);
+                    Status::Applied
+                }
+                Command::Advertising { interval_ms } => {
+                    if (20..=10_240).contains(&interval_ms) {
+                        info!("command: advertising every {=u16} ms", interval_ms);
+                        status::set_adv_interval_ms(interval_ms);
+                        Status::Applied
+                    } else {
+                        warn!("command: advertising interval {=u16} ms is out of range", interval_ms);
+                        Status::Invalid
+                    }
+                }
+                Command::Environment { .. } => {
+                    warn!("command {:?}: no BME688 driver yet", command);
                     Status::Unsupported
                 }
             }

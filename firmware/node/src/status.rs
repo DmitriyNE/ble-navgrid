@@ -19,6 +19,10 @@ static SINK_LINKS: AtomicU8 = AtomicU8::new(0);
 static FREE_LINKS: AtomicU8 = AtomicU8::new(0);
 /// Hops to the nearest sink, as the replica knows them (for the beacon); 255 with no path.
 static HOPS: AtomicU8 = AtomicU8::new(u8::MAX);
+/// Settings the controller can change at runtime (FR-C5): the advertising interval and the
+/// antennas used for CS.
+static ADV_INTERVAL_MS: AtomicU16 = AtomicU16::new(1000);
+static ANTENNAS: AtomicU8 = AtomicU8::new(1);
 /// Uptime in seconds when a link last failed to encrypt (another fleet key), 0 if never.
 static FOREIGN_S: AtomicU32 = AtomicU32::new(0);
 static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
@@ -87,6 +91,26 @@ pub fn set_hops(hops: u8) {
 
 pub fn hops() -> u8 {
     HOPS.load(Ordering::Relaxed)
+}
+
+/// Sets the advertising interval; advertising restarts with it.
+pub fn set_adv_interval_ms(ms: u16) {
+    if ADV_INTERVAL_MS.swap(ms, Ordering::Relaxed) != ms {
+        BEACON_CHANGED.signal(());
+    }
+}
+
+pub fn adv_interval_ms() -> u16 {
+    ADV_INTERVAL_MS.load(Ordering::Relaxed)
+}
+
+/// Sets how many antennas the next bursts use (1 turns diversity off).
+pub fn set_antennas(n: u8) {
+    ANTENNAS.store(n.max(1), Ordering::Relaxed);
+}
+
+pub fn antennas() -> u8 {
+    ANTENNAS.load(Ordering::Relaxed)
 }
 
 /// A link failed to encrypt or its peer turned out not to be in the fleet.
