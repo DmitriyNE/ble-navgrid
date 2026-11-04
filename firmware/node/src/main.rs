@@ -66,7 +66,7 @@ use cs::CS_LINKS;
 /// SDC memory pool. The TAG figure (2 antennas, 4 paths) is what its SDC reported; one antenna
 /// saves 1 KiB per CS link for each of the 3 extra paths. If this is off, the SDC logs the exact
 /// requirement at boot.
-const SDC_MEM: usize = if board::ANTENNAS > 1 { 99_072 } else { 80_640 };
+const SDC_MEM: usize = if board::ANTENNAS > 1 { 99_072 } else { 74_296 };
 
 #[embassy_executor::task]
 async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
@@ -201,9 +201,16 @@ async fn log_cs_capabilities(stack: &Host<'_, '_>) {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    info!("boot: main");
     // First, before anything can clear the reset reasons or land in the crash record.
     let (reset_reason, crash) = crash::take();
+    info!(
+        "boot: reset reasons {=u32:#010x}, crash record {}",
+        reset_reason,
+        crash.is_some()
+    );
     board::early_init();
+    info!("boot: board init done");
     let mut config = config::Config::default();
     config.clock_speed = config::ClockSpeed::CK128;
     config.hfclk_source = config::HfclkSource::ExternalXtal;
@@ -212,6 +219,7 @@ async fn main(spawner: Spawner) {
     config.time_interrupt_priority = embassy_nrf::interrupt::Priority::P2;
     config.gpiote_interrupt_priority = embassy_nrf::interrupt::Priority::P2;
     let mut p = embassy_nrf::init(config);
+    info!("boot: hal up");
 
     // RRAM writes happen here, before MPSL starts, so none lands in radio activity; MPSL's timeslot
     // driver takes the RRAM after.
@@ -237,6 +245,7 @@ async fn main(spawner: Spawner) {
     };
     // Before MPSL too: it writes RRAM, and may restart into an update.
     firmware::apply_staged(&mut rram, provisioning.and_then(|p| p.signing_key));
+    info!("boot: image checked");
     logger::set_level(provisioning.map_or_else(Default::default, |p| p.report_level));
     let node_cfg = provisioning.map_or_else(NodeConfig::default, |p| p.config);
     let number = provisioning.and_then(|p| p.number);
@@ -288,6 +297,7 @@ async fn main(spawner: Spawner) {
         SESSIONS.init(mpsl::SessionMem::new())
     )));
     spawner.spawn(unwrap!(mpsl_task(mpsl)));
+    info!("boot: mpsl up");
     let rram = firmware::share_rram(mpsl::Flash::take(mpsl, p.RRAMC));
     if let Some(crash) = &crash {
         warn!("the last run crashed: {}", crash);
@@ -304,6 +314,7 @@ async fn main(spawner: Spawner) {
     };
     spawner.spawn(unwrap!(firmware::run(p.WDT0, rram, boot)));
     spawner.spawn(unwrap!(report::logs(node_id_from_ficr())));
+    info!("boot: watchdog and logs tasks spawned");
     #[cfg(feature = "crash-test")]
     spawner.spawn(unwrap!(crash::test(epoch)));
 
@@ -328,13 +339,20 @@ async fn main(spawner: Spawner) {
         p.PPIB10_CH2,
         p.PPIB10_CH3,
     );
-    let mut rng = cracen::Cracen::new_blocking(p.CRACEN);
+    // Everything the mesh and the BLE host borrow lives in statics: the mesh's tasks need
+    // `'static`, and a large value built on the stack and moved into place is what overflowed
+    // the stack at boot (log 2026-11-04).
+    static RNG: StaticCell<cracen::Cracen<'static, Blocking>> = StaticCell::new();
+    let rng = RNG.init(cracen::Cracen::new_blocking(p.CRACEN));
     // The SDC keeps CRACEN; pairing gets a CSPRNG seeded from it first.
     let mut seed = [0u8; 32];
     rng.blocking_fill_bytes(&mut seed);
     crypto::seed(seed);
-    let mut sdc_mem = sdc::Mem::<SDC_MEM>::new();
-    let sdc = unwrap!(build_sdc(sdc_p, &mut rng, mpsl, &mut sdc_mem, antennas));
+    static SDC_MEM_STORE: StaticCell<sdc::Mem<SDC_MEM>> = StaticCell::new();
+    // SAFETY: `Mem` is uninitialised memory by definition, so nothing is constructed or copied.
+    let sdc_mem = unsafe { SDC_MEM_STORE.uninit().assume_init_mut() };
+    let sdc = unwrap!(build_sdc(sdc_p, rng, mpsl, sdc_mem, antennas));
+    info!("boot: sdc up");
     unwrap!(cs::set_event_length(), "CS event length");
     unwrap!(cs::set_tone_length(), "CS tone length");
 
@@ -379,9 +397,10 @@ async fn main(spawner: Spawner) {
             node_cfg
         ),
     }
+    let (used, available) = stack_use();
     info!(
-        "ram: {=usize} B between the statics and the top of the stack",
-        stack_headroom()
+        "ram: {=usize} B between the statics and the top of the stack, {=usize} B used so far",
+        available, used
     );
     if let Some(p) = provisioning
         && (p.peer.is_some() || p.sink.is_some())
@@ -391,11 +410,13 @@ async fn main(spawner: Spawner) {
     if provisioning.is_none() {
         warn!("not provisioned: pairing Just Works");
     }
-    let fleet = keys::Fleet::new(addr, provisioning.map(|p| p.fleet_key));
+    static FLEET: StaticCell<keys::Fleet> = StaticCell::new();
+    let fleet: &'static keys::Fleet = FLEET.init(keys::Fleet::new(addr, provisioning.map(|p| p.fleet_key)));
     state::set_controller_key(fleet.controller_key());
 
     // FR-M4: the beacon in the advertisement, the name in the scan response.
-    let beacons = beacon::Beacons::new(node_cfg, number);
+    static BEACONS: StaticCell<beacon::Beacons> = StaticCell::new();
+    let beacons: &'static beacon::Beacons = BEACONS.init(beacon::Beacons::new(node_cfg, number));
 
     // CR2032: advertise slowly; NodeConfig trades target acquisition time for idle current. A
     // sink is USB-powered: fast, so nodes find it quickly. Both are settings from here on.
@@ -408,33 +429,44 @@ async fn main(spawner: Spawner) {
     let (uart, mut from_host) = embassy_nrf::uarte::Uarte::new(p.SERIAL20, p.P1_05, p.P1_04, Irqs, Default::default())
         .split_with_idle(p.TIMER21, p.PPI20_CH2, p.PPI20_CH3);
     #[cfg(feature = "board-dk")]
-    let uart = embassy_sync::mutex::Mutex::new(uart);
+    static UART: StaticCell<report::SinkUart<'static>> = StaticCell::new();
     #[cfg(feature = "board-dk")]
-    let sink_uart = node_cfg.sink.then_some(&uart);
+    let uart: &'static report::SinkUart<'static> = UART.init(embassy_sync::mutex::Mutex::new(uart));
+    #[cfg(feature = "board-dk")]
+    let sink_uart = node_cfg.sink.then_some(uart);
     #[cfg(not(feature = "board-dk"))]
-    let sink_uart: Option<&()> = None;
+    let sink_uart: Option<&'static ()> = None;
     // One bond per link: the fleet keys of the links up now.
-    let mut resources: HostResources<DefaultPacketPool, MAX_LINKS, L2CAP_CHANNELS, 1, MAX_LINKS> = HostResources::new();
-    let stack = trouble_host::new(sdc, &mut resources)
-        .set_random_address(Address::random(addr))
-        .register_l2cap_spsm(navgrid_proto::TELEMETRY_SPSM)
-        .register_l2cap_spsm(navgrid_proto::UPDATE_SPSM)
-        .register_l2cap_spsm(navgrid_mesh::wire::SYNC_SPSM)
-        .build();
+    static RESOURCES: StaticCell<HostResources<DefaultPacketPool, MAX_LINKS, L2CAP_CHANNELS, 1, MAX_LINKS>> =
+        StaticCell::new();
+    // SAFETY: every field of `HostResources` is `MaybeUninit`, and `trouble_host::new` fills them.
+    let resources = unsafe { RESOURCES.uninit().assume_init_mut() };
+    info!("boot: state up");
+    static STACK: StaticCell<Host<'static, 'static>> = StaticCell::new();
+    let stack: &'static Host<'static, 'static> = STACK.init(
+        trouble_host::new(sdc, resources)
+            .set_random_address(Address::random(addr))
+            .register_l2cap_spsm(navgrid_proto::TELEMETRY_SPSM)
+            .register_l2cap_spsm(navgrid_proto::UPDATE_SPSM)
+            .register_l2cap_spsm(navgrid_mesh::wire::SYNC_SPSM)
+            .build(),
+    );
     let mut runner = stack.runner();
 
-    let mesh = mesh::Mesh::new(
-        &stack,
-        &fleet,
-        &beacons,
+    static MESH: StaticCell<mesh::Mesh<'static, 'static, 'static>> = StaticCell::new();
+    let mesh: &'static mesh::Mesh<'static, 'static, 'static> = MESH.init(mesh::Mesh::new(
+        stack,
+        fleet,
+        beacons,
         rram,
         node,
         node_cfg.role,
         node_cfg.sink,
         sink_uart,
-    );
+    ));
+    mesh.spawn(spawner);
     let role = async {
-        log_cs_capabilities(&stack).await;
+        log_cs_capabilities(stack).await;
         // Short ACL events leave room in each 30 ms burst interval for the other links' events
         // after the CS subevent (architecture §3). Applies to connections made from now on.
         if let Err(e) = stack
@@ -460,15 +492,15 @@ async fn main(spawner: Spawner) {
         let sink = async {
             if node_cfg.sink {
                 join(
-                    update::from_host(&mut from_host, &uart, rram, provisioning.and_then(|p| p.signing_key)),
-                    report::own_reports(&uart),
+                    update::from_host(&mut from_host, uart, rram, provisioning.and_then(|p| p.signing_key)),
+                    report::own_reports(uart),
                 )
                 .await;
             }
         };
         #[cfg(not(feature = "board-dk"))]
         let sink = async {};
-        embassy_futures::join::join4(mesh.run(), sink, report::health(mpsl, node, FIRMWARE), state::run(mpsl)).await;
+        embassy_futures::join::join3(sink, report::health(mpsl, node, FIRMWARE), state::run(mpsl)).await;
     };
     // The runner returns only on an error, e.g. an HCI event bt-hci can't parse; everything stops
     // then, so say why.
@@ -593,12 +625,58 @@ async fn wait_encrypted(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacke
     }
 }
 
-/// RAM left for the stack: from the end of the statics to its start (the top of RAM). The
-/// statics take most of the part (spike 2026-11-04-firmware-ram-budget), so this is watched.
-fn stack_headroom() -> usize {
-    unsafe extern "C" {
-        static _stack_start: u32;
-        static __euninit: u32;
+unsafe extern "C" {
+    static _stack_start: u32;
+    static _stack_end: u32;
+}
+
+/// What the stack area is painted with before anything runs, so its high-water mark can be
+/// read ([`stack_use`]).
+const STACK_PAINT: u32 = 0xdead_beef;
+/// The stack limit sits this far above the end of the statics, so the fault handler has room to
+/// run when the limit is hit.
+const STACK_GUARD: usize = 512;
+
+// Before RAM is initialised, on the fresh stack: paints the stack area, and sets the stack limit
+// register so an overflow faults at once (DEF-68). Without it the overflow silently overwrote the
+// radio stack's statics just below the stack, and the node crashed through a corrupted callback
+// pointer at boot (log 2026-11-04).
+core::arch::global_asm!(
+    ".section .text.__pre_init, \"ax\"",
+    ".global __pre_init",
+    ".type __pre_init, %function",
+    ".thumb_func",
+    "__pre_init:",
+    "    ldr r0, ={end}",
+    "    mov r1, sp",
+    "    sub r1, r1, #256",
+    "    ldr r2, ={paint}",
+    "1:",
+    "    cmp r0, r1",
+    "    bhs 2f",
+    "    str r2, [r0], #4",
+    "    b 1b",
+    "2:",
+    "    ldr r0, ={end}",
+    "    add r0, r0, #{guard}",
+    "    msr msplim, r0",
+    "    bx lr",
+    ".ltorg",
+    end = sym _stack_end,
+    paint = const STACK_PAINT,
+    guard = const STACK_GUARD,
+);
+
+/// Bytes of stack used at most since boot, and bytes available: from the end of the statics to
+/// the top of RAM. The statics take most of the part (spike 2026-11-04-firmware-ram-budget), so
+/// this is watched and logged.
+pub fn stack_use() -> (usize, usize) {
+    let end = core::ptr::addr_of!(_stack_end) as usize;
+    let top = core::ptr::addr_of!(_stack_start) as usize;
+    let mut p = end;
+    // SAFETY: reading the stack area as plain words.
+    while p < top && unsafe { (p as *const u32).read_volatile() } == STACK_PAINT {
+        p += 4;
     }
-    core::ptr::addr_of!(_stack_start) as usize - core::ptr::addr_of!(__euninit) as usize
+    (top - p, top - end)
 }

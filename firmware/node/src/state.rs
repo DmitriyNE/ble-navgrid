@@ -27,18 +27,18 @@ use crate::{report, status, update};
 /// 1100 at 500 nodes with 4 sinks, so a DK sink's tables serve a mesh of a few hundred nodes.
 #[cfg(feature = "board-dk")]
 mod tables {
-    pub const RECORD_BYTES: usize = 24 * 1024;
-    pub const RECORDS: usize = 480;
-    pub const OUTBOX_BYTES: usize = 6 * 1024;
-    pub const OUTBOX: usize = 80;
-    pub const ROUTES: usize = 128;
+    pub const RECORD_BYTES: usize = 8 * 1024;
+    pub const RECORDS: usize = 160;
+    pub const OUTBOX_BYTES: usize = 2 * 1024;
+    pub const OUTBOX: usize = 32;
+    pub const ROUTES: usize = 64;
 }
 #[cfg(not(feature = "board-dk"))]
 mod tables {
-    pub const RECORD_BYTES: usize = 16 * 1024;
-    pub const RECORDS: usize = 320;
-    pub const OUTBOX_BYTES: usize = 6 * 1024;
-    pub const OUTBOX: usize = 80;
+    pub const RECORD_BYTES: usize = 8 * 1024;
+    pub const RECORDS: usize = 160;
+    pub const OUTBOX_BYTES: usize = 3 * 1024;
+    pub const OUTBOX: usize = 40;
     pub const ROUTES: usize = 64;
 }
 pub type Store = Device<
@@ -92,30 +92,30 @@ pub fn init(node: NodeId, sink: bool, epoch: u32, info: NodeInfo) {
             Lent(&mut *core::ptr::addr_of_mut!(ROUTES)),
         )
     };
-    let replica = Replica::with_tables(
-        Config::new(node, CONTROLLER, sink),
-        epoch,
-        info,
-        now_ms(),
-        records,
-        outbox,
-        routes,
-    );
-    // The controller's key goes in with `set_controller_key`, once the fleet key is read.
-    if sink {
-        for s in replica.records() {
-            mirror(s.record());
-        }
-    }
     // SAFETY: the store is named only here, once (TABLES_LENT above); the fields are written in
     // place, each once, before the reference is handed out.
     let state: &'static mut State = unsafe {
         let p = core::ptr::addr_of_mut!(STATE_STORE) as *mut State;
-        core::ptr::addr_of_mut!((*p).replica).write(replica);
+        // Straight into its field: a local would be a 12 KiB stack temporary.
+        core::ptr::addr_of_mut!((*p).replica).write(Replica::with_tables(
+            Config::new(node, CONTROLLER, sink),
+            epoch,
+            info,
+            now_ms(),
+            records,
+            outbox,
+            routes,
+        ));
         core::ptr::addr_of_mut!((*p).session).write(None);
         core::ptr::addr_of_mut!((*p).controller_key).write(None);
         &mut *p
     };
+    // The controller's key goes in with `set_controller_key`, once the fleet key is read.
+    if sink {
+        for s in state.replica.records() {
+            mirror(s.record());
+        }
+    }
     STATE.lock(|s| *s.borrow_mut() = Some(state));
     status::set_hops(if sink { 0 } else { u8::MAX });
 }

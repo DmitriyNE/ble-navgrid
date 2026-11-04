@@ -257,17 +257,25 @@ struct Channel {
     flags: AtomicU32,
 }
 
+/// How many empty tries a log write waits for the host to make room: about 10 ms.
+const BLOCKING_SPINS: u32 = 200_000;
+
 impl Channel {
     fn write_all(&self, mut bytes: &[u8]) {
-        let write = if self.host_is_connected() {
-            Self::blocking_write
-        } else {
-            Self::nonblocking_write
-        };
+        // With a host attached, wait for room, but not for long: a host that detached without
+        // clearing its flag held the whole node here (the executor spins) until the watchdog
+        // reset it (log 2026-11-04). After the patience runs out, overwrite as without a host.
+        let mut patience = if self.host_is_connected() { BLOCKING_SPINS } else { 0 };
         while !bytes.is_empty() {
-            let consumed = write(self, bytes);
+            let consumed = if patience > 0 {
+                self.blocking_write(bytes)
+            } else {
+                self.nonblocking_write(bytes)
+            };
             if consumed != 0 {
                 bytes = &bytes[consumed..];
+            } else {
+                patience -= 1;
             }
         }
     }

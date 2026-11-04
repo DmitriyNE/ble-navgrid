@@ -15,8 +15,9 @@
 use core::cell::{Cell, RefCell};
 
 use bt_hci::param::LeConnRole;
-use defmt::{info, warn};
-use embassy_futures::join::{join, join_array, join3, join4};
+use defmt::{info, unwrap, warn};
+use embassy_executor::Spawner;
+use embassy_futures::join::{join, join3};
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
@@ -122,6 +123,15 @@ struct Slot<'s> {
     served: Cell<bool>,
 }
 
+/// Telemetry from a node: a few packets in flight per channel, so that several such channels
+/// can't drain the host's packet pool between them, which dropped links (log 2026-11-04).
+const TELEMETRY_RECEIVING: L2capChannelConfig = L2capChannelConfig {
+    mtu: None,
+    mps: None,
+    flow_policy: CreditFlowPolicy::Every(1),
+    initial_credits: Some(3),
+};
+
 /// How long a peripheral keeps serving a peer that opened channels but never sent a hello: a
 /// node on a build whose mesh protocol this one can't read, which can still take the update
 /// this node carries over its own channels (DEF-64). Long enough for one transfer.
@@ -222,10 +232,17 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         status::BEACON_CHANGED.signal(());
     }
 
-    /// Runs the mesh: never returns.
-    pub async fn run(&self) {
+    /// Starts the mesh's tasks: the policy driver, the scanner, the advertiser and one per link
+    /// slot. Tasks rather than one joined future: a joined future is built by value on the stack
+    /// before it is stored, and the link slots together are 40 KiB (log 2026-11-04).
+    pub fn spawn(&'static self, spawner: Spawner) {
         self.links_changed();
-        join4(self.drive(), self.scan(), self.advertise(), self.serve_links()).await;
+        spawner.spawn(unwrap!(drive_task(self)));
+        spawner.spawn(unwrap!(scan_task(self)));
+        spawner.spawn(unwrap!(advertise_task(self)));
+        for i in 0..MAX_LINKS {
+            spawner.spawn(unwrap!(slot_task(self, i)));
+        }
     }
 
     /// Asks the policy what to do, twice a second, and does it: connects as central, starts
@@ -366,11 +383,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         }
     }
 
-    /// The link slots: each serves one link at a time, from the channel of new ones.
-    async fn serve_links(&self) {
-        join_array(core::array::from_fn::<_, MAX_LINKS, _>(|i| self.slot_loop(i))).await;
-    }
-
+    /// One link slot: serves one link at a time, from the channel of new ones.
     async fn slot_loop(&self, i: usize) {
         loop {
             let link = self.new_links.receive().await;
@@ -731,10 +744,10 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 Err(_) => return core::future::pending().await,
             };
             let spsm = pending.spsm();
-            let config = if spsm == UPDATE_SPSM {
-                update::RECEIVING
-            } else {
-                L2capChannelConfig::default()
+            let config = match spsm {
+                UPDATE_SPSM => update::RECEIVING,
+                TELEMETRY_SPSM => TELEMETRY_RECEIVING,
+                _ => L2capChannelConfig::default(),
             };
             let channel = match pending.accept(self.stack, &config).await {
                 Ok(channel) => channel,
@@ -967,4 +980,26 @@ async fn drain(conn: &Connection<'_, DefaultPacketPool>) {
 #[allow(dead_code)]
 fn _role_is_peripheral(conn: &Connection<'_, DefaultPacketPool>) -> bool {
     conn.role() == LeConnRole::Peripheral
+}
+
+type StaticMesh = &'static Mesh<'static, 'static, 'static>;
+
+#[embassy_executor::task]
+async fn drive_task(mesh: StaticMesh) {
+    mesh.drive().await
+}
+
+#[embassy_executor::task]
+async fn scan_task(mesh: StaticMesh) {
+    mesh.scan().await
+}
+
+#[embassy_executor::task]
+async fn advertise_task(mesh: StaticMesh) {
+    mesh.advertise().await
+}
+
+#[embassy_executor::task(pool_size = MAX_LINKS)]
+async fn slot_task(mesh: StaticMesh, i: usize) {
+    mesh.slot_loop(i).await
 }

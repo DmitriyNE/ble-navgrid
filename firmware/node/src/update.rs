@@ -42,6 +42,10 @@ const WRITE_WITHIN: Duration = Duration::from_secs(10);
 const SLOW_WRITE_MS: u64 = 500;
 /// A chunk that takes longer than this to send or arrive is logged; the transfer goes on waiting.
 const STALL_AFTER: Duration = Duration::from_secs(5);
+/// A chunk that still hasn't come or gone this long after that ends the transfer: a link that
+/// died under a transfer left the receive pending for good on the pre-mesh build, and the node
+/// then declined every offer as busy (log 2026-11-04).
+const GIVE_UP_AFTER: Duration = Duration::from_secs(60);
 /// A node offers what it carries on each link this often, not only once the link is up: a peer
 /// that declined while its own image wasn't confirmed yet, or whose transfer broke off, gets
 /// another offer without a reconnect (DEF-39).
@@ -135,7 +139,13 @@ pub async fn offer(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPoo
             Ok(sent) => sent,
             Err(_) => {
                 warn!("update: sending at byte {=usize}: stalled, still waiting", offset);
-                send.await
+                match with_timeout(GIVE_UP_AFTER, send.as_mut()).await {
+                    Ok(sent) => sent,
+                    Err(_) => {
+                        warn!("update: sending at byte {=usize}: given up", offset);
+                        return;
+                    }
+                }
             }
         };
         if let Err(e) = sent {
@@ -317,7 +327,13 @@ async fn store(
                         "update: receiving at byte {=usize}: stalled, still waiting",
                         writer.next
                     );
-                    receiving.await
+                    match with_timeout(GIVE_UP_AFTER, receiving.as_mut()).await {
+                        Ok(received) => received,
+                        Err(_) => {
+                            warn!("update: receiving at byte {=usize}: given up", writer.next);
+                            return false;
+                        }
+                    }
                 }
             }
         };
@@ -512,7 +528,9 @@ mod sink {
     use crate::report::{self, SinkUart};
 
     /// Changes when the sink starts carrying an update, so every link it serves offers it at once.
-    pub static CARRYING: Watch<CriticalSectionRawMutex, (), 4> = Watch::new();
+    /// One receiver per link slot, and as many again for links being torn down while new
+    /// ones start; a slot without a receiver never offers (log 2026-11-04).
+    pub static CARRYING: Watch<CriticalSectionRawMutex, (), { 2 * navgrid_link::MAX_LINKS }> = Watch::new();
 
     /// An update arriving from the host.
     struct Transfer {

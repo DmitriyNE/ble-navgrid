@@ -98,6 +98,8 @@ pub async fn confirmed(rram: &'static Rram) -> bool {
 }
 
 const FEED_EVERY: Duration = Duration::from_secs(1);
+/// How often the stack's high-water mark is logged (DEF-68).
+const STACK_LOG_EVERY: Duration = Duration::from_secs(5 * 60);
 const CONFIRM_WITHIN: Duration = Duration::from_secs(5 * 60);
 
 #[embassy_executor::task]
@@ -147,9 +149,15 @@ pub async fn run(wdt: Peri<'static, WDT0>, rram: &'static Rram, mut boot: Boot) 
         }
     };
     let started = Instant::now();
+    let mut stack_logged = Instant::now();
     loop {
         if let Some(h) = handle.as_mut() {
             h.pet();
+        }
+        if stack_logged.elapsed() >= STACK_LOG_EVERY {
+            stack_logged = Instant::now();
+            let (used, available) = crate::stack_use();
+            info!("stack: {=usize} B of {=usize} B used at most", used, available);
         }
         if unconfirmed {
             // A test image may hold off, so the bootloader reverts it.

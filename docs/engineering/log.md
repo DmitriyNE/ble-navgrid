@@ -4,6 +4,36 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**The old TAGs take the mesh build from the DK.** After a power cycle of the four TAGs (DEF-70),
+the DK's next offers were taken: three transfers at once at about 2.3 KB/s each, from byte 0.
+The DK's J-Link dropped its SWD session twice meanwhile and re-enumerated its USB, taking the
+serial port down for a few seconds each time (DEF-19); the target kept running and the
+transfers went on.
+
+**The DK up for an evening: what the first hours on hardware found.** Four things, each fixed in
+the firmware: the logger spun forever once probe-rs had detached without clearing its
+"host attached" flag (the RTT buffer filled and the blocking write never returned), which the
+watchdog ended after 5 s, so the DK rebooted 95 s after every detach; the advertiser
+`unwrap!`ed a transient `advertise_ext` error under load and took the node down with it; the
+carried-update watch had 4 receivers for 8 link slots, so some slots never offered ("no
+receiver left"); and telemetry channels with default credits let four TAGs drain the 16-packet
+pool, after which the host dropped links. Also seen: the pre-mesh build's receiver waits
+forever on a transfer whose link died, and then declines every offer as busy until the node
+restarts; the new build gives up a stalled chunk after a minute (DEF-70). Two of the four TAGs
+had taken 68 KiB of the new build from the DK before the DK's reboot cut them off.
+
+**The mesh build on the DK: a stack overflow at boot, found and fixed** (spike
+2026-11-04-firmware-ram-budget, last section). The first flash reset itself before its first
+log line; probe-rs's reset catch made it look like a bootloader fault (DEF-69). Boot markers, a
+painted stack and the stack limit register (DEF-68) showed the stack overflowing its 27 KiB into
+the radio stack's statics: boot uses 29 KiB before the mesh starts, and the mesh's joined future
+built its eight 5 KiB link loops on the stack before storing them. The mesh now runs as tasks in
+static pools, with the BLE host, the mesh and everything they borrow in statics, the replica
+written straight into its store, the DK's SDC memory at the 74,296 bytes it asked for, and the
+tables halved until the TAG's figures are in. The DK boots with 56 KiB of headroom, the four
+TAGs on 770ae73f connect to it, open their telemetry channels and are kept as hello-less peers,
+and the host's upload of the new TAG build through it went in 65 s.
+
 **Moving the fleet to the mesh build without a probe on the TAGs.** The question was whether
 the fleet resets: no. Provisioning format 5 reads formats 1–4, the Sink role maps to anchor plus
 sink, the keys, node IDs and registry carry over, and the bootloader and the update protocol

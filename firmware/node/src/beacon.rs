@@ -7,7 +7,7 @@
 //! legacy PDUs, though: a central that connects from them can space the link from its others
 //! (DEF-26); from extended advertising the SDC placed it anywhere.
 
-use defmt::unwrap;
+use defmt::{unwrap, warn};
 use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Timer};
 use navgrid_proto::{BEACON_COMPANY, Beacon, BeaconPosition, NodeConfig};
@@ -112,7 +112,16 @@ impl Beacons {
                 address: None,
             }];
             let mut handles = AdvertisementSet::handles(&sets);
-            let advertiser = unwrap!(peripheral.advertise_ext(&sets, &mut handles).await);
+            let advertiser = match peripheral.advertise_ext(&sets, &mut handles).await {
+                Ok(advertiser) => advertiser,
+                Err(e) => {
+                    // Transient under load (the host short of packets); a panic here took the
+                    // node down (log 2026-11-04).
+                    warn!("advertising: {:?}; again in 1 s", e);
+                    Timer::after_secs(1).await;
+                    continue;
+                }
+            };
             let changed = async {
                 if attention > 0 {
                     select(status::BEACON_CHANGED.wait(), Timer::after_secs(u64::from(attention))).await;
@@ -122,7 +131,10 @@ impl Beacons {
             };
             // Dropping the advertiser stops advertising.
             if let Either::First(conn) = select(advertiser.accept(), changed).await {
-                return unwrap!(conn);
+                match conn {
+                    Ok(conn) => return conn,
+                    Err(e) => warn!("advertising: accept: {:?}", e),
+                }
             }
         }
     }

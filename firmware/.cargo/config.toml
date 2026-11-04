@@ -9,6 +9,8 @@ target = "thumbv8m.main-none-eabihf"
 
 [env]
 DEFMT_LOG = "info"
+# 24 packets of 251 B: a sink forwards telemetry from several links at once (log 2026-11-04).
+TROUBLE_HOST_DEFAULT_PACKET_POOL_SIZE = "24"
 
 [alias]
 tag = "run --release --features board-tag"
