@@ -57,6 +57,17 @@ pub struct MeshSimArgs {
     /// Cut every link between the left and right halves from hour A to hour B, as `A-B`.
     #[arg(long, value_parser = parse_window)]
     partition: Option<(f64, f64)>,
+    /// Link outages per link per hour, each lasting `--outage-min`.
+    #[arg(long, default_value_t = 0.0)]
+    outages_per_link_h: f64,
+    #[arg(long, default_value_t = 5.0)]
+    outage_min: f64,
+    /// Node reboots per node per day: a fresh replica with a new epoch, nothing remembered.
+    #[arg(long, default_value_t = 0.0)]
+    reboots_per_node_day: f64,
+    /// Share of sessions that break off before completing, so neither side remembers it.
+    #[arg(long, default_value_t = 0.0)]
+    session_drops: f64,
     /// Table limits for nodes other than sinks: records, outbox, routes.
     #[arg(long, value_delimiter = ',', default_value = "4096,4096,4096")]
     limits: Vec<usize>,
@@ -204,6 +215,9 @@ impl Layout {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Event {
     Contact(usize),
+    /// A link goes down for a while.
+    Outage(usize),
+    Reboot(usize),
     Health(usize),
     Environment(usize),
     Command,
@@ -258,6 +272,12 @@ struct Sim<'a> {
     sessions: u64,
     held_back: u64,
     refused: u64,
+    /// Until when each link is down, if it is.
+    down_until: Vec<u64>,
+    epochs: Vec<u32>,
+    outages: u64,
+    reboots: u64,
+    dropped_sessions: u64,
     write_errors: u64,
 }
 
@@ -324,6 +344,11 @@ impl<'a> Sim<'a> {
             sessions: 0,
             held_back: 0,
             refused: 0,
+            down_until: vec![0; links],
+            epochs: vec![1; args.nodes],
+            outages: 0,
+            reboots: 0,
+            dropped_sessions: 0,
             write_errors: 0,
             layout,
         };
@@ -338,6 +363,16 @@ impl<'a> Sim<'a> {
             let t = sim.phase(args.contact * SECOND);
             sim.at(t, Event::Contact(l));
             sim.next_range[l] = t;
+            if args.outages_per_link_h > 0.0 {
+                let first = sim.exponential((HOUR as f64 / args.outages_per_link_h) as u64);
+                sim.at(first, Event::Outage(l));
+            }
+        }
+        if args.reboots_per_node_day > 0.0 {
+            for i in 0..args.nodes {
+                let first = sim.exponential((24.0 * HOUR as f64 / args.reboots_per_node_day) as u64);
+                sim.at(first, Event::Reboot(i));
+            }
         }
         let frame = sim.controller.record(Body::Frame(Frame {
             version: 1,
@@ -433,6 +468,17 @@ impl<'a> Sim<'a> {
                     }
                     self.at(now + RETRY_AFTER, Event::Retry);
                 }
+                Event::Outage(l) => {
+                    self.down_until[l] = now + (self.args.outage_min * MINUTE as f64) as u64;
+                    self.outages += 1;
+                    let next = self.exponential((HOUR as f64 / self.args.outages_per_link_h) as u64);
+                    self.at(now + next, Event::Outage(l));
+                }
+                Event::Reboot(i) => {
+                    self.reboot(i, now);
+                    let next = self.exponential((24.0 * HOUR as f64 / self.args.reboots_per_node_day) as u64);
+                    self.at(now + next, Event::Reboot(i));
+                }
                 Event::Tick => {
                     for i in 0..self.nodes.len() {
                         self.nodes[i].tick(now);
@@ -464,6 +510,17 @@ impl<'a> Sim<'a> {
     fn contact(&mut self, l: usize, now: u64) {
         let (i, j) = self.layout.links[l];
         if self.partitioned(now) && self.layout.left(i) != self.layout.left(j) {
+            return;
+        }
+        if self.down_until[l] > now {
+            return;
+        }
+        if self.args.session_drops > 0.0 && self.rng.uniform() < self.args.session_drops {
+            // Broke off: neither side remembers it, and nothing crossed.
+            let (a, b) = (self.ids[i], self.ids[j]);
+            self.nodes[i].forget(b);
+            self.nodes[j].forget(a);
+            self.dropped_sessions += 1;
             return;
         }
         if now >= self.next_range[l] {
@@ -515,6 +572,37 @@ impl<'a> Sim<'a> {
                 p[2].max(r.routes().len()),
             ];
         }
+    }
+
+    /// A node restarts: a fresh replica with the next epoch, its records, outbox, routes and
+    /// peer memory gone; its new node record counts as a write.
+    fn reboot(&mut self, i: usize, now: u64) {
+        let cfg = self.nodes[i].config().clone();
+        self.epochs[i] += 1;
+        let mut info = self.nodes[i].node().clone();
+        info.neighbours.clear();
+        let replica = Replica::new(cfg, self.epochs[i], info, now);
+        if let Some(version) = replica
+            .get(&Key {
+                origin: self.ids[i],
+                topic: Topic::Node,
+            })
+            .map(|s| s.record().version)
+        {
+            let key = Key {
+                origin: self.ids[i],
+                topic: Topic::Node,
+            };
+            self.wrote(key, version, now);
+        }
+        self.nodes[i] = replica;
+        self.reboots += 1;
+    }
+
+    /// A random interval with this mean, as between independent events.
+    fn exponential(&mut self, mean: u64) -> u64 {
+        let u = self.rng.uniform().max(1e-9);
+        (-(u.ln()) * mean as f64) as u64
     }
 
     fn write(&mut self, i: usize, body: Body, now: u64) {
@@ -760,6 +848,12 @@ impl<'a> Sim<'a> {
                 None => String::new(),
             }
         );
+        if self.outages + self.reboots + self.dropped_sessions > 0 {
+            println!(
+                "faults: {} link outages of {} min, {} reboots, {} sessions broke off",
+                self.outages, self.args.outage_min, self.reboots, self.dropped_sessions
+            );
+        }
 
         println!("\nstaleness (how long a replica has lacked the latest version; first hour left out):");
         let names = ["neighbourhood", "positions", "host"];

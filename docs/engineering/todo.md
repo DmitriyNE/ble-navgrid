@@ -127,7 +127,6 @@ Protocol follow-ups, in the simulator first:
 
 - [ ] **Compact device layout** for stored records (DEF-29): 48-bit IDs, `u8` lengths.
 - [ ] **Fleet key at rest** (DEF-33): APPROTECT on provisioned devices, and the key in the KMU.
-- [ ] **Simulate link loss and mid-session drops,** and reboots (new epochs).
 
 ## Firmware updates (FR-O2, architecture §13)
 

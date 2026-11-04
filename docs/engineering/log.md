@@ -4,6 +4,12 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Faults in the state simulator.** `mesh-sim` takes `--outages-per-link-h` (links down for
+`--outage-min`), `--reboots-per-node-day` (a fresh replica, new epoch, nothing remembered) and
+`--session-drops` (a share of sessions breaking off, both sides forgetting). Twenty nodes over 6 h
+with half an outage per link an hour, two reboots a node a day and 5 % of sessions dropped: the
+neighbourhood is current 95.8 % of the time and the host 96.2 %, p99 42 s; no push refused.
+
 **Retiring a node, and the registry's names.** A controller-signed retire record (`Retired`,
 Global class, kept for good) makes every replica drop everything of and about the node, refuse
 whatever it sends after, and stop contacting it; the node itself stops ranging and syncing when
