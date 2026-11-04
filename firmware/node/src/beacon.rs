@@ -21,13 +21,12 @@ const FAST: Duration = Duration::from_millis(100);
 pub struct Beacons {
     cfg: NodeConfig,
     number: Option<u16>,
-    max_links: u8,
     scan_data: [u8; 31],
     scan_len: usize,
 }
 
 impl Beacons {
-    pub fn new(cfg: NodeConfig, number: Option<u16>, max_links: u8) -> Self {
+    pub fn new(cfg: NodeConfig, number: Option<u16>) -> Self {
         let mut scan_data = [0; 31];
         let scan_len = unwrap!(AdStructure::encode_slice(
             &[AdStructure::CompleteLocalName(b"navgrid")],
@@ -36,14 +35,14 @@ impl Beacons {
         Self {
             cfg,
             number,
-            max_links,
             scan_data,
             scan_len,
         }
     }
 
     /// The beacon as of now. Until the mesh state runs on devices only a sink knows its hop
-    /// count, and pressure isn't measured yet.
+    /// count, and pressure isn't measured yet. Free links are the mesh policy's count
+    /// (`mesh`).
     pub fn beacon(&self) -> Beacon {
         let dm = |mm: i32| (mm / 100).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
         Beacon {
@@ -52,7 +51,7 @@ impl Beacons {
             attention: status::attention_left_s() > 0,
             install: false,
             hops: if self.cfg.sink { 0 } else { u8::MAX },
-            free_links: self.max_links.saturating_sub(status::links()),
+            free_links: status::free_links(),
             battery_mv: status::battery_mv(),
             pressure_dpa: None,
             number: self.number,

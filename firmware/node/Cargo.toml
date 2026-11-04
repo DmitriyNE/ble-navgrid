@@ -10,6 +10,8 @@ publish.workspace = true
 navgrid-proto = { path = "../../crates/navgrid-proto", features = ["defmt"] }
 navgrid-ranging = { path = "../../crates/navgrid-ranging", features = ["defmt"] }
 navgrid-solver = { path = "../../crates/navgrid-solver", features = ["defmt"] }
+navgrid-mesh = { path = "../../crates/navgrid-mesh", features = ["defmt"] }
+navgrid-link = { path = "../../crates/navgrid-link", features = ["defmt"] }
 
 embassy-executor = { version = "0.10", default-features = false, features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
 embassy-time = { version = "0.5", default-features = false, features = ["defmt", "defmt-timestamp-uptime"] }

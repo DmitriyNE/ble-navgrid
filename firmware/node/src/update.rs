@@ -123,37 +123,33 @@ pub async fn offer(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPoo
     }
 }
 
-/// Takes the update channels a peer opens on `conn`. With `widen`, the link switches to
-/// full-length packets for a transfer and back after: on the sink link one full-length exchange
-/// fills an event, which would cap the uplink (DEF-42). Never returns: the link's own task ends
-/// when it drops.
-pub async fn listen(
+/// Takes an update channel a peer opened on `conn`, accepted by the link's channel dispatcher
+/// (`mesh`). With `widen`, the link switches to full-length packets for the transfer and back
+/// after: on a slow link one full-length exchange fills an event, which would cap the telemetry
+/// (DEF-42). Returns when the transfer fails or the channel wasn't an update after all; a
+/// transfer that succeeds restarts the node into the update.
+pub async fn take(
     stack: &Stack<'_, '_>,
     conn: &Connection<'_, DefaultPacketPool>,
+    mut channel: L2capChannel<'_, DefaultPacketPool>,
     rram: &'static Rram,
     widen: bool,
-) -> ! {
-    loop {
-        let mut channel = match L2capChannel::listen(stack, conn).accept(&RECEIVING).await {
-            Ok(channel) => channel,
-            Err(_) => core::future::pending().await,
-        };
-        info!("update: channel {=u16:#06x} opened by the peer", channel.spsm());
-        if channel.spsm() != UPDATE_SPSM {
-            continue;
-        }
-        let Some(header) = answer(stack, &mut channel, rram).await else {
-            continue;
-        };
-        if widen {
-            packet_length(stack, conn, FULL_LENGTH).await;
-        }
-        // Returns only if the transfer failed; otherwise the node restarts into the update.
-        receive(stack, &mut channel, rram, header).await;
-        TAKING.store(false, Ordering::Release);
-        if widen {
-            packet_length(stack, conn, SHORT_LENGTH).await;
-        }
+) {
+    info!("update: channel {=u16:#06x} opened by the peer", channel.spsm());
+    if channel.spsm() != UPDATE_SPSM {
+        return;
+    }
+    let Some(header) = answer(stack, &mut channel, rram).await else {
+        return;
+    };
+    if widen {
+        packet_length(stack, conn, FULL_LENGTH).await;
+    }
+    // Returns only if the transfer failed; otherwise the node restarts into the update.
+    receive(stack, &mut channel, rram, header).await;
+    TAKING.store(false, Ordering::Release);
+    if widen {
+        packet_length(stack, conn, SHORT_LENGTH).await;
     }
 }
 
@@ -164,7 +160,7 @@ static TAKING: AtomicBool = AtomicBool::new(false);
 /// Credits go back four chunks at a time rather than after each (TrouBLE's default), out of the
 /// 8 the sender starts with. On the sink link the node sends one packet per event during a
 /// transfer, and a credit packet per chunk would take every one of them from the telemetry.
-const RECEIVING: L2capChannelConfig = L2capChannelConfig {
+pub(crate) const RECEIVING: L2capChannelConfig = L2capChannelConfig {
     mtu: None,
     mps: None,
     flow_policy: CreditFlowPolicy::Every(4),

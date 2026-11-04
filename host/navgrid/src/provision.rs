@@ -28,11 +28,11 @@ pub struct ProvisionArgs {
     /// Also a sink: a host link over USB, serving the host, whatever the role.
     #[arg(long)]
     sink: bool,
-    /// Bring-up: range with this reflector as CS initiator (node ID as the device logs it, 12 hex
-    /// digits).
+    /// Bring-up field, ignored by the mesh firmware (it picks its own links): the reflector to
+    /// range with (node ID as the device logs it, 12 hex digits).
     #[arg(long, value_parser = parse_node)]
     peer: Option<NodeId>,
-    /// Bring-up: report ranges to this sink.
+    /// Bring-up field, ignored by the mesh firmware: the sink to report ranges to.
     #[arg(long, value_parser = parse_node)]
     report_to: Option<NodeId>,
     /// Hold the radio on antenna 0: one antenna path per link.

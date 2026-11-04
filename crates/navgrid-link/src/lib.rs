@@ -63,6 +63,9 @@ pub struct Settings {
     pub slow_latency: u16,
     /// Connection interval during a burst, in 1.25 ms units.
     pub fast_interval_1250us: u16,
+    /// Idle interval of a link with a sink at either end, in 1.25 ms units: a sink is powered and
+    /// its links carry the telemetry, so they idle faster than the mesh's.
+    pub sink_interval_1250us: u16,
     /// Antenna paths a burst asks for: 4 with diversity on both ends (the 30 ms timing of
     /// spike 2026-11-02), 1 for a dedicated one-to-one link.
     pub paths: u8,
@@ -81,7 +84,8 @@ impl Default for Settings {
             tag_burst_procedures: 4,
             slow_interval_1250us: 800, // 1 s
             slow_latency: 4,
-            fast_interval_1250us: 24, // 30 ms
+            fast_interval_1250us: 24,  // 30 ms
+            sink_interval_1250us: 100, // 125 ms
             paths: 4,
         }
     }
@@ -147,6 +151,8 @@ pub enum Action {
 pub struct Policy {
     me: NodeId,
     role: Role,
+    /// This node has a host link.
+    sink: bool,
     settings: Settings,
     heard: Vec<Heard, MAX_HEARD>,
     links: Vec<LinkState, MAX_LINKS>,
@@ -164,9 +170,14 @@ pub struct Policy {
 
 impl Policy {
     pub fn new(me: NodeId, role: Role, settings: Settings) -> Self {
+        Self::with_sink(me, role, false, settings)
+    }
+
+    pub fn with_sink(me: NodeId, role: Role, sink: bool, settings: Settings) -> Self {
         Self {
             me,
             role,
+            sink,
             settings,
             heard: Vec::new(),
             links: Vec::new(),
@@ -185,6 +196,21 @@ impl Policy {
 
     pub fn role(&self) -> Role {
         self.role
+    }
+
+    pub fn is_sink(&self) -> bool {
+        self.sink
+    }
+
+    /// Hops to the nearest sink, until the mesh state carries them: 0 at a sink, 1 next to one.
+    pub fn hops(&self) -> u8 {
+        if self.sink {
+            0
+        } else if self.links.iter().any(|l| l.peer_sink) {
+            1
+        } else {
+            u8::MAX
+        }
     }
 
     pub fn settings(&self) -> &Settings {
@@ -477,8 +503,9 @@ impl Policy {
     /// peripheral latency)`. Anchor links idle slow and switch to the fast interval for a burst;
     /// a tag's links are short-lived and busy, so they are made at the fast interval and never
     /// switch (a parameter update's instant is six intervals away, too slow for a moving tag).
-    pub fn connect_params(&self) -> (u16, u16) {
+    pub fn connect_params(&self, peer_sink: bool) -> (u16, u16) {
         match self.role {
+            Role::Anchor if self.sink || peer_sink => (self.settings.sink_interval_1250us, 0),
             Role::Anchor => (self.settings.slow_interval_1250us, self.settings.slow_latency),
             Role::Asset | Role::Mobile => (self.settings.tag_interval_1250us(), 0),
         }
@@ -819,7 +846,7 @@ mod tests {
     fn a_tag_links_at_the_fast_interval_times_its_links_and_spaces_them() {
         let s = Settings::default();
         let mut t = Policy::new(NodeId(900), Role::Mobile, s);
-        assert_eq!(t.connect_params(), (72, 0), "3 links × 30 ms = 90 ms");
+        assert_eq!(t.connect_params(false), (72, 0), "3 links × 30 ms = 90 ms");
         assert_eq!(s.tag_interval_1250us(), 72);
         assert_eq!(t.event_spacing_1250us(), 0);
         t.link_up(NodeId(1), true, Role::Anchor, false, 0);
@@ -827,7 +854,8 @@ mod tests {
         t.link_up(NodeId(2), true, Role::Anchor, false, 0);
         assert_eq!(t.event_spacing_1250us(), 48);
         let a = anchor(1);
-        assert_eq!(a.connect_params(), (800, 4), "anchors idle slow");
+        assert_eq!(a.connect_params(false), (800, 4), "anchors idle slow");
+        assert_eq!(a.connect_params(true), (100, 0), "a link to a sink idles faster");
         assert_eq!(a.event_spacing_1250us(), 0);
         assert!(a.switches_for_burst(NodeId(2)));
         assert!(!t.switches_for_burst(NodeId(2)));

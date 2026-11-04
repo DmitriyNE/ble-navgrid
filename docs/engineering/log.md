@@ -4,6 +4,19 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**The mesh firmware** (stage 3, D-37; DEF-57). `mesh.rs` replaces the bring-up roles: every node
+advertises its beacon while it has room, scans now and then, connects as central to the
+neighbours the policy wants with its role's parameters and, for a tag, the k-th link's event
+spacing, and serves up to 14 links in slots. Each link opens with a hello each way over the sync
+channel (the mesh wire's `Header`, now with the role), so both ends know the other's role and sink
+flag and the peripheral can admit or refuse. The central runs the policy's bursts: an anchor link
+switches to 30 ms by connection parameter update, runs the procedures the controller counts,
+removes its CS configuration and switches back; a tag's links stay fast. CS keeps its state per
+connection handle and one burst at a time. Telemetry rides any link whose peer is a sink; the sink
+forwards it to its UART from any link; updates ride any link, offered by whoever carries one. The
+dedicated sink link, the provisioning peer and sink, and `report::set_link` are gone. Built for
+both boards, untested on hardware: the desk mesh is next.
+
 **Mesh links, the policy and the simulator** ([spike](spikes/2026-11-04-link-scheduling.md),
 D-37). `navgrid-link` holds the link policy the firmware and the simulator share: neighbours from
 beacons, the lower anchor connects, admission by the beacon's free links, one burst per node at a

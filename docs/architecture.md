@@ -307,6 +307,8 @@ host/
                             link-sim; later replay, central solver, controller
 firmware/                   separate cargo workspace, thumbv8m.main-none-eabihf
   node/                     single firmware image; role from provisioning (D-2)
+    src/mesh.rs             the links: beacons, policy, connects, hellos, bursts, telemetry (§3)
+    src/cs.rs               Channel Sounding per link: configuration, bursts, estimates
     src/board.rs            board-dk / board-tag: DC/DC, crystal caps, antenna switch (D-13)
     src/store.rs            provisioning page and boot epoch log in the top 8 KiB of RRAM
     src/keys.rs             link keys from the fleet key (D-7)

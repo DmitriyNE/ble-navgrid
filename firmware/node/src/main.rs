@@ -1,12 +1,13 @@
 //! navgrid node firmware.
 //!
-//! Bring-up firmware (phase P0). It sets up the board (crystals, antenna switch), reads its
-//! provisioning and starts a new boot epoch (see `store`), starts MPSL and the SoftDevice
-//! Controller with every Channel Sounding role and the board's antennas enabled, and logs the
-//! controller's CS capabilities. Then, as provisioned, it advertises and reflects, connects to a
-//! reflector and runs CS procedures, or serves as the sink. Links between provisioned devices
-//! encrypt under the fleet key without pairing (`keys`). The TAG's LED and button show status on
-//! demand (`ui`), and every node measures its battery (`battery`).
+//! It sets up the board (crystals, antenna switch), reads its provisioning and starts a new boot
+//! epoch (see `store`), starts MPSL and the SoftDevice Controller with every Channel Sounding
+//! role and the board's antennas enabled, and logs the controller's CS capabilities. Then it runs
+//! the mesh (`mesh`): beacons, links to the neighbours the policy picks, ranging bursts on them,
+//! telemetry toward a sink, updates over any link; a sink also serves the host over its UART.
+//! Links between provisioned devices encrypt under the fleet key without pairing (`keys`). The
+//! TAG's LED and button show status on demand (`ui`), and every node measures its battery
+//! (`battery`).
 
 #![no_std]
 #![no_main]
@@ -20,6 +21,7 @@ mod cs;
 mod firmware;
 mod keys;
 mod logger;
+mod mesh;
 mod report;
 mod status;
 mod store;
@@ -27,20 +29,14 @@ mod store;
 mod ui;
 mod update;
 
-use core::cell::Cell;
-
 use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilities;
 use bt_hci::param::LeConnRole;
 use defmt::{error, info, unwrap, warn};
 use embassy_executor::Spawner;
-use embassy_futures::join::{join, join3};
-use embassy_futures::select::{Either, select};
+use embassy_futures::join::join;
 use embassy_nrf::mode::Blocking;
 use embassy_nrf::rramc::Nvmc;
 use embassy_nrf::{bind_interrupts, config, cracen, pac};
-use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
-use embassy_sync::mutex::Mutex;
-use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer, with_timeout};
 use navgrid_proto::{Firmware, NodeConfig, NodeId, ProvisioningError};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
@@ -57,17 +53,14 @@ bind_interrupts!(struct Irqs {
     GRTC_3 => mpsl::HighPrioInterruptHandler;
 });
 
-/// Per-node link budget (architecture §5); P0 validates it on hardware.
-const CENTRAL_LINKS: u8 = 6;
-const PERIPHERAL_LINKS: u8 = 8;
-const MAX_LINKS: usize = (CENTRAL_LINKS + PERIPHERAL_LINKS) as usize;
-/// Signal + ATT per link.
-const L2CAP_CHANNELS: usize = 2 * MAX_LINKS;
+/// Per-node link budget (architecture §5), as the link policy counts it; S5 validates it on
+/// hardware.
+use navgrid_link::{CENTRAL_LINKS, MAX_LINKS, PERIPHERAL_LINKS};
+/// Sync, telemetry and update channels per link.
+const L2CAP_CHANNELS: usize = 3 * MAX_LINKS;
 const L2CAP_TXQ: u8 = 3;
 const L2CAP_RXQ: u8 = 3;
-/// Links that can hold a CS configuration at once. Each costs ~4–7 KB of SDC memory depending
-/// on antenna paths (`SDC_MEM_CS` in sdc.h).
-const CS_LINKS: u8 = 6;
+use cs::CS_LINKS;
 /// SDC memory pool. The TAG figure (2 antennas, 4 paths) is what its SDC reported; one antenna
 /// saves 1 KiB per CS link for each of the 3 extra paths. If this is off, the SDC logs the exact
 /// requirement at boot.
@@ -364,36 +357,27 @@ async fn main(spawner: Spawner) {
             node_cfg
         ),
     }
-    let peer = provisioning.and_then(|p| p.peer);
-    let sink = provisioning.and_then(|p| p.sink);
-    match provisioning {
-        Some(_) => info!("provisioned: peer {}, sink {}", peer, sink),
-        None => warn!("not provisioned: reflecting, and pairing Just Works"),
+    if let Some(p) = provisioning
+        && (p.peer.is_some() || p.sink.is_some())
+    {
+        info!("provisioning names a bring-up peer or sink: the mesh picks its own links now");
+    }
+    if provisioning.is_none() {
+        warn!("not provisioned: pairing Just Works");
     }
     let fleet = keys::Fleet::new(addr, provisioning.map(|p| p.fleet_key));
 
-    // One bond per link: the fleet keys of the links up now.
-    let mut resources: HostResources<DefaultPacketPool, MAX_LINKS, L2CAP_CHANNELS, 1, MAX_LINKS> = HostResources::new();
-    let stack = trouble_host::new(sdc, &mut resources)
-        .set_random_address(Address::random(addr))
-        .register_l2cap_spsm(navgrid_proto::TELEMETRY_SPSM)
-        .register_l2cap_spsm(navgrid_proto::UPDATE_SPSM)
-        .build();
-    let mut runner = stack.runner();
-
     // FR-M4: the beacon in the advertisement, the name in the scan response.
-    let beacons = beacon::Beacons::new(node_cfg, number, MAX_LINKS as u8);
+    let beacons = beacon::Beacons::new(node_cfg, number);
 
-    // CR2032: advertise slowly; NodeConfig trades target acquisition time for idle current.
-    let adv_interval = Duration::from_millis(u64::from(node_cfg.adv_interval_ms));
+    // CR2032: advertise slowly; NodeConfig trades target acquisition time for idle current. A
+    // sink is USB-powered: fast, so nodes find it quickly.
+    let adv_interval = Duration::from_millis(if node_cfg.sink { 100 } else { u64::from(node_cfg.adv_interval_ms) });
     let adv_params = AdvertisementParameters {
         interval_min: adv_interval,
         interval_max: adv_interval,
         ..Default::default()
     };
-    if peer.is_some() {
-        cs::set_initiator();
-    }
     // The sink writes frames to UART20 (TX P1.04, 115200 baud), which the DK's debugger exposes as
     // VCOM1, and takes the host's on its RX (P1.05). Frames from the host end at an idle line,
     // which TIMER21 times.
@@ -401,58 +385,69 @@ async fn main(spawner: Spawner) {
     let (uart, mut from_host) = embassy_nrf::uarte::Uarte::new(p.SERIAL20, p.P1_05, p.P1_04, Irqs, Default::default())
         .split_with_idle(p.TIMER21, p.PPI20_CH2, p.PPI20_CH3);
     #[cfg(feature = "board-dk")]
-    let uart = Mutex::new(uart);
+    let uart = embassy_sync::mutex::Mutex::new(uart);
+    #[cfg(feature = "board-dk")]
+    let sink_uart = node_cfg.sink.then_some(&uart);
+    #[cfg(not(feature = "board-dk"))]
+    let sink_uart: Option<&()> = None;
+    // One bond per link: the fleet keys of the links up now.
+    let mut resources: HostResources<DefaultPacketPool, MAX_LINKS, L2CAP_CHANNELS, 1, MAX_LINKS> = HostResources::new();
+    let stack = trouble_host::new(sdc, &mut resources)
+        .set_random_address(Address::random(addr))
+        .register_l2cap_spsm(navgrid_proto::TELEMETRY_SPSM)
+        .register_l2cap_spsm(navgrid_proto::UPDATE_SPSM)
+        .register_l2cap_spsm(navgrid_mesh::wire::SYNC_SPSM)
+        .build();
+    let mut runner = stack.runner();
+
+    let mesh = mesh::Mesh::new(
+        &stack,
+        &fleet,
+        &beacons,
+        rram,
+        node,
+        node_cfg.role,
+        node_cfg.sink,
+        antennas,
+        adv_params,
+        sink_uart,
+    );
     let role = async {
         log_cs_capabilities(&stack).await;
-        #[cfg(feature = "board-dk")]
-        if node_cfg.sink {
-            // USB-powered: advertise fast so nodes find it quickly.
-            let sink_params = AdvertisementParameters {
-                interval_min: Duration::from_millis(100),
-                interval_max: Duration::from_millis(100),
-                ..Default::default()
-            };
-            // And keep the crystal running: on the internal oscillator between radio events, the
-            // UART's clock is off by enough for framing errors on the host's frames.
-            let _hfxo = match mpsl.request_hfclk().await {
+        // Short ACL events leave room in each 30 ms burst interval for the other links' events
+        // after the CS subevent (architecture §3). Applies to connections made from now on.
+        if let Err(e) = stack
+            .command(sdc::vendor::NordicEventLengthSet::new(ACL_EVENT_LENGTH_US))
+            .await
+        {
+            warn!("ACL event length: {:?}", e);
+        }
+        // A sink keeps the crystal running: on the internal oscillator between radio events, the
+        // UART's clock is off by enough for framing errors on the host's frames.
+        let _hfxo = if node_cfg.sink {
+            match mpsl.request_hfclk().await {
                 Ok(hfxo) => Some(hfxo),
                 Err(e) => {
                     warn!("sink: HFXO request: {:?}", e);
                     None
                 }
-            };
-            embassy_futures::join::join3(
-                report::serve_sink(&stack, &fleet, &uart, node, &beacons, &sink_params, rram),
-                update::from_host(&mut from_host, &uart, rram, provisioning.and_then(|p| p.signing_key)),
-                report::own_reports(&uart),
-            )
-            .await;
-        }
-        match peer {
-            Some(peer) => {
-                let ranging = initiator(
-                    &stack,
-                    &fleet,
-                    peer.address(),
-                    sink.map(NodeId::address),
-                    antennas,
-                    node,
-                    rram,
-                );
-                join(ranging, report::health(mpsl, node, FIRMWARE)).await;
             }
-            None => match sink {
-                Some(sink) => {
-                    join3(
-                        reflector(&stack, &fleet, &beacons, &adv_params, rram),
-                        reflector_report(&stack, &fleet, sink.address(), rram),
-                        report::health(mpsl, node, FIRMWARE),
-                    )
-                    .await;
-                }
-                None => reflector(&stack, &fleet, &beacons, &adv_params, rram).await,
-            },
-        }
+        } else {
+            None
+        };
+        #[cfg(feature = "board-dk")]
+        let sink = async {
+            if node_cfg.sink {
+                join(
+                    update::from_host(&mut from_host, &uart, rram, provisioning.and_then(|p| p.signing_key)),
+                    report::own_reports(&uart),
+                )
+                .await;
+            }
+        };
+        #[cfg(not(feature = "board-dk"))]
+        let sink = async {};
+        embassy_futures::join::join3(mesh.run(), sink, report::health(mpsl, node, FIRMWARE)).await;
     };
     // The runner returns only on an error, e.g. an HCI event bt-hci can't parse; everything stops
     // then, so say why.
@@ -464,348 +459,11 @@ async fn main(spawner: Spawner) {
     join(host, role).await;
 }
 
-type Host<'a, 'd> = Stack<'a, SoftdeviceController<'d>, DefaultPacketPool>;
+pub(crate) type Host<'a, 'd> = Stack<'a, SoftdeviceController<'d>, DefaultPacketPool>;
 
-/// Advertises, accepts a connection, enables the CS reflector role on it, and serves it until it
-/// drops. Repeats forever.
-async fn reflector(
-    stack: &Host<'_, '_>,
-    fleet: &keys::Fleet,
-    beacons: &beacon::Beacons,
-    params: &AdvertisementParameters,
-    rram: &'static firmware::Rram,
-) {
-    let mut peripheral = stack.peripheral();
-    loop {
-        info!("advertising");
-        let conn = beacons.advertise(&mut peripheral, params).await;
-        info!("connected: handle {}", conn.handle().raw());
-        fleet.trust(stack, &conn);
-        cs::exchange_features(stack, conn.handle()).await;
-        if let Err(e) = cs::reflect(stack, conn.handle()).await {
-            warn!("CS: {}", e);
-        }
-        select(serve(stack, &conn, fleet), update::listen(stack, &conn, rram, false)).await;
-    }
-}
-
-/// Ranges with `peer` forever and, given a sink, keeps a telemetry uplink to it alongside. The two
-/// share the central role, taking it only while connecting.
-async fn initiator(
-    stack: &Host<'_, '_>,
-    fleet: &keys::Fleet,
-    peer: [u8; 6],
-    sink: Option<[u8; 6]>,
-    antennas: u8,
-    node: NodeId,
-    rram: &'static firmware::Rram,
-) {
-    // Short ACL events leave room in each 30 ms CS-link interval for the sink link's event after
-    // the CS subevent (see `Links`). Applies to connections made from now on.
-    if let Err(e) = stack
-        .command(sdc::vendor::NordicEventLengthSet::new(ACL_EVENT_LENGTH_US))
-        .await
-    {
-        warn!("ACL event length: {:?}", e);
-    }
-    let mut central = stack.central();
-    listen(&mut central).await;
-    let central = Mutex::<CriticalSectionRawMutex, _>::new(central);
-    let links = Links::default();
-    let report = async {
-        if let Some(sink) = sink {
-            let to = SinkLink {
-                sink,
-                interval_ms: SINK_INTERVAL_MS,
-                ranges: Some((node, node_id(peer))),
-            };
-            report_to_sink(stack, fleet, &central, &links, to, rram).await;
-        }
-    };
-    join(ranging(stack, fleet, &central, &links, peer, antennas, rram), report).await;
-}
-
-/// A node's link to its sink.
-struct SinkLink {
-    sink: [u8; 6],
-    interval_ms: u64,
-    /// The initiator's CS link, whose ranges go over it too.
-    ranges: Option<(NodeId, NodeId)>,
-}
-
-/// Keeps a link to the sink and sends the telemetry outbox over it, reconnecting 5 s after it
-/// drops. The sink also offers the update it carries for this board on it.
-async fn report_to_sink<'a>(
-    stack: &'a Host<'_, '_>,
-    fleet: &keys::Fleet,
-    central: &Mutex<CriticalSectionRawMutex, Central<'a, SoftdeviceController<'_>, DefaultPacketPool>>,
-    links: &Links,
-    to: SinkLink,
-    rram: &'static firmware::Rram,
-) -> ! {
-    loop {
-        if let Some((conn, mut channel)) = uplink(stack, fleet, central, links, to.sink, to.interval_ms).await {
-            let _link = status::Link::up(true);
-            info!("uplink: interval {=u64} ms", conn.params().conn_interval.as_millis());
-            // A failed send stops them; each new uplink starts them again.
-            if let Some((initiator, reflector)) = to.ranges {
-                report::set_link(initiator, reflector);
-            }
-            select(
-                report::run(stack, &mut channel),
-                update::listen(stack, &conn, rram, true),
-            )
-            .await;
-        }
-        links.sink.set(false);
-        Timer::after(Duration::from_secs(5)).await;
-    }
-}
-
-/// A reflector's own link to the sink, when it has one, for its health and logs, beside the CS
-/// link it serves as peripheral.
-async fn reflector_report(
-    stack: &Host<'_, '_>,
-    fleet: &keys::Fleet,
-    sink: [u8; 6],
-    rram: &'static firmware::Rram,
-) -> ! {
-    let central = Mutex::<CriticalSectionRawMutex, _>::new(stack.central());
-    let to = SinkLink {
-        sink,
-        interval_ms: REFLECTOR_SINK_INTERVAL_MS,
-        ranges: None,
-    };
-    report_to_sink(stack, fleet, &central, &Links::default(), to, rram).await
-}
-
-/// Scans for a few seconds; the event handler logs the beacons it hears (FR-M4). Neighbour
-/// discovery (FR-M1) will build on this.
-async fn listen(central: &mut Central<'_, SoftdeviceController<'_>, DefaultPacketPool>) {
-    let mut scanner = Scanner::new(central);
-    match scanner.scan_ext(&ScanConfig::default()).await {
-        Ok(session) => {
-            Timer::after(Duration::from_secs(3)).await;
-            session.stop().await;
-        }
-        Err(e) => warn!("scan: {:?}", e),
-    }
-}
-
-/// How long the initiator tries to connect to its peer before letting the sink link have a go.
-const PEER_CONNECT_WITHIN: Duration = Duration::from_secs(10);
-
-/// ACL event length on the initiator: room for a packet pair each way, and short enough that the
-/// CS subevent ends with time to spare in a 30 ms interval.
+/// ACL event length: room for a packet pair each way, and short enough that a CS subevent ends
+/// with time to spare in a 30 ms interval.
 const ACL_EVENT_LENGTH_US: u32 = 2_500;
-/// Where a sink link that connects second goes, after the CS link's anchor: as late as its short
-/// event allows. It only stays there until the CS link reconnects after it (`Links`).
-const CS_FOOTPRINT_US: u32 = 30_000 - ACL_EVENT_LENGTH_US;
-/// The sink link's interval: a multiple of the CS link's 30 ms keeps its events at a fixed offset
-/// from the CS link's, so they never drift onto a CS subevent.
-const SINK_INTERVAL_MS: u64 = 120;
-/// A reflector's sink link: long, as it carries little, and no multiple of 30 ms. The reflector
-/// can't place it clear of the CS procedures its peer schedules, so it drifts across them: 10 ms
-/// further into the 90 ms procedure cycle each event, about one event in four on a procedure. At
-/// 120 ms it sat on two procedures in four, every time (DEF-50).
-const REFLECTOR_SINK_INTERVAL_MS: u64 = 1000;
-
-#[derive(Clone, Copy)]
-enum Link {
-    Cs,
-    Sink,
-}
-
-/// Which of the initiator's two central links are up. The SDC places a new central link the
-/// configured spacing after the running one, so the spacing is set just before each connection
-/// (DEF-26). Fixed offsets need the common 30 ms factor.
-///
-/// Only one order keeps the sink link's events off the CS subevents: the sink link first and the
-/// CS link 2.5 ms after it. Spacing a sink link that comes second can't, so when the sink link
-/// connects under a CS link, the CS link reconnects after it (`respace`).
-#[derive(Default)]
-struct Links {
-    cs: Cell<bool>,
-    sink: Cell<bool>,
-    respace: Signal<NoopRawMutex, ()>,
-}
-
-impl Links {
-    async fn space_before(&self, stack: &Host<'_, '_>, new: Link) {
-        let spacing = match new {
-            Link::Sink if self.cs.get() => CS_FOOTPRINT_US,
-            Link::Cs if self.sink.get() => ACL_EVENT_LENGTH_US,
-            // First link: nothing to space from.
-            _ => return,
-        };
-        if let Err(e) = stack
-            .command(sdc::vendor::NordicCentralAclEventSpacingSet::new(spacing))
-            .await
-        {
-            warn!("central ACL event spacing: {:?}", e);
-        }
-    }
-}
-
-/// The node ID of a device address: the address in the low six bytes.
-fn node_id(addr: [u8; 6]) -> NodeId {
-    let mut id = [0u8; 8];
-    id[..6].copy_from_slice(&addr);
-    NodeId(u64::from_le_bytes(id))
-}
-
-/// Connects to the sink, spaced from the CS link (see `Links`), encrypts the link and opens the
-/// telemetry channel. Gives up after 10 s, so a missing sink doesn't hold up ranging; the central
-/// role is held only while connecting.
-async fn uplink<'a>(
-    stack: &'a Host<'_, '_>,
-    fleet: &keys::Fleet,
-    central: &Mutex<CriticalSectionRawMutex, Central<'a, SoftdeviceController<'_>, DefaultPacketPool>>,
-    links: &Links,
-    sink: [u8; 6],
-    interval_ms: u64,
-) -> Option<(Connection<'a, DefaultPacketPool>, L2capChannel<'a, DefaultPacketPool>)> {
-    let target = Address::random(sink);
-    let config = ConnectConfig {
-        connect_params: RequestedConnParams {
-            min_connection_interval: Duration::from_millis(interval_ms),
-            max_connection_interval: Duration::from_millis(interval_ms),
-            // At least 8 events: a long interval leaves few chances before the link times out.
-            supervision_timeout: Duration::from_millis((interval_ms * 8).max(4_000)),
-            ..Default::default()
-        },
-        scan_config: ScanConfig {
-            filter_accept_list: &[target],
-            ..Default::default()
-        },
-    };
-    info!("uplink: connecting to sink {=[u8]:02x}", sink);
-    fleet.trust_address(stack, sink);
-    let connected = {
-        let mut central = central.lock().await;
-        links.space_before(stack, Link::Sink).await;
-        with_timeout(Duration::from_secs(10), central.connect_ext(&config)).await
-    };
-    let conn = match connected {
-        Ok(Ok(conn)) => conn,
-        Ok(Err(e)) => {
-            warn!("uplink: connect: {:?}", e);
-            return None;
-        }
-        Err(_) => {
-            warn!("uplink: no sink within 10 s, ranging without it");
-            return None;
-        }
-    };
-    // Up from now: a CS link connecting next must be spaced from it, and one already up has to
-    // reconnect after it (see `Links`).
-    links.sink.set(true);
-    if links.cs.get() {
-        links.respace.signal(());
-    }
-    // 2M, as on the CS link. Packets stay short except during an update from the sink
-    // (`update::listen`): a full-length exchange fills the link's 2.5 ms event (DEF-42).
-    if let Err(e) = conn.set_phy(stack, PhyKind::Le2M).await {
-        warn!("uplink: set PHY: {:?}", e);
-    }
-    if !secure(&conn).await || !encrypted(stack, &conn, fleet).await {
-        return None;
-    }
-    match L2capChannel::create(stack, &conn, navgrid_proto::TELEMETRY_SPSM, &Default::default()).await {
-        Ok(channel) => {
-            info!("uplink: channel open");
-            Some((conn, channel))
-        }
-        Err(e) => {
-            warn!("uplink: channel: {:?}", e);
-            None
-        }
-    }
-}
-
-/// Connects to `peer`, encrypts the link, runs the CS initiator sequence, and serves the link until
-/// it drops. Repeats forever.
-async fn ranging(
-    stack: &Host<'_, '_>,
-    fleet: &keys::Fleet,
-    central: &Mutex<CriticalSectionRawMutex, Central<'_, SoftdeviceController<'_>, DefaultPacketPool>>,
-    links: &Links,
-    peer: [u8; 6],
-    antennas: u8,
-    rram: &'static firmware::Rram,
-) {
-    let target = Address::random(peer);
-    // A 4 s supervision timeout, as Nordic's sample uses.
-    let config = ConnectConfig {
-        connect_params: RequestedConnParams {
-            min_connection_interval: Duration::from_millis(cs::ACL_INTERVAL_MS),
-            max_connection_interval: Duration::from_millis(cs::ACL_INTERVAL_MS),
-            supervision_timeout: Duration::from_secs(4),
-            ..Default::default()
-        },
-        scan_config: ScanConfig {
-            filter_accept_list: &[target],
-            ..Default::default()
-        },
-    };
-    loop {
-        info!("connecting to {=[u8]:02x}", peer);
-        // Extended Create Connection: the legacy command trips SDC assert 50:701 on the nRF54L15 as
-        // soon as the peer's advertisement is heard (DEF-17).
-        // TrouBLE forgets the key when a link drops.
-        fleet.trust_address(stack, peer);
-        // Bounded, as the uplink's is: while the peer is away the central role is free between
-        // tries, and the sink link can connect and report.
-        let connected = {
-            let mut central = central.lock().await;
-            links.space_before(stack, Link::Cs).await;
-            with_timeout(PEER_CONNECT_WITHIN, central.connect_ext(&config)).await
-        };
-        let conn = match connected {
-            Ok(Ok(conn)) => conn,
-            Ok(Err(e)) => {
-                warn!("connect: {:?}", e);
-                continue;
-            }
-            Err(_) => {
-                // The uplink, waiting in the same task, takes the central role before the next try.
-                embassy_futures::yield_now().await;
-                continue;
-            }
-        };
-        links.respace.reset();
-        links.cs.set(true);
-        info!("connected: handle {}", conn.handle().raw());
-        cs::exchange_features(stack, conn.handle()).await;
-        // Zephyr's central moves the ACL to 2M on connect (BT_AUTO_PHY_UPDATE); CS runs on 2M too.
-        if let Err(e) = conn.set_phy(stack, PhyKind::Le2M).await {
-            warn!("set PHY: {:?}", e);
-        }
-        // And to the largest data length (BT_AUTO_DATA_LEN_UPDATE): 251 octets, 2120 us.
-        if let Err(e) = conn.update_data_length(stack, 251, 2120).await {
-            warn!("data length: {:?}", e);
-        }
-        if !secure(&conn).await || !encrypted(stack, &conn, fleet).await {
-            links.cs.set(false);
-            continue;
-        }
-        let _link = status::Link::up(false);
-        match cs::initiate(stack, conn.handle(), antennas).await {
-            Ok(()) => info!("CS running"),
-            Err(e) => warn!("CS: {}", e),
-        }
-        // Also catches a sink link that connected while this one was being set up.
-        let serving = async {
-            if let Either::Second(()) = select(serve(stack, &conn, fleet), links.respace.wait()).await {
-                info!("CS link: reconnecting after the sink link (DEF-26)");
-                conn.disconnect();
-                serve(stack, &conn, fleet).await;
-            }
-        };
-        join(serving, update::offer(stack, &conn, rram)).await;
-        links.cs.set(false);
-    }
-}
 
 /// Whether `event` shows that the peer isn't in the fleet, on a provisioned node.
 ///
@@ -814,7 +472,7 @@ async fn ranging(
 /// - A central's encryption under the fleet key fails, with `BondLost`, when the peer lacks the
 ///   key, and TrouBLE would fall back to pairing. TrouBLE also reports a central's encryption
 ///   under a stored key as `PairingComplete`, so that means nothing there.
-fn outsider(event: &ConnectionEvent, conn: &Connection<'_, DefaultPacketPool>, fleet: &keys::Fleet) -> bool {
+pub(crate) fn outsider(event: &ConnectionEvent, conn: &Connection<'_, DefaultPacketPool>, fleet: &keys::Fleet) -> bool {
     fleet.provisioned()
         && match event {
             ConnectionEvent::BondLost => true,
@@ -824,21 +482,21 @@ fn outsider(event: &ConnectionEvent, conn: &Connection<'_, DefaultPacketPool>, f
 }
 
 /// Logs a disconnection; a MIC failure means the peer encrypted under another fleet key.
-fn disconnected(reason: bt_hci::param::Status) {
+pub(crate) fn disconnected(reason: bt_hci::param::Status) {
     info!("disconnected: {:?}", reason);
     if reason == bt_hci::param::Status::CONN_TERMINATED_DUE_TO_MIC_FAILURE {
         status::foreign();
     }
 }
 
-fn log_encrypted(security_level: SecurityLevel, fleet: &keys::Fleet) {
+pub(crate) fn log_encrypted(security_level: SecurityLevel, fleet: &keys::Fleet) {
     let how = if fleet.provisioned() { "fleet key" } else { "Just Works" };
     info!("encrypted: {:?}, {=str}", security_level, how);
 }
 
 /// Starts encrypting a central's link. TrouBLE runs one security procedure at a time, so this
 /// waits out another link's for up to 5 s. Drops the link if it can't start.
-async fn secure(conn: &Connection<'_, DefaultPacketPool>) -> bool {
+pub(crate) async fn secure(conn: &Connection<'_, DefaultPacketPool>) -> bool {
     for _ in 0..50 {
         match conn.request_security() {
             Ok(()) => return true,
@@ -892,52 +550,6 @@ async fn wait_encrypted(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacke
             ConnectionEvent::Disconnected { reason } => {
                 disconnected(reason);
                 return false;
-            }
-            ConnectionEvent::RequestConnectionParams(req) => {
-                if let Err(e) = req.accept(None, stack).await {
-                    warn!("connection parameters: {:?}", e);
-                }
-            }
-            ConnectionEvent::DataLengthUpdated {
-                max_tx_octets,
-                max_tx_time,
-                max_rx_octets,
-                max_rx_time,
-            } => {
-                info!(
-                    "data length: tx {} B {} us, rx {} B {} us",
-                    max_tx_octets, max_tx_time, max_rx_octets, max_rx_time
-                )
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Handles connection events until the link drops, and drops a peer outside the fleet
-/// ([`outsider`]).
-async fn serve(stack: &Host<'_, '_>, conn: &Connection<'_, DefaultPacketPool>, fleet: &keys::Fleet) {
-    let mut link = None;
-    loop {
-        let event = conn.next().await;
-        if outsider(&event, conn, fleet) {
-            warn!("peer outside the fleet: dropping it");
-            status::foreign();
-            conn.disconnect();
-            continue;
-        }
-        match event {
-            ConnectionEvent::Disconnected { reason } => {
-                disconnected(reason);
-                return;
-            }
-            // A peripheral's link counts once encrypted; a central counts its own after
-            // `encrypted`.
-            ConnectionEvent::Encrypted { security_level, .. } => {
-                log_encrypted(security_level, fleet);
-                if conn.role() == LeConnRole::Peripheral && link.is_none() {
-                    link = Some(status::Link::up(false));
-                }
             }
             ConnectionEvent::RequestConnectionParams(req) => {
                 if let Err(e) = req.accept(None, stack).await {

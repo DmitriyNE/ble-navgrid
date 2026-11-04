@@ -292,6 +292,7 @@ impl<S: Storage> Replica<S> {
     pub fn header(&self) -> Header {
         Header {
             node: self.cfg.id,
+            role: self.node.role,
             hops: self.node.hops,
             sink: self.cfg.sink,
         }

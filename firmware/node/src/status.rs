@@ -15,6 +15,8 @@ use embassy_time::Instant;
 static LINKS: AtomicU8 = AtomicU8::new(0);
 /// Links up that lead to a sink.
 static SINK_LINKS: AtomicU8 = AtomicU8::new(0);
+/// Links the node can still take, as the mesh policy counts them (for the beacon, FR-M4).
+static FREE_LINKS: AtomicU8 = AtomicU8::new(0);
 /// Uptime in seconds when a link last failed to encrypt (another fleet key), 0 if never.
 static FOREIGN_S: AtomicU32 = AtomicU32::new(0);
 static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
@@ -65,6 +67,14 @@ impl Drop for Link {
 
 pub fn links() -> u8 {
     LINKS.load(Ordering::Relaxed)
+}
+
+pub fn set_free_links(n: u8) {
+    FREE_LINKS.store(n, Ordering::Relaxed);
+}
+
+pub fn free_links() -> u8 {
+    FREE_LINKS.load(Ordering::Relaxed)
 }
 
 /// A link failed to encrypt or its peer turned out not to be in the fleet.

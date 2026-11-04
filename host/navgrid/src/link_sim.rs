@@ -492,7 +492,7 @@ impl<'a> Sim<'a> {
             self.nodes[from].policy.connect_failed(tid, now_ms);
             return;
         }
-        let (interval_1250, latency) = self.nodes[from].policy.connect_params();
+        let (interval_1250, latency) = self.nodes[from].policy.connect_params(false);
         let interval_us = u64::from(interval_1250) * 1250;
         let pinned_fast = !self.nodes[from].policy.switches_for_burst(tid);
         let phase_us = self.spaced_phase(from, interval_us);

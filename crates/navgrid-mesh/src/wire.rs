@@ -19,7 +19,7 @@ use heapless::Vec;
 use navgrid_proto::NodeId;
 use serde::{Deserialize, Serialize};
 
-use crate::{Class, Record, Topic, Version};
+use crate::{Class, Record, Role, Topic, Version};
 
 /// L2CAP LE credit-based channel for sync sessions, next to telemetry's `0x0081`.
 pub const SYNC_SPSM: u16 = 0x0082;
@@ -35,6 +35,7 @@ pub const VERSIONS_PER_FRAME: usize = 12;
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Header {
     pub node: NodeId,
+    pub role: Role,
     pub hops: u8,
     pub sink: bool,
 }
@@ -136,6 +137,7 @@ mod tests {
         [
             Sync::Hello(Header {
                 node: ID,
+                role: Role::Anchor,
                 hops: u8::MAX,
                 sink: true,
             }),
