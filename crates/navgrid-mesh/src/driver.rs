@@ -496,8 +496,8 @@ mod tests {
     /// exchange as the firmware does; the frames each side sent.
     fn run(a: &mut Node, b: &mut Node, now: u64, budget: u32) -> (Driver, Driver, StdVec<Sync>, StdVec<Sync>) {
         let (mut da, mut db) = (
-            Driver::new(a.header(), budget, memory_of(a, b.id())),
-            Driver::new(b.header(), budget, memory_of(b, a.id())),
+            Driver::new(a.header_for(b.id()), budget, memory_of(a, b.id())),
+            Driver::new(b.header_for(a.id()), budget, memory_of(b, a.id())),
         );
         let (mut ab, mut ba) = (VecDeque::new(), VecDeque::new());
         let (mut sent_a, mut sent_b) = (StdVec::new(), StdVec::new());

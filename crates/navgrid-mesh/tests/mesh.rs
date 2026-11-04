@@ -395,3 +395,75 @@ fn pushes_go_commands_first_then_oldest_first() {
         [Topic::Reported(Setting::Blink), Topic::Health, Topic::Link(NodeId(7))]
     );
 }
+
+#[test]
+fn a_lost_sink_path_reads_unreachable_at_once_instead_of_counting_up() {
+    // 1 (sink) – 2 – 3: node 3's only path runs through 2, and 2's through 1.
+    let mut nodes = chain(3);
+    for t in 0..4 {
+        round(&mut nodes, t * MINUTE);
+    }
+    assert_eq!(nodes[1].hops(), 1);
+    assert_eq!(nodes[2].hops(), 2);
+    // 2 tells 3 it is reachable, but tells 1 nothing it would count on, and 3 tells 2 nothing.
+    assert_eq!(nodes[1].header_for(NodeId(3)).hops, 1);
+    assert_eq!(nodes[1].header_for(NodeId(1)).hops, UNREACHABLE);
+    assert_eq!(nodes[2].header_for(NodeId(2)).hops, UNREACHABLE);
+    // The sink goes: 2 and 3 keep talking; neither counts up through the other.
+    let (left, right) = nodes.split_at_mut(2);
+    for t in 4..30 {
+        left[1].tick(t * MINUTE);
+        right[0].tick(t * MINUTE);
+        session(&mut left[1], &mut right[0], t * MINUTE, 4096, |_, _, _| {});
+    }
+    assert_eq!(left[1].hops(), UNREACHABLE, "2 without its sink");
+    assert_eq!(right[0].hops(), UNREACHABLE, "3 behind it");
+}
+
+#[test]
+fn a_command_finds_a_node_without_a_route_through_the_node_records_that_place_it() {
+    // A sink with one peer (2) and the node records of 2, 3 and 4 in hand, 4 listing 5, but
+    // no route to 5: nothing of 5's has come up yet.
+    let mut sink = node(1, true);
+    let mut infos = Vec::new();
+    for (id, neighbours) in [(2u64, vec![1u64, 3]), (3, vec![2, 4]), (4, vec![3, 5])] {
+        let mut i = info();
+        i.neighbours = neighbours
+            .into_iter()
+            .map(NodeId)
+            .collect::<Vec<_>>()
+            .as_slice()
+            .try_into()
+            .unwrap();
+        infos.push(Writer::new(NodeId(id), 1).record(Body::Node(i)));
+    }
+    sink.contact(
+        &navgrid_mesh::wire::Header {
+            node: NodeId(2),
+            role: Role::Anchor,
+            hops: 1,
+            sink: false,
+            delta: false,
+        },
+        0,
+    );
+    for r in infos {
+        assert!(sink.receive(r, 0).unwrap().kept());
+    }
+    assert!(sink.route(NodeId(5)).is_none());
+    assert_eq!(sink.next_hop_to(NodeId(5)), Some(NodeId(2)));
+    assert_eq!(sink.next_hop_to(NodeId(9)), None, "nobody lists 9");
+    let mut controller = Writer::new(CONTROLLER, 1);
+    let cmd = controller.record(Body::Desired(Desired {
+        target: NodeId(5),
+        command: Command::Blink { times: 1 },
+        mac: [0; 8],
+    }));
+    assert_eq!(sink.inject(cmd, MINUTE), Ok(Received::New));
+    let mut pushed = 0;
+    sink.pushes(&node(2, false).header(), MINUTE, |_| {
+        pushed += 1;
+        true
+    });
+    assert_eq!(pushed, 1, "the command goes to 2, behind which 5 is");
+}

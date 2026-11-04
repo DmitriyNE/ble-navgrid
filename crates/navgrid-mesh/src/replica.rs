@@ -194,6 +194,9 @@ pub struct Route {
     since_ms: u64,
 }
 
+/// How many hops of node records a push follows to find a node without a route (DEF-31).
+const NEIGHBOUR_SEARCH_DEPTH: u8 = 4;
+
 /// Summaries remembered per peer for delta sync (DEF-28): what this side sent it last and what
 /// it sent back, as of the last session both completed.
 pub const SUMMARY_MEMORY: usize = 64;
@@ -305,6 +308,23 @@ impl<S: Storage> Replica<S> {
             sink: self.cfg.sink,
             delta: false,
         }
+    }
+
+    /// The header for a session with `peer`: the hop count is poisoned (unreachable) when this
+    /// node's only path to a sink runs through that peer, so a lost path doesn't count up
+    /// through the two of them to [`MAX_HOPS`] (DEF-30; split horizon with poisoned reverse).
+    pub fn header_for(&self, peer: NodeId) -> Header {
+        let mut header = self.header();
+        if !self.cfg.sink
+            && let Some(best) = self.peers.iter().map(|p| p.hops).min()
+            && best < UNREACHABLE
+        {
+            let via_peer_only = self.peers.iter().filter(|p| p.hops == best).all(|p| p.id == peer);
+            if via_peer_only {
+                header.hops = UNREACHABLE;
+            }
+        }
+        header
     }
 
     pub fn records(&self) -> &[Stored] {
@@ -568,9 +588,17 @@ impl<S: Storage> Replica<S> {
     /// starve anything. Stops when `out` returns `false`.
     pub fn pushes(&self, peer: &Header, now_ms: u64, mut out: impl FnMut(Record) -> bool) {
         let downhill = !self.cfg.sink && peer.hops < self.node.hops;
+        // A record for a node goes to it, along the way its records came up, or, with no route,
+        // toward a peer behind which the node records held here place it (DEF-31).
         let go = |p: &Pending| match p.toward {
             Toward::Sinks => downhill,
-            Toward::Node(n) => n == peer.node || self.route(n) == Some(peer.node),
+            Toward::Node(n) => {
+                n == peer.node
+                    || match self.route(n) {
+                        Some(via) => via == peer.node,
+                        None => self.next_hop_to(n) == Some(peer.node),
+                    }
+            }
         };
         for urgent in [true, false] {
             let mut last = None;
@@ -799,6 +827,30 @@ impl<S: Storage> Replica<S> {
 
     /// Recomputes the hop count and neighbour list from the peers, and rewrites the node record
     /// if either changed.
+    /// The peer behind which the node records held here place `target`, searching their
+    /// neighbour lists a few hops deep: how a record finds a node that has never pushed
+    /// anything up (DEF-31).
+    pub fn next_hop_to(&self, target: NodeId) -> Option<NodeId> {
+        self.peers
+            .iter()
+            .find(|p| self.reaches(p.id, target, NEIGHBOUR_SEARCH_DEPTH))
+            .map(|p| p.id)
+    }
+
+    fn reaches(&self, from: NodeId, target: NodeId, depth: u8) -> bool {
+        if from == target {
+            return true;
+        }
+        if depth == 0 {
+            return false;
+        }
+        self.node_info(from).is_some_and(|i| {
+            i.neighbours
+                .iter()
+                .any(|&n| n != self.cfg.id && n != from && self.reaches(n, target, depth - 1))
+        })
+    }
+
     fn update_node(&mut self, now_ms: u64) {
         let hops = if self.cfg.sink {
             0

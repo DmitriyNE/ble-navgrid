@@ -102,11 +102,11 @@ pub fn session<A: Storage, B: Storage>(
     let delta_mode = ma.is_some() && mb.is_some();
     let ha = Header {
         delta: ma.is_some(),
-        ..a.header()
+        ..a.header_for(b.id())
     };
     let hb = Header {
         delta: mb.is_some(),
-        ..b.header()
+        ..b.header_for(a.id())
     };
     out.a.sent.count(&Sync::Hello(ha));
     out.b.sent.count(&Sync::Hello(hb));

@@ -561,7 +561,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         peer: NodeId,
     ) -> Result<Header, SessionError> {
         let started = Instant::now();
-        let mine = state::header(self.role, self.sink);
+        let mine = state::header(self.role, self.sink, peer);
         while !state::begin_session(mine, SESSION_BUDGET, peer) {
             if started.elapsed() > SESSION_SLOT_WAIT {
                 return Err(SessionError::Busy);

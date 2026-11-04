@@ -125,13 +125,7 @@ epoch in RRAM, `navgrid provision`, the FR-M4 beacon, and fleet-key link keys (l
 
 Protocol follow-ups, in the simulator first:
 
-- [ ] **Delta summaries** (DEF-28): per peer, send only the classes changed or newly in scope
-      since the last complete session with it.
 - [ ] **Compact device layout** for stored records (DEF-29): 48-bit IDs, `u8` lengths.
-- [ ] **Hop counts** (DEF-30): poison the route when the sink path goes, instead of counting up to
-      `MAX_HOPS`.
-- [ ] **Commands to unrouted nodes** (DEF-31): fall back to pushing toward the target's last
-      known neighbours.
 - [ ] **Retiring a node:** a controller record that drops a node's records everywhere.
 - [ ] **Fleet key at rest** (DEF-33): APPROTECT on provisioned devices, and the key in the KMU.
 - [ ] **Simulate link loss and mid-session drops,** and reboots (new epochs).

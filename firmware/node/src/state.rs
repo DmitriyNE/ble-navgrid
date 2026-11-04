@@ -214,20 +214,19 @@ pub fn set_neighbours(neighbours: impl Iterator<Item = NodeId>) {
     }
 }
 
-/// Hops to the nearest sink, as the replica knows them.
-pub fn hops() -> u8 {
-    with(|r| r.hops()).unwrap_or(u8::MAX)
-}
-
-/// This node's header for a session.
-pub fn header(role: navgrid_proto::Role, sink: bool) -> Header {
-    Header {
-        node: with(|r| r.id()).unwrap_or(NodeId(0)),
-        role,
-        hops: hops(),
-        sink,
-        delta: false,
-    }
+/// This node's header for a session with `peer`: the replica poisons the hop count toward the
+/// peer its only sink path runs through (DEF-30).
+pub fn header(role: navgrid_proto::Role, sink: bool, peer: NodeId) -> Header {
+    with(|r| r.header_for(peer)).map_or(
+        Header {
+            node: NodeId(0),
+            role,
+            hops: u8::MAX,
+            sink,
+            delta: false,
+        },
+        |h| Header { role, sink, ..h },
+    )
 }
 
 /// Takes the session slot with a fresh driver for a session with `peer`, remembering their last

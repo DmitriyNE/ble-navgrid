@@ -4,6 +4,14 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Routing: poisoned hop counts, and records that find unrouted nodes** (DEF-30, DEF-31 fixed). A
+node's hello to the peer its only sink path runs through says unreachable (split horizon with
+poisoned reverse), so a lost path reads unreachable at once instead of counting up to 32 through
+two nodes; the simulator's one-hour partition of 20 nodes refuses no push where it refused 226. A
+record for a node with no route goes toward the peer behind which the node records in hand place
+it, searching neighbour lists four hops deep. The link simulator at 500 anchors and 100 tags
+stays within the link budget (4.9 links an anchor, 11 at most) with the tags' rates as at 8.
+
 **Delta sync** (DEF-28 fixed). Replicas remember per peer the summaries of their last complete
 session; the hello says so, and when both remember, each sends only the classes whose hash
 changed (a class dropped goes as a zero hash) and the other rebuilds the full picture from its
