@@ -1,118 +1,127 @@
 # navgrid roadmap
 
-Status: 2026-11-04, after the chair and estimator sessions. The phases are the agreed P0–P3
-([requirements §3](requirements.md)); this is the order of work inside them and the test that
-closes each milestone, given what the bench has shown. The work items themselves live in
-[the todo](engineering/todo.md); the evidence in [the spikes](engineering/spikes/).
+Status: 2026-11-04. The phases are the agreed P0–P3 ([requirements §3](requirements.md)); this is
+the order of work across them and the test that closes each stage. The work items themselves live
+in [the todo](engineering/todo.md); the evidence in [the spikes](engineering/spikes/).
+
+**The ordering principle: code is cheap, bench time and hardware are not.** The software is
+finished end to end first (mesh, self-survey, distributed solving, command and control, the web
+interface, operations at scale), validated on the simulator and on a desk mesh of spare TAGs where
+the ranges are rough but the protocol is real. The precise calibration, the measurement campaign
+and the custom hardware come once, at the end, with the software ready to ingest and show their
+results. Wherever a design choice would wait on a measurement, the software takes the quantity as
+a setting with today's best guess, so the campaign tunes numbers rather than changing structure.
 
 ## Where we stand
 
 - **The stack is Rust end to end and ranges:** CS mode 2 with 2×2 antenna diversity and inline
   PCT transfer, a mode-1 round-trip-time referee, raw tones to the host, over-the-air updates,
-  provisioning and the mesh-state crate, diagnostics through a sink. Four TAG pucks and one DK
-  sink on the bench; 20 TAGs in the box.
-- **The physics is understood well enough to design around:**
-  - each antenna path carries a fixed offset of 1.3–1.9 m, a real delay seen by every estimator,
-    so calibration is per path (DEF-6);
-  - two boards at one low height fall into the floor reflection's fade from about 3 m and read a
-    bounce, by phase and by RTT alike; no estimator at 75 MHz of bandwidth separates a bounce
-    13 cm longer than the direct path, so the fix is geometry, not signal processing;
-  - a node 2.3 m up over a tag on the floor reads true plus the offset from 2.3 to 3.8 m, face up
-    or down. Nodes go high, about a metre below the ceiling, at unequal heights; tags lie wherever
-    they land (C-5);
-  - super-resolution (matrix pencil) shows what is in the channel and stays a host diagnostic.
-- **Not yet measured:** energy per activity on a CR2032, concurrent-link ranging rates, the
-  per-path offsets on a rig, and anything with more than one node.
+  provisioning and the mesh-state crate with its simulator, diagnostics through a sink. Four TAG
+  pucks and one DK sink on the bench; 20 TAGs in the box.
+- **The physics is understood well enough to design around:** each antenna path carries a fixed
+  offset of 1.3–1.9 m (a real delay, calibrated per path later; the device holds a per-path offset
+  table, zero until then); two boards at one low height fall into the floor reflection's fade from
+  about 3 m, which no estimator at this bandwidth undoes, so nodes go high at unequal heights and
+  the solver rejects bounces by residual; a node 2.3 m up over a floor tag ranges correctly.
+  Super-resolution is a host diagnostic, not a range.
+- **Settings standing in for measurements until the campaign:** ranging rate per link count and
+  the per-link CS spacing (DEF-26), every duty period (NFR-6 demands they are configurable
+  anyway), the per-path offsets, and the range σ model (DEF-7).
 
-## Milestones
+## Stages
 
-### M0 — a range you can trust (closes P0)
+### S1 — the mesh talks (mesh stages 3 and 4)
 
-Goal: a calibrated range in the product geometry, with its error known, from a tag anywhere a key
-lands.
+Several links per node with CS scheduled across them, low-duty links that burst to range (D-10);
+sync sessions over the links with a byte budget; the sink mirrors its replica to the host and
+takes desired records back; neighbour discovery and hop counts from beacons; the controller key
+and a MAC on desired state; the first commands (blink, sensor periods, diversity) and the
+monitor's mesh-state view.
 
-1. **Calibration rig and per-path offsets.** A node 2.3 m up, a tag on the floor, tape points from
-   1 to 6 m; `navgrid calibrate` keyed by antenna path; the offset applied on the device. Exit:
-   line-of-sight p90 ≤ 0.5 m from 1 to 6 m (NFR-1 at short range).
-2. **Where keys land.** Under a table, against a wall, in a bag and a pocket, on a shelf, 2–5 m
-   sideways from the node; then two nodes at once. Exit: a table of error by situation, and a
-   decision on which the mesh covers and which the final approach must cover.
-3. **Several links.** One tag ranging to two or three nodes with CS scheduled across the links
-   (mesh stage 3), rates measured per link count. Exit: at least two ranges a second to a moving
-   tag over three links (NFR-2).
-4. **Energy.** A power profiler on a TAG: advertising, an idle link, CS per antenna-path count,
-   wake-on-motion; CR2032 sag during a procedure (R-9). Exit: a budget for the asset tag and the
-   person tag against NFR-6 (a month as the goal, a week as the floor).
-5. **Housekeeping the above needs:** the outbox balance with tones on, the tones rate and the
-   combiner as provisioning settings, the sub-mode 1 abort rate, the kept captures re-run with
-   `--ipt`, the `cs_de` cross-check that P0's exit names.
+Bench: about 8 TAGs on the desk as nodes, 2–3 as tags, the DK sink. Exit: commands and records
+cross partitions and several hops on the desk mesh; latency and bytes per contact match the
+simulator.
 
-Not in M0: self-survey, the upstream PRs (a parallel track).
+### S2 — the mesh knows where everything is (mesh stage 5, FR-M, FR-T, FR-A)
 
-### M1 — find my keys at home (P1, first cut)
+The host's central solver over link records publishes position records (FR-M6): robust
+multilateration with the per-path offsets, bounce rejection by residual, 3D with the carry-height
+prior and barometric height. Then distributed on-node solving (FR-M2) validated against the host,
+link down-weighting and re-survey of moved nodes (FR-M5), absolute referencing from commissioning
+presets (FR-A3, `fit_pins` / `fit_bearings`, the frame version on every position). Tags: the
+on-device tracker, motion gating with a settling burst (FR-T6), publish on settle (FR-T5), node
+choice by beacon with handover (FR-M4).
 
-Goal: four nodes hung in two rooms, and the host pointer walks you to the keys.
+Exit: in the simulator and on the desk mesh, the distributed solution within 0.2 m of the central
+one; a moved node re-surveyed without an operator; a tag's position published within a minute of
+settling; frame handedness and yaw right against the presets.
 
-- **Hardware:** pendants — TAGs on edge in a holder, hung about a metre below the ceiling at
-  unequal depths (0.7–1.3 m), tape-surveyed and north-aligned (pins, FR-A3a). One asset tag, one
-  person tag, the DK sink.
-- **Firmware:** the asset tag's motion gating (ADXL367 wake-on-motion, a settling burst, publish
-  on settle: FR-T5, FR-T6); the person tag at its moving rate; tags choose nodes by beacon and
-  hand over between them (FR-M4); link records with range, quality and antenna path.
-- **Host:** the central solver over link records publishes position records (mesh stage 5, host
-  first): robust multilateration with the per-path offsets, bounce rejection by residual, 3D with
-  a carry-height prior; the pointer view as the HUD stand-in (bearing and distance from the
-  person to the asset), in the monitor or the thin web UI (D-23). The final approach: direct
-  person↔asset ranging (FR-F4), distance shown, bearing from how it changes as the person moves,
-  the asset's LED blinking.
-- **Exit, on a test course at home:** asset position p90 ≤ 1 m horizontal; pointer bearing
-  ≤ 20° p90 beyond 3 m; final-approach distance ≤ 0.3 m p90 (re-baselined if the per-path offsets
-  do not hold unit to unit); diversity on against off and gating on against off, measured.
+### S3 — command and control, and the web interface (FR-C, FR-F, FR-S6, FR-H)
 
-### M2 — nodes that survey themselves (P2)
+The host becomes a service: the global replica, the asset registry (FR-F1), desired-state commands
+with reported state, the registry operations (place, replace, retire), identify and button events.
+The thin web UI (D-23): floor plan with nodes and tags, mesh links and health, sideband, pin and
+preset placement, the asset registry, and the find-my-keys flow as the HUD stand-in: pointer and
+distance from the person to the asset, the final approach on direct person↔asset ranging (FR-F4)
+with the bearing refined from motion and the asset's LED blinking.
 
-Goal: the product's node exists and the mesh solves its own positions.
+Exit: the whole find-my-keys flow runs end to end on the desk mesh (a pendant hung from the
+ceiling if it helps the demo), from "where are my keys" to the blink, through the service and the
+web page only.
 
-- **Hardware:** a node variant with a vertical antenna (or the TAG on edge in a housing), a
-  ceiling mount about a metre down, CR2032 per decision Q1 (nodes range rarely). Node-to-node
-  ranging under a ceiling at two depths is tested before the mount is fixed, since the ceiling
-  bounce seen on the chairs (2.2 m past the direct path) sits above the pendants too.
-- **Mesh:** node-to-node ranging on low-duty links (D-10); the central solve (FR-M6) and then the
-  distributed one (FR-M2); commissioning presets (FR-A3); re-survey of a moved node (FR-M5);
-  sync over the links (stage 4: sessions, controller commands, the monitor's mesh view).
-- **Operations:** the field tool and install mode, identify, registry operations; update resume
-  and retry, canary rollouts.
-- **Exit:** node p90 ≤ 0.5 m against tape; the distributed solution within 0.2 m of the central
-  one; frame yaw ≤ 5°; a moved node re-surveyed without an operator.
+### S4 — operations at scale (FR-O, NFR-4)
 
-### M3 — a building (P3)
+Admission control and the airtime budget, handover across rooms, several sinks, delta sync
+(DEF-28), compact record layout (DEF-29), updates across hops with resume, retry and canary
+rollouts, the field tool and install mode, the fleet key at rest with APPROTECT (DEF-33), retiring
+nodes. Energy accounting per activity in the firmware as counters, so the campaign reads them off.
 
-Many tags with admission control and an airtime budget (NFR-4), handover across rooms, routing to
-several sinks, delta sync, the fleet key at rest with APPROTECT, updates across hops, the HUD's
-heading in place of the host view, and a multi-room deployment with capacity measured.
+Exit: 500 nodes and 100 tags in the simulator inside NFR-4's per-node bounds; a rollout and a
+retire across the desk mesh without touching a device.
+
+### S5 — the measurement campaign (closes P0 and P1 properly)
+
+One campaign, with everything above in place to ingest and display it:
+
+1. **Calibration** per antenna path and per unit on a rig: a node 2.3 m up, a tag on the floor,
+   tape points 1–6 m, `navgrid calibrate` through the service; offsets written to the devices.
+   Exit: line-of-sight p90 ≤ 0.5 m from 1 to 6 m; the unit-to-unit spread known (if over 0.3 m,
+   calibration becomes an enrolment step).
+2. **Energy and sag** with a power profiler against the firmware's own counters; CR2032 sag during
+   a procedure (R-9). Exit: the asset and person tag budgets against NFR-6; if a person tag cannot
+   reach a week, it goes rechargeable (Q1 revisited).
+3. **Link capacity:** ranges per second per link count, measured (R-2, DEF-26); the scheduler's
+   settings tuned.
+4. **Where keys land** and **nodes under a ceiling at two depths** (the ceiling bounce seen on the
+   chairs sits above pendants too): error by situation; what the mesh covers and what the final
+   approach must.
+5. **The P1 test course** at home with four pendants: position p90 ≤ 1 m, pointer ≤ 20° beyond
+   3 m, final-approach distance ≤ 0.3 m p90, diversity and gating each on and off. The NFRs are
+   re-baselined from these numbers (Q3).
+
+### S6 — custom hardware and the building (P2 hardware, P3)
+
+The node variant (vertical antenna, ceiling mount about a metre down, power per Q1), the
+single-antenna asset module, the person tag; node-to-node under the ceiling checked before the
+mount is fixed; then a multi-room deployment with capacity measured and the HUD's heading in place
+of the host view.
+
+Exit: P3's, with node p90 ≤ 0.5 m against tape and NFR-4 met in the building.
 
 ### Parallel tracks
 
-Upstream PRs (bt-hci, nrf-sdc, TrouBLE, embassy-nrf), CI with host tests and firmware clippy,
-the probe-rs report, simulator scenarios (pointer-error statistics, GDOP-aware node selection), and
-the matrix pencil ported into `navgrid tones` as a diagnostic.
+Upstream PRs (bt-hci, nrf-sdc, TrouBLE, embassy-nrf), CI with host tests, firmware clippy and
+replay of recorded captures (NFR-9), the probe-rs report, simulator scenarios (pointer-error
+statistics, GDOP-aware node selection, link loss and reboots), the matrix pencil in `navgrid
+tones` as a diagnostic, and the housekeeping the bench left (outbox balance with tones on, the
+tones rate and combiner as settings, sub-mode 1 aborts, the `cs_de` cross-check).
 
-## Risks that set the schedule
+## Risks the ordering carries
 
-- **Energy (R-7, R-9).** If CS on a CR2032 cannot give a person tag a week, the person tag goes
-  rechargeable (revisiting Q1). Measured in M0, before the firmware is tuned around it.
-- **Offsets per path and per unit (DEF-6).** If offsets drift with temperature or battery, or
-  differ unit to unit by more than 0.3 m, every unit is calibrated at enrolment; the rig is built
-  so that is cheap.
-- **Link capacity (R-2).** The controller's concurrent CS links and the per-link spacing (DEF-26)
-  cap ranges per second; if three links cannot give two a second, the tracker leans on the
-  accelerometer (FR-T7) and lower rates.
-- **Multipath beyond the floor (R-4).** The hedge is geometry: unequal node heights and the
-  shortest coherent antenna path. Tested under the ceiling in M1 before anything is mounted.
-- **Sub-mode 1 and the RTT referee.** Optional; dropped if it costs ranges.
-
-## Pace
-
-At the bench's current rate (bring-up to raw tones over the air in four days) M0 is about a week of
-bench time, M1 two to three weeks (the solver, gating and handover are the bulk), M2 is set by the
-node hardware's lead time rather than by firmware, and M3 is open.
+- **Building on guessed numbers.** Rates, periods, offsets and σ are settings; the campaign may
+  move them a lot, but not the structure, as long as nothing hard-codes them (the simulator runs
+  the same code with the same settings).
+- **The desk mesh validates protocol, not accuracy.** Positions on the desk are only consistent,
+  not right; the solver's accuracy claims wait for S5.
+- **Energy could still force a design change** (a rechargeable person tag, or coarser gating); the
+  firmware keeps every activity switchable so that is a settings change too.
