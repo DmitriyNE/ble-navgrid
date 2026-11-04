@@ -11,6 +11,8 @@ navgrid-proto.workspace = true
 serde.workspace = true
 postcard.workspace = true
 heapless.workspace = true
+aes.workspace = true
+cmac.workspace = true
 defmt = { workspace = true, optional = true }
 
 [features]

@@ -42,6 +42,11 @@ impl Fleet {
         self.key.is_some()
     }
 
+    /// The controller's key, which desired state is checked against (DEF-27).
+    pub fn controller_key(&self) -> Option<[u8; 16]> {
+        self.key.as_ref().map(navgrid_mesh::auth::controller_key)
+    }
+
     /// Lets a link to `peer` encrypt under the fleet's link key without pairing. A central calls
     /// it before connecting, a peripheral as soon as it accepts. TrouBLE forgets the key when the
     /// link drops, as it isn't bonded.

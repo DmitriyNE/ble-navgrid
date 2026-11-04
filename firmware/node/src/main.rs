@@ -386,6 +386,7 @@ async fn main(spawner: Spawner) {
         warn!("not provisioned: pairing Just Works");
     }
     let fleet = keys::Fleet::new(addr, provisioning.map(|p| p.fleet_key));
+    state::set_controller_key(fleet.controller_key());
 
     // FR-M4: the beacon in the advertisement, the name in the scan response.
     let beacons = beacon::Beacons::new(node_cfg, number);

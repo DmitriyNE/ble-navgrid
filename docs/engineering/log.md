@@ -4,6 +4,15 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Commands through the mesh** (stage 4, second half). `navgrid control --sink PORT N042 blink`
+signs a desired-state record with the controller key, AES-CMAC of the fleet key (`navgrid-mesh`
+`auth`: the MAC covers origin, version, target and command, so relays carry but can't forge or
+replay), sends it down the sink's serial port (`UpdateMsg::Record`) and waits for the sink to mirror
+it back; the sink injects it and sessions push it toward the target; the node checks the MAC every
+5 s among its pending commands, acts (blink raises the attention flag; environment, diversity and
+advertising report Unsupported until settings change at runtime) and writes the Reported record,
+which comes back up to the host. Built, untested on hardware with the rest.
+
 **Sync sessions on devices** (stage 4, first half; DEF-62). The mesh crate's session runs frame by
 frame now (`Driver`, bounded buffers: two classes of the peer's versions, records and pushes drawn
 from the replica as they go), checked byte for byte against the in-memory session. The firmware

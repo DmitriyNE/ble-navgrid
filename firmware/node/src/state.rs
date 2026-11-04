@@ -11,7 +11,10 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Instant, Timer};
 use navgrid_mesh::wire::Header;
-use navgrid_mesh::{Body, CONTROLLER, Config, Driver, Fixed, Health, NodeId, NodeInfo, Received, Record, Replica};
+use navgrid_mesh::{
+    Body, CONTROLLER, Command, Config, Driver, Fixed, Health, Key, NodeId, NodeInfo, Received, Record, Replica, Reported,
+    Status, Topic, auth,
+};
 use navgrid_proto::{MESH_RECORD_LEN, MeshRecord, Message};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 
@@ -25,6 +28,8 @@ struct State {
     replica: Replica<Store>,
     /// The session under way, if any: one at a time.
     session: Option<Driver>,
+    /// The controller's key, to check desired state against (DEF-27).
+    controller_key: Option<[u8; 16]>,
 }
 
 static STATE: Mutex<CriticalSectionRawMutex, RefCell<Option<State>>> = Mutex::new(RefCell::new(None));
@@ -34,6 +39,8 @@ const HEALTH_EVERY: Duration = Duration::from_secs(30 * 60);
 /// Between a sink's full mirrors to the host.
 const MIRROR_EVERY: Duration = Duration::from_secs(5 * 60);
 const TICK: Duration = Duration::from_secs(60);
+/// How often the node looks for commands it hasn't acted on.
+const COMMANDS_EVERY: Duration = Duration::from_secs(5);
 
 pub fn now_ms() -> u64 {
     Instant::now().as_millis()
@@ -47,8 +54,96 @@ pub fn init(node: NodeId, sink: bool, epoch: u32, info: NodeInfo) {
             mirror(s.record());
         }
     }
-    STATE.lock(|s| *s.borrow_mut() = Some(State { replica, session: None }));
+    STATE.lock(|s| {
+        *s.borrow_mut() = Some(State {
+            replica,
+            session: None,
+            controller_key: None,
+        })
+    });
     status::set_hops(if sink { 0 } else { u8::MAX });
+}
+
+pub fn set_controller_key(key: Option<[u8; 16]>) {
+    STATE.lock(|s| {
+        if let Some(s) = s.borrow_mut().as_mut() {
+            s.controller_key = key;
+        }
+    });
+}
+
+/// On a sink: takes a record from the host (the controller's desired state) into the replica
+/// and on toward its target, and mirrors it back so the host sees it went in.
+#[cfg_attr(not(feature = "board-dk"), allow(dead_code))]
+pub fn inject(bytes: &[u8]) {
+    let Ok(record) = postcard::from_bytes::<Record>(bytes) else {
+        warn!("mesh state: an undecodable record from the host");
+        return;
+    };
+    let now = now_ms();
+    let result = with(|r| r.inject(record.clone(), now));
+    match result {
+        Some(Ok(rx)) => {
+            info!("mesh state: record from the host: {:?}", rx);
+            mirror(&record);
+        }
+        Some(Err(e)) => warn!("mesh state: record from the host refused: {:?}", e),
+        None => {}
+    }
+}
+
+/// Acts on the controller's desired state for this node that it hasn't acted on yet, checking
+/// each record's MAC, and writes a Reported record per setting. Returns how many it applied.
+pub fn apply_commands() -> usize {
+    let now = now_ms();
+    let mut pending: heapless::Vec<(navgrid_mesh::Version, Command, bool), 8> = heapless::Vec::new();
+    STATE.lock(|s| {
+        let s = s.borrow();
+        let Some(s) = s.as_ref() else {
+            return;
+        };
+        let me = s.replica.id();
+        for (version, command) in s.replica.pending_commands() {
+            let key = Key {
+                origin: CONTROLLER,
+                topic: Topic::Desired(me, command.setting()),
+            };
+            let genuine = match (s.controller_key, s.replica.get(&key)) {
+                (Some(k), Some(st)) => auth::verify(&k, st.record()),
+                _ => false,
+            };
+            let _ = pending.push((version, command, genuine));
+        }
+    });
+    let mut applied = 0;
+    for (version, command, genuine) in pending {
+        let status = if !genuine {
+            warn!("command {:?} v{}.{}: not the controller's; ignored", command, version.epoch, version.counter);
+            Status::Invalid
+        } else {
+            match command {
+                Command::Blink { times } => {
+                    info!("command: blink {=u8} times", times);
+                    status::attention();
+                    Status::Applied
+                }
+                Command::Environment { .. } | Command::Diversity(_) | Command::Advertising { .. } => {
+                    warn!("command {:?}: not applied yet (settings at runtime to come)", command);
+                    Status::Unsupported
+                }
+            }
+        };
+        if status == Status::Applied {
+            applied += 1;
+        }
+        write(Body::Reported(Reported {
+            setting: command.setting(),
+            applied: version,
+            status,
+        }));
+    }
+    let _ = now;
+    applied
 }
 
 /// Runs `f` on the replica; `None` before [`init`].
@@ -153,7 +248,7 @@ pub fn session_out() -> Option<navgrid_mesh::wire::Sync> {
     STATE.lock(|s| {
         let mut s = s.borrow_mut();
         let s = s.as_mut()?;
-        let State { replica, session } = s;
+        let State { replica, session, .. } = s;
         session.as_mut()?.next_out(replica, now)
     })
 }
@@ -167,7 +262,7 @@ pub fn session_in(msg: navgrid_mesh::wire::Sync) -> Result<(), navgrid_mesh::Pro
         let Some(s) = s.as_mut() else {
             return Err(navgrid_mesh::Protocol::OutOfOrder);
         };
-        let State { replica, session } = s;
+        let State { replica, session, .. } = s;
         let sink = replica.is_sink();
         let Some(driver) = session.as_mut() else {
             return Err(navgrid_mesh::Protocol::OutOfOrder);
@@ -206,13 +301,19 @@ fn mirror(record: &Record) {
     }
 }
 
-/// Ages the replica, writes health now and then, and on a sink mirrors everything to the host
-/// every few minutes, in case a frame was lost.
+/// Ages the replica, acts on the controller's commands, writes health now and then, and on a
+/// sink mirrors everything to the host every few minutes, in case a frame was lost.
 pub async fn run(mpsl: &MultiprotocolServiceLayer<'_>) -> ! {
     let mut last_health = Instant::now();
     let mut last_mirror = Instant::now();
+    let mut last_tick = Instant::now();
     loop {
-        Timer::after(TICK).await;
+        Timer::after(COMMANDS_EVERY).await;
+        apply_commands();
+        if last_tick.elapsed() < TICK {
+            continue;
+        }
+        last_tick = Instant::now();
         let now = now_ms();
         let (sink, hops) = with(|r| {
             r.tick(now);

@@ -182,6 +182,7 @@ fn a_command_reaches_its_target_and_the_report_comes_back() {
     let cmd = controller.record(Body::Desired(Desired {
         target,
         command: Command::Blink { times: 3 },
+        mac: [0; 8],
     }));
     let version = cmd.version;
     assert_eq!(nodes[0].inject(cmd, 6 * MINUTE), Ok(Received::New));

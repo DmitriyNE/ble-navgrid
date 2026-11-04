@@ -1,6 +1,7 @@
 mod builds;
 mod calibration;
 mod capture;
+mod control;
 mod fix;
 mod flash;
 mod fleet;
@@ -78,6 +79,8 @@ enum Cmd {
     Sign(sign::SignArgs),
     /// Stage a signed update on a device through its probe; it checks and installs it at boot.
     Update(sign::UpdateArgs),
+    /// Command a node through a sink: a desired-state record, signed with the controller key.
+    Control(control::ControlArgs),
     /// The fleet directory: key, device registry, labels.
     #[command(subcommand)]
     Fleet(FleetCmd),
@@ -121,6 +124,7 @@ fn main() -> Result<()> {
         Cmd::Flash(args) => flash::run(&args),
         Cmd::Sign(args) => sign::run_sign(&args),
         Cmd::Update(args) => sign::run_update(&args),
+        Cmd::Control(args) => control::run(&args),
         Cmd::Fleet(FleetCmd::Init(args)) => fleet::Fleet::init(&args).map(|_| ()),
         Cmd::Fleet(FleetCmd::List(args)) => fleet::list(&args),
     }

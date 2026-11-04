@@ -362,10 +362,18 @@ pub const UPDATE_CHUNK: usize = 224;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UpdateMsg<'a> {
     Offer(UpdateHeader),
-    Want { from: u32 },
+    Want {
+        from: u32,
+    },
     Decline,
-    Data { offset: u32, bytes: &'a [u8] },
+    Data {
+        offset: u32,
+        bytes: &'a [u8],
+    },
     Done,
+    /// A mesh record from the controller for the sink to inject (a desired-state record,
+    /// `navgrid control`), postcard-encoded; the sink mirrors it back as [`Message::Record`].
+    Record(&'a [u8]),
 }
 
 impl<'a> UpdateMsg<'a> {
@@ -396,6 +404,11 @@ impl<'a> UpdateMsg<'a> {
                 buf[0] = 5;
                 1
             }
+            Self::Record(bytes) => {
+                buf[0] = 6;
+                buf[1..1 + bytes.len()].copy_from_slice(bytes);
+                1 + bytes.len()
+            }
         };
         &buf[..len]
     }
@@ -411,6 +424,7 @@ impl<'a> UpdateMsg<'a> {
                 bytes: &b[5..],
             },
             5 => Self::Done,
+            6 => Self::Record(&b[1..]),
             _ => return None,
         })
     }

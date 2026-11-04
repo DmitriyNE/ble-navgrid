@@ -204,6 +204,7 @@ pub struct Peer {
 
 /// What a replica did with a record it was given.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Received {
     /// Kept, under a key it didn't have.
     New,

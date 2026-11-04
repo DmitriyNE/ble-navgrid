@@ -632,6 +632,7 @@ impl<'a> Sim<'a> {
         let record = self.controller.record(Body::Desired(Desired {
             target: self.ids[target],
             command: Command::Blink { times: 3 },
+            mac: [0; 8],
         }));
         self.commands.push(Issued {
             target,

@@ -287,6 +287,9 @@ pub struct Position {
 pub struct Desired {
     pub target: NodeId,
     pub command: Command,
+    /// The controller's MAC over origin, version, target and command ([`auth`](crate::auth)),
+    /// so only the controller's commands are acted on (DEF-27).
+    pub mac: [u8; 8],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1250,6 +1250,8 @@ dependencies = [
 name = "navgrid-mesh"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "cmac",
  "defmt 1.2.0",
  "heapless",
  "navgrid-proto",

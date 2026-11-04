@@ -96,14 +96,17 @@ epoch in RRAM, `navgrid provision`, the FR-M4 beacon, and fleet-key link keys (l
        the role exchange) and then every 60 s, started by the central, with a 2 KB budget; nodes
        write their node record (neighbours from the links, hops from the sessions), health every
        30 min and a Link record per burst; the sink mirrors what it keeps to the host as
-       `Message::Record`, and the beacon's hop count comes from the replica. Left:
-       - the host takes Desired records from the controller CLI (LED blink, BME688 on and period,
-         diversity) through the sink's UART into its replica (`inject`), and nodes apply them
-         and write Reported records;
-       - the controller key from the fleet key, and a MAC on desired state (DEF-27);
+       `Message::Record`, and the beacon's hop count comes from the replica. `navgrid control`
+       signs a desired-state record with the controller key (from the fleet key, DEF-27) and
+       sends it to a sink, which injects it; nodes check the MAC, act on it (blink; the other
+       settings report Unsupported until settings change at runtime) and write Reported records.
+       Left:
+       - settings at runtime: environment period and gas, diversity, advertising interval
+         (NodeConfig changes applied live, or a restart with the desired values);
        - `navgrid monitor` mesh-state view (FR-S5): nodes, links, health and positions as a
          table from the mirrored records, with ages;
-       - the mesh `Environment` record once the BME688 is read.
+       - the mesh `Environment` record once the BME688 is read;
+       - the controller's node ID and key in provisioning rather than derived (DEF-27).
        - Exit: commands and records cross partitions and several hops on the desk mesh;
          latency and bytes per contact against the simulator.
 5. [ ] **Positions:** the host solver over Link records (FR-M6) publishes Position records with

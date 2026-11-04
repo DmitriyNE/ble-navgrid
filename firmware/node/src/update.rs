@@ -486,6 +486,10 @@ mod sink {
         signing_key: Option<[u8; 32]>,
     ) -> Option<UpdateAnswer> {
         match msg {
+            UpdateMsg::Record(bytes) => {
+                crate::state::inject(bytes);
+                None
+            }
             UpdateMsg::Offer(header) => {
                 *transfer = None;
                 let new = if header.board == BOARD {
