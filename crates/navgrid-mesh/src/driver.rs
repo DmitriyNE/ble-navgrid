@@ -23,7 +23,11 @@ use heapless::Vec;
 use crate::session::{MAX_CLASS, MAX_PUSHES, MAX_SUMMARY, Side, frame_len};
 use crate::table::Storage;
 use crate::wire::{self, Header, SUMMARIES_PER_FRAME, Summary, Sync, VERSIONS_PER_FRAME};
-use crate::{Class, Key, Received, Record, Replica, Topic, Version};
+use crate::{Class, Key, Received, Record, Replica, SUMMARY_MEMORY, Topic, Version};
+
+/// What a side remembers of its peer from their last complete session: the summary it sent,
+/// the summary it received.
+pub type Memory = (Vec<Summary, SUMMARY_MEMORY>, Vec<Summary, SUMMARY_MEMORY>);
 
 /// What the peer did that the protocol doesn't allow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,8 +84,13 @@ pub struct Driver {
     mine: Header,
     theirs: Option<Header>,
     budget_left: u32,
+    memory: Option<Memory>,
+    /// This side's full summary, and the part of it that goes on the wire.
     my_summary: Vec<Summary, MAX_SUMMARY>,
+    my_wire: Vec<Summary, MAX_SUMMARY>,
     my_summary_ready: bool,
+    /// The peer's summary entries as received, and its full summary once reconstructed.
+    their_entries: Vec<Summary, MAX_SUMMARY>,
     their_summary: Vec<Summary, MAX_SUMMARY>,
     their_summary_done: bool,
     classes: Option<Vec<Class, MAX_SUMMARY>>,
@@ -98,14 +107,22 @@ pub struct Driver {
 }
 
 impl Driver {
-    /// A session with `budget` bytes of records and pushes to send.
-    pub fn new(mine: Header, budget: u32) -> Self {
+    /// A session with `budget` bytes of records and pushes to send, and what this side remembers
+    /// of the peer (`None`: exchange everything).
+    pub fn new(mine: Header, budget: u32, memory: Option<Memory>) -> Self {
+        let mine = Header {
+            delta: memory.is_some(),
+            ..mine
+        };
         Self {
             mine,
             theirs: None,
             budget_left: budget,
+            memory,
             my_summary: Vec::new(),
+            my_wire: Vec::new(),
             my_summary_ready: false,
+            their_entries: Vec::new(),
             their_summary: Vec::new(),
             their_summary_done: false,
             classes: None,
@@ -132,6 +149,17 @@ impl Driver {
 
     pub fn peer(&self) -> Option<Header> {
         self.theirs
+    }
+
+    /// Both sides send only the changed classes.
+    fn delta_mode(&self) -> bool {
+        self.memory.is_some() && self.theirs.is_some_and(|t| t.delta)
+    }
+
+    /// The full summaries this session exchanged, for the replica to remember once the session
+    /// is complete: sent, received.
+    pub fn memory_to_keep(&self) -> (&[Summary], &[Summary]) {
+        (&self.my_summary, &self.their_summary)
     }
 
     fn classes_ready<S: Storage>(&mut self, _r: &Replica<S>) -> bool {
@@ -165,16 +193,23 @@ impl Driver {
                         } else {
                             r.summary(None, now_ms, &mut self.my_summary);
                         }
+                        self.my_wire.clear();
+                        if self.delta_mode() {
+                            let (sent, _) = self.memory.as_ref().expect("delta mode");
+                            wire::delta(&self.my_summary, sent, &mut self.my_wire);
+                        } else {
+                            let _ = self.my_wire.extend_from_slice(&self.my_summary);
+                        }
                         self.my_summary_ready = true;
                     }
                     let start = chunk * SUMMARIES_PER_FRAME;
-                    if start >= self.my_summary.len() {
+                    if start >= self.my_wire.len() {
                         self.out = Out::SummaryDone;
                         continue;
                     }
-                    let end = (start + SUMMARIES_PER_FRAME).min(self.my_summary.len());
+                    let end = (start + SUMMARIES_PER_FRAME).min(self.my_wire.len());
                     self.out = Out::Summary(chunk + 1);
-                    return Some(self.count(Sync::Summary(self.my_summary[start..end].iter().copied().collect())));
+                    return Some(self.count(Sync::Summary(self.my_wire[start..end].iter().copied().collect())));
                 }
                 Out::SummaryDone => {
                     self.out = Out::Versions(0, 0);
@@ -326,10 +361,19 @@ impl Driver {
             }
             Sync::Summary(chunk) => {
                 for s in chunk {
-                    self.their_summary.push(s).map_err(|_| Protocol::SummaryTooLong)?;
+                    self.their_entries.push(s).map_err(|_| Protocol::SummaryTooLong)?;
                 }
             }
-            Sync::SummaryDone => self.their_summary_done = true,
+            Sync::SummaryDone => {
+                self.their_summary.clear();
+                if self.delta_mode() {
+                    let (_, received) = self.memory.as_ref().expect("delta mode");
+                    wire::reconstruct(received, &self.their_entries, &mut self.their_summary);
+                } else {
+                    let _ = self.their_summary.extend_from_slice(&self.their_entries);
+                }
+                self.their_summary_done = true;
+            }
             Sync::Versions { class, versions } => {
                 if !self.classes_ready(r) {
                     return Err(Protocol::OutOfOrder);
@@ -443,9 +487,18 @@ mod tests {
         })
     }
 
-    /// Two drivers over encoded frames, until both complete; the frames each side sent.
+    fn memory_of(r: &Node, peer: NodeId) -> Option<Memory> {
+        r.memory(peer)
+            .map(|(s, rx)| (s.iter().copied().collect(), rx.iter().copied().collect()))
+    }
+
+    /// Two drivers over encoded frames, until both complete, each side then remembering the
+    /// exchange as the firmware does; the frames each side sent.
     fn run(a: &mut Node, b: &mut Node, now: u64, budget: u32) -> (Driver, Driver, StdVec<Sync>, StdVec<Sync>) {
-        let (mut da, mut db) = (Driver::new(a.header(), budget), Driver::new(b.header(), budget));
+        let (mut da, mut db) = (
+            Driver::new(a.header(), budget, memory_of(a, b.id())),
+            Driver::new(b.header(), budget, memory_of(b, a.id())),
+        );
         let (mut ab, mut ba) = (VecDeque::new(), VecDeque::new());
         let (mut sent_a, mut sent_b) = (StdVec::new(), StdVec::new());
         let through = |m: Sync| {
@@ -475,6 +528,9 @@ mod tests {
                 moved = true;
             }
             if da.is_complete() && db.is_complete() {
+                let (ma, mb) = (da.memory_to_keep(), db.memory_to_keep());
+                a.remember(b.id(), ma.0, ma.1);
+                b.remember(a.id(), mb.0, mb.1);
                 return (da, db, sent_a, sent_b);
             }
             assert!(moved, "deadlock: {:?} / {:?}", da.out, db.out);
@@ -594,9 +650,66 @@ mod tests {
     }
 
     #[test]
+    fn a_second_session_sends_only_what_changed() {
+        let now = 1_000;
+        let (mut s, mut n) = fixtures();
+        let (_, _, first_s, first_n) = run(&mut s, &mut n, now, 4096);
+        let summaries = |sent: &StdVec<Sync>| sent.iter().filter(|m| matches!(m, Sync::Summary(_))).count();
+        assert!(
+            summaries(&first_n) >= 1 && summaries(&first_s) >= 1,
+            "the first exchange is full"
+        );
+        // The first session changed both sides (records taken), so the second carries those
+        // classes; after it nothing changes and the third carries no entries at all.
+        run(&mut s, &mut n, now + 1, 4096);
+        let (_, _, second_s, second_n) = run(&mut s, &mut n, now + 2, 4096);
+        assert_eq!((summaries(&second_s), summaries(&second_n)), (0, 0), "{second_n:?}");
+        // One new link on the node: one class changes, and only it travels.
+        n.write(link(9, 7_000), now + 2).unwrap();
+        let (_, _, third_s, third_n) = run(&mut s, &mut n, now + 3, 4096);
+        let entries = |sent: &StdVec<Sync>| -> usize {
+            sent.iter()
+                .filter_map(|m| match m {
+                    Sync::Summary(v) => Some(v.len()),
+                    _ => None,
+                })
+                .sum()
+        };
+        assert_eq!(entries(&third_n), 1, "{third_n:?}");
+        assert_eq!(
+            entries(&third_s),
+            0,
+            "the sink's own classes didn't change: {third_s:?}"
+        );
+        assert!(
+            third_n.iter().any(|m| matches!(m, Sync::Record(_) | Sync::Push(_))),
+            "and the record goes over"
+        );
+        // The in-memory session, remembering too, sends the same bytes.
+        let (mut sa, mut na) = fixtures();
+        session(&mut sa, &mut na, now, 4096, |_, _, _| {});
+        session(&mut sa, &mut na, now + 1, 4096, |_, _, _| {});
+        session(&mut sa, &mut na, now + 2, 4096, |_, _, _| {});
+        na.write(link(9, 7_000), now + 2).unwrap();
+        let out = session(&mut sa, &mut na, now + 3, 4096, |_, _, _| {});
+        let (mut sb, mut nb) = fixtures();
+        run(&mut sb, &mut nb, now, 4096);
+        run(&mut sb, &mut nb, now + 1, 4096);
+        run(&mut sb, &mut nb, now + 2, 4096);
+        nb.write(link(9, 7_000), now + 2).unwrap();
+        let (da, db, _, _) = run(&mut sb, &mut nb, now + 3, 4096);
+        assert_eq!(da.side().sent.total(), out.a.sent.total());
+        assert_eq!(db.side().sent.total(), out.b.sent.total());
+        // A side that forgot gets everything again.
+        n.forget(s.id());
+        let (_, _, fourth_s, fourth_n) = run(&mut s, &mut n, now + 4, 4096);
+        assert!(summaries(&fourth_n) >= 1 && summaries(&fourth_s) >= 1, "{fourth_n:?}");
+    }
+
+    #[test]
     fn a_frame_before_the_hello_is_a_protocol_error() {
         let (mut s, _) = fixtures();
-        let mut d = Driver::new(s.header(), 4096);
+        let mut d = Driver::new(s.header(), 4096, None);
         assert_eq!(
             d.on_frame(&mut s, Sync::SummaryDone, 0, |_, _| {}),
             Err(Protocol::NoHello)

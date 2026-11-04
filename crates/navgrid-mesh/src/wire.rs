@@ -38,6 +38,9 @@ pub struct Header {
     pub role: Role,
     pub hops: u8,
     pub sink: bool,
+    /// The sender remembers the summaries of its last complete session with the receiver, and
+    /// will send only the classes that changed if the receiver does too (DEF-28).
+    pub delta: bool,
 }
 
 /// A class one side keeps, and an order-free hash of the keys and versions it holds in it.
@@ -75,6 +78,76 @@ pub fn encode<'a>(msg: &Sync, buf: &'a mut [u8]) -> Result<&'a mut [u8], Error> 
 /// Decodes one COBS frame in place. `frame` excludes the `0x00` terminator.
 pub fn decode(frame: &mut [u8]) -> Result<Sync, Error> {
     postcard::from_bytes_cobs(frame)
+}
+
+/// The entries a side sends when both remember the last exchange: the classes of `full` whose
+/// hash differs from `memory` or that `memory` lacks, and the classes `memory` has that `full`
+/// no longer does, with an all-zero hash. Both lists must be in class order.
+pub fn delta<const N: usize>(full: &[Summary], memory: &[Summary], out: &mut Vec<Summary, N>) {
+    let (mut i, mut j) = (0, 0);
+    while i < full.len() || j < memory.len() {
+        let push = match (full.get(i), memory.get(j)) {
+            (Some(f), Some(m)) if f.class == m.class => {
+                i += 1;
+                j += 1;
+                (f.hash != m.hash).then_some(*f)
+            }
+            (Some(f), Some(m)) if f.class < m.class => {
+                i += 1;
+                Some(*f)
+            }
+            (Some(f), None) => {
+                i += 1;
+                Some(*f)
+            }
+            (_, Some(m)) => {
+                j += 1;
+                Some(Summary {
+                    class: m.class,
+                    hash: [0; 4],
+                })
+            }
+            (None, None) => break,
+        };
+        if let Some(s) = push
+            && out.push(s).is_err()
+        {
+            return;
+        }
+    }
+}
+
+/// The peer's full summary from what was remembered and the entries it sent: entries replace or
+/// add; an all-zero hash drops the class. In class order.
+pub fn reconstruct<const N: usize>(memory: &[Summary], entries: &[Summary], out: &mut Vec<Summary, N>) {
+    let (mut i, mut j) = (0, 0);
+    while i < memory.len() || j < entries.len() {
+        let next = match (memory.get(i), entries.get(j)) {
+            (Some(m), Some(e)) if m.class == e.class => {
+                i += 1;
+                j += 1;
+                (e.hash != [0; 4]).then_some(*e)
+            }
+            (Some(m), Some(e)) if m.class < e.class => {
+                i += 1;
+                Some(*m)
+            }
+            (Some(m), None) => {
+                i += 1;
+                Some(*m)
+            }
+            (_, Some(e)) => {
+                j += 1;
+                (e.hash != [0; 4]).then_some(*e)
+            }
+            (None, None) => break,
+        };
+        if let Some(s) = next
+            && out.push(s).is_err()
+        {
+            return;
+        }
+    }
 }
 
 /// The classes in both summaries whose hashes differ, in class order. Both summaries must be in
@@ -140,6 +213,7 @@ mod tests {
                 role: Role::Anchor,
                 hops: u8::MAX,
                 sink: true,
+                delta: true,
             }),
             Sync::Summary(summaries),
             Sync::Versions {

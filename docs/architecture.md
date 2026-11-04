@@ -557,9 +557,12 @@ replica keeps a class whole or not at all.
   5. Then the **pushes** (below).
 - **Budget:** 2 KB per side per session caps records and pushes. It was reached in 0.01 % of
   sessions at 500 nodes with 4 sinks.
-- **Cost:** summaries are about 80 % of the bytes, roughly 650 B per side per session.
-  Sending only the classes that changed since the last complete session with that peer is the
-  obvious saving (DEF-28).
+- **Delta (DEF-28, fixed):** each side remembers the summaries of its last complete session
+  with a peer (what it sent, what it received) and, when the peer's hello says it remembers too,
+  sends only the classes whose hash changed, a dropped class as a zero hash; the peer rebuilds
+  the full summary from its memory. No memory on either side, or a session that broke off,
+  means a full exchange. Sessions fell from about 650 B a side to 115–125 B at p50, summaries
+  30 % of that.
 - **Wire format:** postcard + COBS frames as today (D-5), one record per frame, at most 240 B.
 
 ### Routing (D-26)

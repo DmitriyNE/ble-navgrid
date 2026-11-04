@@ -29,7 +29,7 @@ pub mod session;
 mod table;
 pub mod wire;
 
-pub use driver::{Driver, Protocol};
+pub use driver::{Driver, Memory, Protocol};
 
 /// The controller's node ID, which Desired records and the frame are written under, until
 /// provisioning carries it (DEF-27).
@@ -40,8 +40,8 @@ pub use record::{
     Reported, Setting, Status, Topic, Version, Writer,
 };
 pub use replica::{
-    Config, Error, Limits, MAX_HOPS, MAX_NEIGHBOURHOOD, NEVER, Peer, Pending, Received, Replica, Route, Stored, Toward,
-    Ttl, UNREACHABLE,
+    Config, Error, Limits, MAX_HOPS, MAX_NEIGHBOURHOOD, NEVER, Peer, Pending, Received, Replica, Route, SUMMARY_MEMORY,
+    Stored, Toward, Ttl, UNREACHABLE,
 };
 #[cfg(feature = "alloc")]
 pub use table::Heap;

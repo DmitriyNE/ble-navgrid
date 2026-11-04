@@ -562,7 +562,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     ) -> Result<Header, SessionError> {
         let started = Instant::now();
         let mine = state::header(self.role, self.sink);
-        while !state::begin_session(mine, SESSION_BUDGET) {
+        while !state::begin_session(mine, SESSION_BUDGET, peer) {
             if started.elapsed() > SESSION_SLOT_WAIT {
                 return Err(SessionError::Busy);
             }
@@ -571,7 +571,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         let result = self.exchange(channel, first).await;
         status::count_session();
         let side = state::session_side();
-        let theirs = state::end_session();
+        let theirs = state::end_session(peer);
         state::log_session(peer, side, started.elapsed().as_millis());
         result.and_then(|()| theirs.ok_or(SessionError::NoHello))
     }

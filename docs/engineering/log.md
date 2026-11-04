@@ -4,6 +4,16 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Delta sync** (DEF-28 fixed). Replicas remember per peer the summaries of their last complete
+session; the hello says so, and when both remember, each sends only the classes whose hash
+changed (a class dropped goes as a zero hash) and the other rebuilds the full picture from its
+memory. Either side without memory, or a session that broke off (the firmware forgets it), means
+a full exchange. The in-memory session and the frame-driven driver both do it and still send the
+same bytes. Simulator: sessions 650 → 115 B a side at p50 with 20 nodes, 125 B at 500 nodes and
+4 sinks (summaries 30 %, versions 37 %); per node 74 kB/h at p50, 117 kB/h at the busiest relay;
+peak node memory 20 KiB at p50, 34 KiB max; a sink at 500 nodes holds 1 000–1 200 records,
+175–215 KiB, which the host holds for it.
+
 **Handover, work counters, several sinks** (S4, first items). A walking tag with all its links
 swaps the weakest for an anchor heard 6 dB stronger (`Settings::hysteresis_db`), and its connects
 now come before its bursts, which never pause while it moves (a bug the simulator had hidden: a

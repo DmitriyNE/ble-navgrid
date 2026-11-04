@@ -194,12 +194,18 @@ pub struct Route {
     since_ms: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+/// Summaries remembered per peer for delta sync (DEF-28): what this side sent it last and what
+/// it sent back, as of the last session both completed.
+pub const SUMMARY_MEMORY: usize = 64;
+
+#[derive(Clone, Debug)]
 pub struct Peer {
     pub id: NodeId,
     pub hops: u8,
     pub sink: bool,
     last_ms: u64,
+    sent: Vec<Summary, SUMMARY_MEMORY>,
+    received: Vec<Summary, SUMMARY_MEMORY>,
 }
 
 /// What a replica did with a record it was given.
@@ -297,6 +303,7 @@ impl<S: Storage> Replica<S> {
             role: self.node.role,
             hops: self.node.hops,
             sink: self.cfg.sink,
+            delta: false,
         }
     }
 
@@ -370,15 +377,22 @@ impl<S: Storage> Replica<S> {
         if peer.node == self.cfg.id {
             return;
         }
-        let entry = Peer {
-            id: peer.node,
-            hops: peer.hops,
-            sink: peer.sink,
-            last_ms: now_ms,
-        };
         match self.peers.iter().position(|p| p.id == peer.node) {
-            Some(i) => self.peers[i] = entry,
+            Some(i) => {
+                let p = &mut self.peers[i];
+                p.hops = peer.hops;
+                p.sink = peer.sink;
+                p.last_ms = now_ms;
+            }
             None => {
+                let entry = Peer {
+                    id: peer.node,
+                    hops: peer.hops,
+                    sink: peer.sink,
+                    last_ms: now_ms,
+                    sent: Vec::new(),
+                    received: Vec::new(),
+                };
                 if self.peers.is_full()
                     && let Some(i) = (0..self.peers.len()).min_by_key(|&i| self.peers[i].last_ms)
                 {
@@ -388,6 +402,36 @@ impl<S: Storage> Replica<S> {
             }
         }
         self.update_node(now_ms);
+    }
+
+    /// The summaries last exchanged with `peer`, if a session with it completed: what this side
+    /// sent, what it received. Both sides hold these, so the next session sends only the classes
+    /// that changed (DEF-28).
+    pub fn memory(&self, peer: NodeId) -> Option<(&[Summary], &[Summary])> {
+        let p = self.peers.iter().find(|p| p.id == peer)?;
+        (!p.sent.is_empty() && !p.received.is_empty()).then_some((&p.sent[..], &p.received[..]))
+    }
+
+    /// A session with `peer` completed with these full summaries. Too long to remember means a
+    /// full exchange next time.
+    pub fn remember(&mut self, peer: NodeId, sent: &[Summary], received: &[Summary]) {
+        let Some(p) = self.peers.iter_mut().find(|p| p.id == peer) else {
+            return;
+        };
+        p.sent.clear();
+        p.received.clear();
+        if p.sent.extend_from_slice(sent).is_err() || p.received.extend_from_slice(received).is_err() {
+            p.sent.clear();
+            p.received.clear();
+        }
+    }
+
+    /// A session with `peer` broke off: the next one exchanges everything.
+    pub fn forget(&mut self, peer: NodeId) {
+        if let Some(p) = self.peers.iter_mut().find(|p| p.id == peer) {
+            p.sent.clear();
+            p.received.clear();
+        }
     }
 
     /// Housekeeping, every few seconds to minutes: drops silent peers, expired and out-of-scope

@@ -293,7 +293,7 @@ fn replicas_converge_after_a_partition() {
 }
 
 #[test]
-fn in_sync_neighbours_exchange_only_summaries() {
+fn in_sync_neighbours_exchange_only_control_frames() {
     let mut nodes = chain(3);
     for t in 0..4 {
         round(&mut nodes, t * MINUTE);
@@ -304,7 +304,9 @@ fn in_sync_neighbours_exchange_only_summaries() {
     assert_eq!(took, 0);
     assert_eq!(out.a.sent.versions + out.a.sent.records + out.a.sent.pushes, 0);
     assert_eq!(out.b.sent.versions + out.b.sent.records + out.b.sent.pushes, 0);
-    assert!(out.a.sent.summary > 0);
+    // Both remember the last exchange, so not even summaries travel (DEF-28): control frames only.
+    assert_eq!(out.a.sent.summary + out.b.sent.summary, 0);
+    assert!(out.a.sent.control > 0);
 }
 
 #[test]

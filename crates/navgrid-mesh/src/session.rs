@@ -6,7 +6,7 @@ use heapless::Vec;
 
 use crate::table::Storage;
 use crate::wire::{self, Header, MAX_FRAME_LEN, SUMMARIES_PER_FRAME, Summary, Sync, VERSIONS_PER_FRAME};
-use crate::{Key, MAX_NEIGHBOURHOOD, MAX_NEIGHBOURS, Received, Record, Replica, Topic, Version};
+use crate::{Key, MAX_NEIGHBOURHOOD, MAX_NEIGHBOURS, Received, Record, Replica, SUMMARY_MEMORY, Topic, Version};
 
 /// The most classes a summary lists: the frame, desired state for a node and its peers, and the
 /// node's and controller's records for its 2-hop neighbourhood.
@@ -92,7 +92,22 @@ pub fn session<A: Storage, B: Storage>(
     mut took: impl FnMut(To, &Record, Received),
 ) -> Outcome {
     let mut out = Outcome::default();
-    let (ha, hb) = (a.header(), b.header());
+    // What each side remembers of the other (DEF-28): copies, as the replicas change below.
+    let memory =
+        |sent: &[Summary], received: &[Summary]| -> (Vec<Summary, SUMMARY_MEMORY>, Vec<Summary, SUMMARY_MEMORY>) {
+            (sent.iter().copied().collect(), received.iter().copied().collect())
+        };
+    let ma = a.memory(b.id()).map(|(s, r)| memory(s, r));
+    let mb = b.memory(a.id()).map(|(s, r)| memory(s, r));
+    let delta_mode = ma.is_some() && mb.is_some();
+    let ha = Header {
+        delta: ma.is_some(),
+        ..a.header()
+    };
+    let hb = Header {
+        delta: mb.is_some(),
+        ..b.header()
+    };
     out.a.sent.count(&Sync::Hello(ha));
     out.b.sent.count(&Sync::Hello(hb));
     a.contact(&hb, now_ms);
@@ -114,8 +129,20 @@ pub fn session<A: Storage, B: Storage>(
             b.summary(None, now_ms, &mut sb);
         }
     }
-    count_summary(&mut out.a.sent, &sa);
-    count_summary(&mut out.b.sent, &sb);
+    // On the wire: only what changed since the last complete session, when both remember it.
+    if delta_mode {
+        let (sent_a, _) = ma.as_ref().expect("delta mode");
+        let (sent_b, _) = mb.as_ref().expect("delta mode");
+        let mut wire_a: Vec<Summary, MAX_SUMMARY> = Vec::new();
+        let mut wire_b: Vec<Summary, MAX_SUMMARY> = Vec::new();
+        wire::delta(&sa, sent_a, &mut wire_a);
+        wire::delta(&sb, sent_b, &mut wire_b);
+        count_summary(&mut out.a.sent, &wire_a);
+        count_summary(&mut out.b.sent, &wire_b);
+    } else {
+        count_summary(&mut out.a.sent, &sa);
+        count_summary(&mut out.b.sent, &sb);
+    }
 
     let (mut left_a, mut left_b) = (budget, budget);
     for class in wire::differing(&sa, &sb) {
@@ -171,6 +198,8 @@ pub fn session<A: Storage, B: Storage>(
         To::A,
         &mut took,
     );
+    a.remember(b.id(), &sa, &sb);
+    b.remember(a.id(), &sb, &sa);
     out
 }
 

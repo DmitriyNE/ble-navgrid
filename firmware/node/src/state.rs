@@ -226,11 +226,13 @@ pub fn header(role: navgrid_proto::Role, sink: bool) -> Header {
         role,
         hops: hops(),
         sink,
+        delta: false,
     }
 }
 
-/// Takes the session slot with a fresh driver, or `false` while another session runs.
-pub fn begin_session(mine: Header, budget: u32) -> bool {
+/// Takes the session slot with a fresh driver for a session with `peer`, remembering their last
+/// exchange if there was one (DEF-28), or `false` while another session runs.
+pub fn begin_session(mine: Header, budget: u32, peer: NodeId) -> bool {
     STATE.lock(|s| {
         let mut s = s.borrow_mut();
         let Some(s) = s.as_mut() else {
@@ -239,23 +241,39 @@ pub fn begin_session(mine: Header, budget: u32) -> bool {
         if s.session.is_some() {
             return false;
         }
-        s.session = Some(Driver::new(mine, budget));
+        let memory = s
+            .replica
+            .memory(peer)
+            .map(|(sent, received)| (sent.iter().copied().collect(), received.iter().copied().collect()));
+        s.session = Some(Driver::new(mine, budget, memory));
         true
     })
 }
 
-/// Frees the session slot; the driver's peer header, if it got one.
-pub fn end_session() -> Option<Header> {
-    let (hops, peer) = STATE.lock(|s| {
+/// Frees the session slot; the driver's peer header, if it got one. A complete session is
+/// remembered for the next one's delta; one that broke off is forgotten.
+pub fn end_session(peer: NodeId) -> Option<Header> {
+    let (hops, theirs) = STATE.lock(|s| {
         let mut s = s.borrow_mut();
         let Some(s) = s.as_mut() else {
             return (u8::MAX, None);
         };
-        let peer = s.session.take().and_then(|d| d.peer());
-        (s.replica.hops(), peer)
+        let theirs = match s.session.take() {
+            Some(d) if d.is_complete() => {
+                let (sent, received) = d.memory_to_keep();
+                s.replica.remember(peer, sent, received);
+                d.peer()
+            }
+            Some(d) => {
+                s.replica.forget(peer);
+                d.peer()
+            }
+            None => None,
+        };
+        (s.replica.hops(), theirs)
     });
     status::set_hops(hops);
-    peer
+    theirs
 }
 
 /// The session's next frame to send, if any (`None` also when no session runs).
