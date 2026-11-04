@@ -72,6 +72,8 @@ distance, from across the building down to the last metre.
 | **P2 — self-survey** | Nodes range each other; positions solved, first centrally on host, then distributed on nodes. Mesh referenced from commissioning presets (FR-A3). | Distributed solution within 0.2 m of central reference; node p90 vs ground truth measured; frame yaw within NFR-11. |
 | **P3 — building** | Link scheduling, handover, many tags, routing to sinks, provisioning, OTA, HUD integration. | Capacity targets in NFR-4 met in a multi-room deployment. |
 
+The order of work inside the phases and the test that closes each milestone: [roadmap.md](roadmap.md).
+
 ## 4. Functional requirements
 
 ### Ranging (R)

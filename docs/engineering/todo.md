@@ -1,6 +1,7 @@
 # Todo
 
 Highest priority first within each phase. Done items are deleted; the [log](log.md) records them.
+The order of work and the exit test per milestone are in [the roadmap](../roadmap.md).
 
 ## P0 — bring-up
 
