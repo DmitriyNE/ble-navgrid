@@ -76,7 +76,12 @@ pub fn ranged(me: NodeId, anchor: NodeId, distance_m: f32, sigma_m: f32, beacon:
             None => {
                 let (p, _) = position?;
                 if f.ranges.is_full() {
-                    let (i, _) = f.ranges.iter().enumerate().min_by_key(|(_, r)| r.at).expect("not empty");
+                    let (i, _) = f
+                        .ranges
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, r)| r.at)
+                        .expect("not empty");
                     f.ranges.swap_remove(i);
                 }
                 let _ = f.ranges.push(Range {

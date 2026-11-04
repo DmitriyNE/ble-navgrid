@@ -139,12 +139,21 @@ Done (log 2026-11-03): version tracking, the bootloader
        several frames per SDU.
 2. [ ] **The sink's UART receive** (DEF-43): a buffered UARTE, which re-arms in its interrupt
        handler, instead of `read_until_idle`.
-3. [ ] **Resume and retry** (DEF-39): pick up from the last page written after a dropout (`Want`
-       carries the offset), and offer again to a peer that declined while unconfirmed.
+3. [x] **Resume and retry** (DEF-39, 2026-11-04): a transfer that broke off goes on from its
+       last whole page at the next offer, and every node re-offers on each link every 3 min.
 4. [ ] **A shorter swap** (DEF-38): a slot closer to the image size, or buffered writes.
-
-After stage 4: the desired-firmware record, neighbour-to-neighbour spreading, canary rollout and
-version compatibility during rollouts.
+5. [x] **Desired firmware and canary rollouts** (2026-11-04): `navgrid control TARGET firmware TAG`
+       (and `all`), the node taking offers of the named build only and reporting it applied once
+       it runs it; pending until then, which is the rollout's progress.
+6. [ ] **A fleet-wide desired build** rather than a record per node: the per-node records fit a
+       device replica (160 records) only for small fleets.
+7. [ ] **A protocol version on the air** (DEF-64): in the beacon and the session hello, decoding
+       N−1, so a format change rolls out across hops.
+8. [ ] **Resume across a restart** (DEF-63): keep the partial transfer's header and length in the
+       staging page, and check the slot's pages against a per-page digest in the header.
+9. [ ] **Pulling across hops**: today an image spreads by each updated node offering on its
+       links, which stops at a node that must not take it (a canary rollout) or that declines;
+       a node could pull from any neighbour whose node record says it holds the build.
 
 ## Operations (FR-O, architecture §13)
 

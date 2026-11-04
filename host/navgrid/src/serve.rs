@@ -23,10 +23,11 @@ use navgrid_proto::Message;
 use navgrid_solver::frame::{compass_to_heading, pointer};
 use serde_json::{Value, json};
 
-use crate::control::parse_target;
+use crate::control::{command_text, parse_target};
 use crate::fleet::{Fleet, FleetArgs, Registry};
 use crate::mesh_view::{HOST, node_name};
 use crate::monitor::{self, View};
+use crate::sign::parse_tag;
 use crate::solve::{Solution, controller_writer, position_records, send_record, solve_replica};
 
 #[derive(clap::Args)]
@@ -226,7 +227,7 @@ impl Service {
                         })
                         .unwrap_or("pending");
                     commands.push(json!({
-                        "target": self.name(d.target), "command": d.command,
+                        "target": self.name(d.target), "command": d.command, "text": command_text(&d.command),
                         "version": format!("{}.{}", r.version.epoch, r.version.counter),
                         "reported": reported, "age_s": s.age_ms(now) / 1000,
                     }));
@@ -564,12 +565,15 @@ fn handle(mut stream: TcpStream, shared: &Shared, port: &Port) -> Result<()> {
     Ok(())
 }
 
-/// A command from the page: `{"target": "N042", "command": {"Blink": {"times": 3}}}`.
+/// A command from the page: `{"target": "N042", "command": {"Blink": {"times": 3}}}`, or
+/// `{"target": "N042", "firmware": "0.1.0+1950d45d"}` for the build the node should run.
 fn control(shared: &Shared, port: &Port, body: &[u8]) -> Result<Value> {
     let v: Value = serde_json::from_slice(body).context("the request body")?;
     let target = v.get("target").and_then(Value::as_str).context("no target")?;
-    let command: Command =
-        serde_json::from_value(v.get("command").cloned().context("no command")?).context("the command")?;
+    let command: Command = match v.get("firmware").and_then(Value::as_str) {
+        Some(tag) => Command::Firmware(parse_tag(tag).with_context(|| format!("{tag}: not a build tag"))?),
+        None => serde_json::from_value(v.get("command").cloned().context("no command")?).context("the command")?,
+    };
     let record = {
         let mut s = shared.lock().expect("service");
         let id = s.resolve(target)?;

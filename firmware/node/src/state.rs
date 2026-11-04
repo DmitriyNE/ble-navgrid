@@ -12,13 +12,13 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Instant, Timer};
 use navgrid_mesh::wire::Header;
 use navgrid_mesh::{
-    Body, CONTROLLER, Command, Config, Driver, Fixed, Health, Key, NodeId, NodeInfo, Received, Record, Replica, Reported,
-    Status, Topic, auth,
+    Body, CONTROLLER, Command, Config, Driver, Fixed, Health, Key, NodeId, NodeInfo, Received, Record, Replica,
+    Reported, Status, Topic, auth,
 };
 use navgrid_proto::{MESH_RECORD_LEN, MeshRecord, Message};
 use nrf_sdc::mpsl::MultiprotocolServiceLayer;
 
-use crate::{report, status};
+use crate::{report, status, update};
 
 /// Records, outbox entries and routes a node keeps: the 2-hop neighbourhood at degree 6 peaks at
 /// about 110 records with 20 nodes, 143 with 500 (architecture §12).
@@ -120,7 +120,10 @@ pub fn apply_commands() -> usize {
     let mut applied = 0;
     for (version, command, genuine) in pending {
         let status = if !genuine {
-            warn!("command {:?} v{}.{}: not the controller's; ignored", command, version.epoch, version.counter);
+            warn!(
+                "command {:?} v{}.{}: not the controller's; ignored",
+                command, version.epoch, version.counter
+            );
             Status::Invalid
         } else {
             match command {
@@ -131,7 +134,10 @@ pub fn apply_commands() -> usize {
                 }
                 Command::Diversity(on) => {
                     let antennas = if on { crate::board::ANTENNAS } else { 1 };
-                    info!("command: diversity {}: {=u8} antenna(s) from the next burst", on, antennas);
+                    info!(
+                        "command: diversity {}: {=u8} antenna(s) from the next burst",
+                        on, antennas
+                    );
                     status::set_antennas(antennas);
                     Status::Applied
                 }
@@ -148,6 +154,23 @@ pub fn apply_commands() -> usize {
                 Command::Environment { .. } => {
                     warn!("command {:?}: no BME688 driver yet", command);
                     Status::Unsupported
+                }
+                Command::Firmware(firmware) => {
+                    let news = update::want(firmware);
+                    if firmware == crate::FIRMWARE {
+                        info!("command: firmware {}: running it", firmware);
+                        Status::Applied
+                    } else if crate::firmware::reverted_from() == Some(firmware) {
+                        warn!("command: firmware {}: this node reverted from it", firmware);
+                        Status::Invalid
+                    } else {
+                        // Pending until an offer of it is taken and the node runs it; the record
+                        // comes round again every few seconds meanwhile.
+                        if news {
+                            info!("command: firmware {}: taking offers of it only", firmware);
+                        }
+                        continue;
+                    }
                 }
             }
         };
@@ -315,7 +338,12 @@ pub fn session_in(msg: navgrid_mesh::wire::Sync) -> Result<(), navgrid_mesh::Pro
 }
 
 pub fn session_complete() -> bool {
-    STATE.lock(|s| s.borrow().as_ref().and_then(|s| s.session.as_ref()).is_some_and(Driver::is_complete))
+    STATE.lock(|s| {
+        s.borrow()
+            .as_ref()
+            .and_then(|s| s.session.as_ref())
+            .is_some_and(Driver::is_complete)
+    })
 }
 
 pub fn session_side() -> Option<navgrid_mesh::session::Side> {

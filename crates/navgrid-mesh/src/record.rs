@@ -65,6 +65,7 @@ pub enum Setting {
     Environment,
     Diversity,
     Advertising,
+    Firmware,
 }
 
 /// What a record is about, among its origin's records. With the origin it forms the [`Key`].
@@ -326,6 +327,10 @@ pub enum Command {
     Diversity(bool),
     /// Advertising interval (FR-M4).
     Advertising { interval_ms: u16 },
+    /// The build the node should run (FR-O2, architecture §13). The node takes offers of this
+    /// build only, and reports it applied once it runs it; until then the command stays pending,
+    /// which is how a rollout shows. Without one, a node takes any offer for its board.
+    Firmware(Firmware),
 }
 
 impl Command {
@@ -335,6 +340,7 @@ impl Command {
             Self::Environment { .. } => Setting::Environment,
             Self::Diversity(_) => Setting::Diversity,
             Self::Advertising { .. } => Setting::Advertising,
+            Self::Firmware(_) => Setting::Firmware,
         }
     }
 }

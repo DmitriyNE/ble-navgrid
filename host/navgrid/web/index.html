@@ -52,9 +52,11 @@
         <option value="Advertising">advertising interval (ms)</option>
         <option value="Diversity">diversity</option>
         <option value="Environment">environment period (s)</option>
+        <option value="Firmware">firmware (build tag)</option>
       </select>
       <input type="number" name="value" value="3" step="1">
       <label><input type="checkbox" name="flag"> on / gas</label>
+      <input type="text" name="tag" placeholder="0.1.0+1950d45d" size="18">
       <button type="submit">send</button>
       <span id="control-result" class="muted"></span>
     </form>
@@ -132,7 +134,7 @@ function render() {
   for (const c of state.commands) {
     const tr = document.createElement('tr');
     const cls = c.reported === 'applied' ? 'ok' : (c.reported === 'pending' ? 'muted' : 'warn');
-    tr.innerHTML = `<td>${c.target}</td><td>${JSON.stringify(c.command)}</td><td>${c.version}</td><td class="${cls}">${c.reported}</td><td class="r">${c.age_s}</td>`;
+    tr.innerHTML = `<td>${c.target}</td><td>${c.text}</td><td>${c.version}</td><td class="${cls}">${c.reported}</td><td class="r">${c.age_s}</td>`;
     cb.appendChild(tr);
   }
   const fb = $('#fleet tbody');
@@ -234,7 +236,10 @@ $('#control').addEventListener('submit', async (e) => {
     Diversity: { Diversity: flag },
     Environment: { Environment: { period_s: value, gas: flag } },
   }[f.get('kind')];
-  const r = await post('/api/control', { target: f.get('target'), command });
+  const body = f.get('kind') === 'Firmware'
+    ? { target: f.get('target'), firmware: f.get('tag').trim() }
+    : { target: f.get('target'), command };
+  const r = await post('/api/control', body);
   $('#control-result').textContent = r.error ? r.error : `sent v${r.version}`;
 });
 

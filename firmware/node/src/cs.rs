@@ -270,7 +270,13 @@ impl EventHandler for Events {
                 &e.steps,
             );
         }
-        range(handle, None, e.procedure_done_status as u8, e.num_antenna_paths, &e.steps);
+        range(
+            handle,
+            None,
+            e.procedure_done_status as u8,
+            e.num_antenna_paths,
+            &e.steps,
+        );
     }
 }
 
@@ -648,8 +654,15 @@ pub async fn burst(
     // Four paths take 90 ms a procedure; leave room for the setup and a few empty ones.
     let budget = Duration::from_millis(300 * u64::from(procedures) + 3_000);
     if with_timeout(budget, BURST_DONE.wait()).await.is_err() {
-        warn!("CS burst on {}: {=u8} procedures didn't end in time", handle.raw(), procedures);
-        if let Err(e) = stack.async_command(LeCsProcedureEnable::new(handle, CONFIG_ID, false)).await {
+        warn!(
+            "CS burst on {}: {=u8} procedures didn't end in time",
+            handle.raw(),
+            procedures
+        );
+        if let Err(e) = stack
+            .async_command(LeCsProcedureEnable::new(handle, CONFIG_ID, false))
+            .await
+        {
             warn!("CS procedure disable: {:?}", e);
         }
     }
@@ -723,16 +736,16 @@ async fn initiate(stack: &Stack<'_, '_>, handle: ConnHandle, antennas: u8, proce
             .async_command(LeCsCreateConfig::new(
                 handle,
                 CONFIG_ID,
-                1,    // create context: local and remote
-                2,    // main mode 2: phase-based ranging
-                1,    // sub mode 1: RTT steps among the tone steps, a referee for the phase slope
-                2,    // min main mode steps
-                5,    // max main mode steps
-                0,    // main mode repetition
-                3,    // mode-0 steps
-                0,    // role: initiator
-                0,    // RTT type: access address only
-                1,    // CS_SYNC PHY: 1M
+                1, // create context: local and remote
+                2, // main mode 2: phase-based ranging
+                1, // sub mode 1: RTT steps among the tone steps, a referee for the phase slope
+                2, // min main mode steps
+                5, // max main mode steps
+                0, // main mode repetition
+                3, // mode-0 steps
+                0, // role: initiator
+                0, // RTT type: access address only
+                1, // CS_SYNC PHY: 1M
                 channel_map(),
                 1,                    // channel map repetition
                 0,                    // channel selection algorithm #3b

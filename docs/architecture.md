@@ -784,20 +784,34 @@ starts, stay direct.
   about 6.6 frames/s of the link. A 500 KB image takes about 5.5 min at 1.5 KB/s
   ([spike](engineering/spikes/2026-11-03-updates-through-the-sink.md)). From there the node
   passes it on as above.
-- **Not yet:** resuming after a dropout (`Want` carries the start offset for it).
+- **Resume and re-offer** (DEF-39 fixed): a receiver remembers a transfer that broke off, in
+  RAM, and asks for the same build from its last whole page the next time it's offered; a node
+  offers what it carries on each link every 3 min as well as at link-up, so declines while
+  unconfirmed or busy on another link cost minutes, not a reconnect.
+- **The build a node should run:** a desired-state record (`Command::Firmware`, signed like the
+  others, `navgrid control TARGET firmware TAG`, or `all` for a record per enrolled device). A
+  node with one takes offers of that build only; without one it takes any offer for its board.
+  It reports the command applied once it runs the build, and leaves it pending until then, so
+  the rollout's progress is the commands table. Canary rollout: pin the fleet to the build it
+  runs, name the new build for the canaries, upload it to the sink, and once the canaries
+  report it applied, name it for all. A node that reverted from the named build reports it
+  invalid.
 - **Why first:** at 100 kHz SWD (DEF-19), reflashing 20 TAGs takes about 2 min per probe, and
   probes and DK adapters are scarce.
 
-**Mesh-wide later (D-36), after stage 4.**
-- **Announce:** the controller writes a *desired firmware* record (ID, size, SHA-256, signature,
-  rollout group), which spreads to every node like the frame (Global class, §12).
-- **Spread:** a node that lacks the image pulls missing pages from a neighbour whose node record
-  says it holds it, over the bulk channel, outside the 2 KB sync budget, which would take hours
-  per hop. Each finished node then serves its neighbours, and sinks get the image from the host.
-- **Install:** at the controller's time, canary nodes first and the rest once the canaries report
-  the new build healthy. Rollout shows in node records.
-- **Compatibility:** while a rollout runs, versions N and N−1 must interoperate on the air: mesh
-  records and sync frames change compatibly, or in two steps.
+**Mesh-wide (D-36): what's built and what's left.**
+- **Announce (built as a record per node):** the desired build above. A fleet-wide record (one
+  for all, Global class) is still to come: per-node records fit a device replica only for small
+  fleets.
+- **Spread (built by flooding):** a node that runs a confirmed build offers it on every link,
+  every few minutes, so an image crosses hops node by node. Pulling from a neighbour whose node
+  record says it holds the build is still to come; it would get past a node that must not take
+  the build itself.
+- **Install (built):** the canary procedure above; the commands table is the rollout's state.
+- **Compatibility (rule, not yet code; DEF-64):** nothing on the air names the protocol version,
+  so within a rollout the formats of frames, records and sessions must stay compatible, or a
+  format change rolls out one hop from the sink, which carries without running. A protocol
+  version in the beacon and the hello, decoding N−1, is the fix.
 - **Cost:** about 400 KB received per node and a little more sent, a few µAh. Time is hops ×
   (wait for a contact + about 10 s per transfer).
 

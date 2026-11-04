@@ -9,12 +9,15 @@
 //!   own board it installs the same way. One for another board it checks against the signing key
 //!   and keeps in its update slot, then offers it to the nodes on its links.
 
+use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{info, warn};
+use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Instant, with_timeout};
 use navgrid_proto::layout::{ACTIVE, ACTIVE_LEN, DFU, STAGED_UPDATE, STAGED_UPDATE_LEN};
-use navgrid_proto::{UPDATE_CHUNK, UPDATE_HEADER_LEN, UPDATE_SPSM, UpdateHeader, UpdateMsg};
+use navgrid_proto::{Firmware, UPDATE_CHUNK, UPDATE_HEADER_LEN, UPDATE_SPSM, UpdateHeader, UpdateMsg};
 use nrf_sdc::SoftdeviceController;
 use trouble_host::prelude::*;
 
@@ -38,6 +41,30 @@ const WRITE_WITHIN: Duration = Duration::from_secs(10);
 const SLOW_WRITE_MS: u64 = 500;
 /// A chunk that takes longer than this to send or arrive is logged; the transfer goes on waiting.
 const STALL_AFTER: Duration = Duration::from_secs(5);
+/// A node offers what it carries on each link this often, not only once the link is up: a peer
+/// that declined while its own image wasn't confirmed yet, or whose transfer broke off, gets
+/// another offer without a reconnect (DEF-39).
+pub const OFFER_EVERY: Duration = Duration::from_secs(3 * 60);
+
+/// A transfer that broke off: its build, and how many whole pages of it the update slot holds.
+/// The next offer of the same build is taken from there (DEF-39). Kept in RAM: a restart starts
+/// over.
+static PARTIAL: Mutex<CriticalSectionRawMutex, Cell<Option<(UpdateHeader, usize)>>> = Mutex::new(Cell::new(None));
+
+/// The build the controller wants this node on, once a desired-firmware record has named one.
+/// Offers of other builds are then declined, so a rollout reaches the nodes the controller named
+/// and no others.
+static WANTED: Mutex<CriticalSectionRawMutex, Cell<Option<Firmware>>> = Mutex::new(Cell::new(None));
+
+/// The controller wants `firmware` here. Whether that's news.
+pub fn want(firmware: Firmware) -> bool {
+    WANTED.lock(|w| w.replace(Some(firmware)) != Some(firmware))
+}
+
+/// The build the controller wants here, if it has said.
+pub fn wanted() -> Option<Firmware> {
+    WANTED.lock(|w| w.get())
+}
 
 /// Offers what this node can pass on, if anything, to the peer on `conn`, and streams it if the
 /// peer wants it. An image the node runs goes out only once it's confirmed here: a bad one would
@@ -78,6 +105,13 @@ pub async fn offer(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacketPoo
         },
         _ => return,
     };
+    if from > header.len as usize {
+        warn!(
+            "update: the peer wants {} from byte {=usize}, past its end",
+            header.firmware, from
+        );
+        return;
+    }
     info!("update: sending {} from byte {=usize}", header.firmware, from);
     // SAFETY: memory-mapped RRAM: the running image, which nothing writes while it runs, or the
     // update slot, checked below before each chunk.
@@ -139,14 +173,14 @@ pub async fn take(
     if channel.spsm() != UPDATE_SPSM {
         return;
     }
-    let Some(header) = answer(stack, &mut channel, rram).await else {
+    let Some((header, from)) = answer(stack, &mut channel, rram).await else {
         return;
     };
     if widen {
         packet_length(stack, conn, FULL_LENGTH).await;
     }
     // Returns only if the transfer failed; otherwise the node restarts into the update.
-    receive(stack, &mut channel, rram, header).await;
+    receive(stack, &mut channel, rram, header, from).await;
     TAKING.store(false, Ordering::Release);
     if widen {
         packet_length(stack, conn, SHORT_LENGTH).await;
@@ -178,21 +212,24 @@ async fn packet_length(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacke
     }
 }
 
-/// Reads the peer's offer and answers it: the header, once asked for from byte 0, or `None`
-/// once declined.
+/// Reads the peer's offer and answers it: the header and the byte asked for from (the end of a
+/// transfer of the same build that broke off, else 0), or `None` once declined.
 async fn answer(
     stack: &Stack<'_, '_>,
     channel: &mut L2capChannel<'_, DefaultPacketPool>,
     rram: &'static Rram,
-) -> Option<UpdateHeader> {
+) -> Option<(UpdateHeader, usize)> {
     let mut rx = [0u8; UPDATE_HEADER_LEN + 1];
     let mut tx = [0u8; 16];
     let n = channel.receive(stack, &mut rx).await.ok()?;
     let Some(UpdateMsg::Offer(header)) = UpdateMsg::decode(&rx[..n]) else {
         return None;
     };
-    let wanted =
-        header.board == BOARD && header.firmware != crate::FIRMWARE && !reverted(&header) && takes(&header, rram).await;
+    let wanted = header.board == BOARD
+        && header.firmware != crate::FIRMWARE
+        && !reverted(&header)
+        && by_controller(&header)
+        && takes(&header, rram).await;
     let busy = wanted && TAKING.swap(true, Ordering::Acquire);
     if busy {
         info!(
@@ -204,25 +241,69 @@ async fn answer(
         let _ = channel.send(stack, UpdateMsg::Decline.encode(&mut tx)).await;
         return None;
     }
-    info!("update: receiving {} ({=u32} bytes)", header.firmware, header.len);
+    let from = PARTIAL
+        .lock(|p| p.get())
+        .filter(|(h, _)| *h == header)
+        .map_or(0, |(_, done)| done);
+    info!(
+        "update: receiving {} ({=u32} bytes) from byte {=usize}",
+        header.firmware, header.len, from
+    );
     channel
-        .send(stack, UpdateMsg::Want { from: 0 }.encode(&mut tx))
+        .send(stack, UpdateMsg::Want { from: from as u32 }.encode(&mut tx))
         .await
         .ok()?;
-    Some(header)
+    Some((header, from))
 }
 
-/// Takes the image after [`answer`], and restarts into the check at boot once it's stored.
+/// Whether the controller, if it has named the build for this node, named `header`'s, saying
+/// so otherwise.
+fn by_controller(header: &UpdateHeader) -> bool {
+    match wanted() {
+        Some(firmware) if firmware != header.firmware => {
+            info!(
+                "update: declining {}: the controller wants {} here",
+                header.firmware, firmware
+            );
+            false
+        }
+        _ => true,
+    }
+}
+
+/// Takes the image after [`answer`], from byte `from`, and restarts into the check at boot once
+/// it's stored. A transfer that breaks off is remembered, to go on from its last whole page at
+/// the next offer.
 async fn receive(
     stack: &Stack<'_, '_>,
     channel: &mut L2capChannel<'_, DefaultPacketPool>,
     rram: &'static Rram,
     header: UpdateHeader,
+    from: usize,
 ) {
+    let mut writer = Writer::from(from);
+    if !store(stack, channel, rram, &header, &mut writer).await {
+        let done = writer.next - writer.next % PAGE;
+        PARTIAL.lock(|p| p.set((done > 0).then_some((header, done))));
+        warn!(
+            "update: {} broke off at byte {=usize}; {=usize} kept",
+            header.firmware, writer.next, done
+        );
+    }
+}
+
+/// Takes the rest of the image into `writer`, stores its end and restarts; `false` if the
+/// transfer broke off.
+async fn store(
+    stack: &Stack<'_, '_>,
+    channel: &mut L2capChannel<'_, DefaultPacketPool>,
+    rram: &'static Rram,
+    header: &UpdateHeader,
+    writer: &mut Writer,
+) -> bool {
     let mut rx = [0u8; UPDATE_CHUNK + 5];
     let mut tx = [0u8; 16];
     let len = header.len as usize;
-    let mut writer = Writer::new();
     let t = Instant::now();
     loop {
         let received = {
@@ -242,7 +323,7 @@ async fn receive(
             Ok(n) => n,
             Err(e) => {
                 warn!("update: receiving at byte {=usize}: {:?}", writer.next, e);
-                return;
+                return false;
             }
         };
         match UpdateMsg::decode(&rx[..n]) {
@@ -250,7 +331,7 @@ async fn receive(
                 if offset as usize == writer.next && writer.next + bytes.len() <= len =>
             {
                 if !writer.put(rram, bytes).await {
-                    return;
+                    return false;
                 }
             }
             Some(UpdateMsg::Done) if writer.next == len => {
@@ -259,12 +340,12 @@ async fn receive(
             }
             _ => {
                 warn!("update: unexpected message at byte {=usize}", writer.next);
-                return;
+                return false;
             }
         }
     }
-    if !writer.flush(rram).await || !stage(rram, &header).await {
-        return;
+    if !writer.flush(rram).await || !stage(rram, header).await {
+        return false;
     }
     let _ = channel.send(stack, UpdateMsg::Done.encode(&mut tx)).await;
     info!(
@@ -311,10 +392,12 @@ struct Writer {
 }
 
 impl Writer {
-    fn new() -> Self {
+    /// Goes on from byte `done`, a whole number of pages already in the slot.
+    fn from(done: usize) -> Self {
+        debug_assert!(done.is_multiple_of(PAGE));
         Self {
             page: [0xff; PAGE],
-            next: 0,
+            next: done,
         }
     }
 
@@ -501,10 +584,12 @@ mod sink {
                     info!("update: declining {}: already running or carrying it", header.firmware);
                     return Some(UpdateAnswer::Decline);
                 }
-                // The slot is about to change: stop passing on what it held.
+                // The slot is about to change: stop passing on what it held, and forget a
+                // transfer into it that broke off.
                 if !takes(&header, rram).await || !unstage(rram).await {
                     return Some(UpdateAnswer::Decline);
                 }
+                PARTIAL.lock(|p| p.set(None));
                 info!(
                     "update: receiving {} for the {} board from the host ({=u32} bytes)",
                     header.firmware,
@@ -513,7 +598,7 @@ mod sink {
                 );
                 *transfer = Some(Transfer {
                     header,
-                    writer: Writer::new(),
+                    writer: Writer::from(0),
                     stored: false,
                     started: Instant::now(),
                 });

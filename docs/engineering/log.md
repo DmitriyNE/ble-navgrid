@@ -4,6 +4,20 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Updates: resume, re-offer, and the build a node should run** (DEF-39 fixed; FR-O2). A
+transfer that breaks off is remembered (build and whole pages stored, in RAM: DEF-63) and the
+next offer of the same build is asked for from there, which the sender already honoured
+(`Want { from }`); every node offers what it carries on each link every 3 min as well as at
+link-up, so a peer that declined while unconfirmed or busy on another link gets it minutes
+later. `Command::Firmware` names the build a node should run: it takes offers of that build
+only, reports the command applied once it runs it, invalid if it reverted from it, and leaves it
+pending otherwise, so the page's commands table is a rollout's progress. `navgrid control
+TARGET firmware TAG`, with `all` for one record per enrolled device, and the page's control form
+take it; a canary rollout is pin all to the current build, name the new one for the canaries,
+upload to the sink, then name it for all. Not on hardware yet. Spreading is still by flooding
+(each updated node offers on its links), and nothing on the air names the protocol version, so
+a format change rolls out one hop from the sink (DEF-64).
+
 **The field tool's pieces** (FR-O6, FR-O7). A sink reports the beacons it hears to the host
 (`Message::Heard`: who, how loud, role, sink, hops, free links, battery, attention and install
 flags), once per node per 10 s; the service shows them as a nearby list, and the page a fleet

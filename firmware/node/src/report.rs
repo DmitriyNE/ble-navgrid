@@ -236,7 +236,12 @@ pub async fn send(uart: &SinkUart<'_>, msg: &Message) {
 /// On the sink: forwards every SDU of a node's telemetry channel to `uart` unchanged (each SDU is
 /// one frame) until the channel closes.
 #[cfg(feature = "board-dk")]
-pub async fn forward(stack: &Stack<'_, '_>, uart: &SinkUart<'_>, mut channel: L2capChannel<'_, DefaultPacketPool>, handle: u16) {
+pub async fn forward(
+    stack: &Stack<'_, '_>,
+    uart: &SinkUart<'_>,
+    mut channel: L2capChannel<'_, DefaultPacketPool>,
+    handle: u16,
+) {
     let mut sdu = [0u8; 255];
     let mut frames = 0u32;
     loop {

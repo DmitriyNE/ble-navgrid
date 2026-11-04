@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use navgrid_mesh::{Body, CONTROLLER, Config, Heap, NodeId, Record, Replica, Status, Topic};
 use serde_json::Value;
 
+use crate::control::command_text;
 use crate::fleet::{Fleet, FleetArgs, Registry, label_name};
 
 #[derive(clap::Args)]
@@ -218,7 +219,7 @@ pub fn run(args: &MeshViewArgs) -> Result<()> {
                 println!(
                     "{:<8} {:<32} {:<12} {}",
                     name(d.target),
-                    format!("{:?}", d.command),
+                    command_text(&d.command),
                     format!("{}.{}", r.version.epoch, r.version.counter),
                     reported
                 );

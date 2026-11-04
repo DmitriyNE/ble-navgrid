@@ -16,7 +16,7 @@ use core::cell::{Cell, RefCell};
 
 use bt_hci::param::LeConnRole;
 use defmt::{info, warn};
-use embassy_futures::join::{join, join3, join4, join_array};
+use embassy_futures::join::{join, join_array, join3, join4};
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
@@ -297,7 +297,11 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 self.with_policy(|p| p.connect_failed(peer, Self::now_ms()));
             }
             Err(_) => {
-                warn!("connect to {=u64:012x}: not within {} s", peer.0, CONNECT_WITHIN.as_secs());
+                warn!(
+                    "connect to {=u64:012x}: not within {} s",
+                    peer.0,
+                    CONNECT_WITHIN.as_secs()
+                );
                 self.with_policy(|p| p.connect_failed(peer, Self::now_ms()));
             }
         }
@@ -454,8 +458,14 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             core::future::pending::<()>().await
         };
         let sessions = self.sessions(&mut sync, central, peer);
-        if let Either::Second(Either::First(())) =
-            select(events, select(sessions, join3(join(channels, telemetry), bursts, join(offers, dropping)))).await
+        if let Either::Second(Either::First(())) = select(
+            events,
+            select(
+                sessions,
+                join3(join(channels, telemetry), bursts, join(offers, dropping)),
+            ),
+        )
+        .await
         {
             // The sessions gave up: make the link anew.
             conn.disconnect();
@@ -526,7 +536,11 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 return None;
             }
             Err(_) => {
-                warn!("first hello from {=u64:012x}: none within {} s", peer.0, FIRST_HELLO_WITHIN.as_secs());
+                warn!(
+                    "first hello from {=u64:012x}: none within {} s",
+                    peer.0,
+                    FIRST_HELLO_WITHIN.as_secs()
+                );
                 return None;
             }
         };
@@ -546,7 +560,12 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         let mut failures = 0u8;
         loop {
             let first = if central {
-                Timer::after(if self.role == Role::Anchor { SESSION_EVERY } else { TAG_SESSION_EVERY }).await;
+                Timer::after(if self.role == Role::Anchor {
+                    SESSION_EVERY
+                } else {
+                    TAG_SESSION_EVERY
+                })
+                .await;
                 None
             } else {
                 match receive_frame(self.stack, channel).await {
@@ -607,7 +626,10 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         loop {
             while let Some(msg) = state::session_out() {
                 let frame = wire::encode(&msg, &mut out).map_err(|_| SessionError::Encode)?;
-                channel.send(self.stack, frame).await.map_err(|_| SessionError::Channel)?;
+                channel
+                    .send(self.stack, frame)
+                    .await
+                    .map_err(|_| SessionError::Channel)?;
             }
             if state::session_complete() {
                 return Ok(());
@@ -721,8 +743,8 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         }
     }
 
-    /// Offers the update this node carries, if any, once the link is up, and on a sink again
-    /// whenever it starts carrying another (taken from the host).
+    /// Offers the update this node carries, if any, once the link is up and every few minutes
+    /// after (DEF-39), and on a sink as soon as it starts carrying another (taken from the host).
     #[cfg(feature = "board-dk")]
     async fn offers(&self, conn: &Connection<'s, DefaultPacketPool>) {
         let Some(mut carrying) = update::CARRYING.receiver() else {
@@ -732,15 +754,18 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         let _ = carrying.try_get();
         loop {
             update::offer(self.stack, conn, self.rram).await;
-            carrying.changed().await;
+            select(carrying.changed(), Timer::after(update::OFFER_EVERY)).await;
         }
     }
 
-    /// Offers the update this node carries, if any, once the link is up.
+    /// Offers the update this node carries, if any, once the link is up and every few minutes
+    /// after (DEF-39).
     #[cfg(not(feature = "board-dk"))]
     async fn offers(&self, conn: &Connection<'s, DefaultPacketPool>) {
-        update::offer(self.stack, conn, self.rram).await;
-        core::future::pending().await
+        loop {
+            update::offer(self.stack, conn, self.rram).await;
+            Timer::after(update::OFFER_EVERY).await;
+        }
     }
 
     /// One burst on a link this node is central on: to the fast parameters if the link idles
@@ -760,7 +785,16 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             return;
         }
         let started = Instant::now();
-        match cs::burst(self.stack, conn.handle(), self.node, peer, status::antennas(), procedures).await {
+        match cs::burst(
+            self.stack,
+            conn.handle(),
+            self.node,
+            peer,
+            status::antennas(),
+            procedures,
+        )
+        .await
+        {
             Ok(burst) => {
                 let (ok, failed) = (burst.estimates(), burst.failures);
                 status::count_burst(burst.procedures());
@@ -779,7 +813,10 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                         state::write(Body::Link(link));
                         if self.role != Role::Anchor {
                             let beacon = self.with_policy(|p| {
-                                p.heard_list().iter().find(|h| h.id == peer).and_then(|h| h.beacon.position)
+                                p.heard_list()
+                                    .iter()
+                                    .find(|h| h.id == peer)
+                                    .and_then(|h| h.beacon.position)
                             });
                             fix::ranged(
                                 self.node,
@@ -790,11 +827,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                             );
                         }
                     }
-                    None => warn!(
-                        "burst with {=u64:012x}: nothing from {=u16} procedures",
-                        peer.0,
-                        failed
-                    ),
+                    None => warn!("burst with {=u64:012x}: nothing from {=u16} procedures", peer.0, failed),
                 }
             }
             Err(e) => warn!("burst with {=u64:012x}: {}", peer.0, e),
@@ -812,7 +845,12 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     }
 
     /// Asks the controller for new connection parameters and waits for the update.
-    async fn set_params(&self, conn: &Connection<'s, DefaultPacketPool>, slot: &Slot, (interval_1250, latency): (u16, u16)) -> bool {
+    async fn set_params(
+        &self,
+        conn: &Connection<'s, DefaultPacketPool>,
+        slot: &Slot,
+        (interval_1250, latency): (u16, u16),
+    ) -> bool {
         let interval = Duration::from_micros(u64::from(interval_1250) * 1250);
         let timeout_ms = (u64::from(interval_1250) * 1250 / 1000 * u64::from(latency + 1) * 6).clamp(4_000, 32_000);
         let params = RequestedConnParams {
@@ -860,7 +898,10 @@ async fn receive_frame(
     channel: &mut L2capChannel<'_, DefaultPacketPool>,
 ) -> Result<Sync, SessionError> {
     let mut buf = [0u8; 255];
-    let len = channel.receive(stack, &mut buf).await.map_err(|_| SessionError::Channel)?;
+    let len = channel
+        .receive(stack, &mut buf)
+        .await
+        .map_err(|_| SessionError::Channel)?;
     // The frame's terminator may or may not be in the SDU.
     let end = buf[..len].iter().position(|&b| b == 0).unwrap_or(len);
     wire::decode(&mut buf[..end]).map_err(|_| SessionError::Decode)
