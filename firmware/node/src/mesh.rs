@@ -34,7 +34,7 @@ use trouble_host::prelude::*;
 use crate::beacon::Beacons;
 use crate::firmware::Rram;
 use crate::keys::Fleet;
-use crate::{Host, cs, report, state, status, update};
+use crate::{Host, cs, fix, report, state, status, update};
 
 /// Beacons heard while scanning, from the event handler to the policy: who, what, how loud.
 pub static HEARD: Channel<CriticalSectionRawMutex, (NodeId, Beacon, i8), 8> = Channel::new();
@@ -43,8 +43,10 @@ pub static HEARD: Channel<CriticalSectionRawMutex, (NodeId, Beacon, i8), 8> = Ch
 const TICK: Duration = Duration::from_millis(500);
 /// How long a connection attempt may take; the policy gives up on it at the same time.
 const CONNECT_WITHIN: Duration = Duration::from_secs(10);
-/// Between sync sessions on a link, which the central starts.
+/// Between sync sessions on a link, which the central starts: anchors every minute; a tag's
+/// fixes are only useful fresh, so its links sync every few seconds.
 const SESSION_EVERY: Duration = Duration::from_secs(60);
+const TAG_SESSION_EVERY: Duration = Duration::from_secs(5);
 /// Bytes of records and pushes a side sends per session (architecture §12).
 const SESSION_BUDGET: u32 = 2048;
 /// How long a side waits for the peer's next frame within a session: a slow link with
@@ -525,7 +527,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         let mut failures = 0u8;
         loop {
             let first = if central {
-                Timer::after(SESSION_EVERY).await;
+                Timer::after(if self.role == Role::Anchor { SESSION_EVERY } else { TAG_SESSION_EVERY }).await;
                 None
             } else {
                 match receive_frame(self.stack, channel).await {
@@ -754,6 +756,18 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                             started.elapsed().as_millis()
                         );
                         state::write(Body::Link(link));
+                        if self.role != Role::Anchor {
+                            let beacon = self.with_policy(|p| {
+                                p.heard_list().iter().find(|h| h.id == peer).and_then(|h| h.beacon.position)
+                            });
+                            fix::ranged(
+                                self.node,
+                                peer,
+                                link.distance_mm as f32 / 1000.0,
+                                link.sigma_mm as f32 / 1000.0,
+                                beacon,
+                            );
+                        }
                     }
                     None => warn!(
                         "burst with {=u64:012x}: nothing from {=u16} procedures",

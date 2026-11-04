@@ -299,16 +299,17 @@ crates/                     no_std, shared by firmware and host
   navgrid-proto/            wire messages (serde + postcard, COBS framing), NodeConfig
   navgrid-ranging/          CS channel response → distance; channel model for simulation
   navgrid-solver/           multilateration with height sources; tag tracker; frame + pointer;
-                            mesh solver later
+                            the central mesh solver (`mesh`, host)
   navgrid-mesh/             mesh state: records, merge, classes, sync, outbox, routes (§12)
   navgrid-link/             mesh links: neighbours, who connects, duty, bursts (§3)
 host/
   navgrid/                  CLI: sim, track, decode [--json], monitor, calibrate, cs, mesh-sim,
-                            link-sim; later replay, central solver, controller
+                            link-sim, mesh, solve, control, provision, flash, sign, update
 firmware/                   separate cargo workspace, thumbv8m.main-none-eabihf
   node/                     single firmware image; role from provisioning (D-2)
     src/mesh.rs             the links: beacons, policy, connects, sessions, bursts, telemetry (§3)
     src/state.rs            the node's replica of the mesh state, one session at a time (§12)
+    src/fix.rs              a tag's own position from its bursts and the anchors' beacons (§8)
     src/cs.rs               Channel Sounding per link: configuration, bursts, estimates
     src/board.rs            board-dk / board-tag: DC/DC, crystal caps, antenna switch (D-13)
     src/store.rs            provisioning page and boot epoch log in the top 8 KiB of RRAM

@@ -19,6 +19,7 @@ mod crash;
 mod crypto;
 mod cs;
 mod firmware;
+mod fix;
 mod keys;
 mod logger;
 mod mesh;

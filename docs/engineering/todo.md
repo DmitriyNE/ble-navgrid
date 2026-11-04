@@ -109,8 +109,16 @@ epoch in RRAM, `navgrid provision`, the FR-M4 beacon, and fleet-key link keys (l
        - the controller's node ID and key in provisioning rather than derived (DEF-27).
        - Exit: commands and records cross partitions and several hops on the desk mesh;
          latency and bytes per contact against the simulator.
-5. [ ] **Positions:** the host solver over Link records (FR-M6) publishes Position records with
-       the frame version; then distributed on-node solving (FR-M2), validated against the host.
+5. [ ] **Positions** (partly done, log 2026-11-04): the central solver (`navgrid_solver::mesh`,
+       `navgrid solve`) places every node from the mirrored Link records with the pins fixed,
+       writes Position records back through the sink, and an unpinned anchor advertises the
+       controller's position of it; a tag multilaterates from its bursts against the anchors'
+       advertised positions and writes its own Position record every few seconds, its links
+       syncing every 5 s. Left: distributed on-node solving for anchors (FR-M2, `multilaterate`
+       from the neighbours' positions, validated against the host); the tracking filter on tags
+       once the accelerometer gates motion (FR-T6, FR-T7); re-survey of moved nodes (FR-M5);
+       referencing by `fit_pins` when pins come in another frame than the world's (FR-A3); the
+       pointer view from the mobile tag's and the asset's positions (FR-F3).
 
 Protocol follow-ups, in the simulator first:
 

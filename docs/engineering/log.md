@@ -4,6 +4,17 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Positions, first cut** (S2). `navgrid_solver::mesh` solves every node at once from the links:
+seeded outward from the pins by multilateration (two-anchor seeds by clearance from the nodes
+already placed), refined jointly with a robust cut that starts wide and halves down to three
+sigmas so a bounced link is cut rather than spread, a height prior holding unpinned anchors near
+the pins' height, and sigmas from the inverse normal matrix. Node records carry their pin;
+`navgrid solve` runs the solver over the links a sink mirrored, takes the chip's offset off, and
+with `--sink` writes Position records to the mesh; an anchor without a pin advertises the
+controller's position of it. A tag multilaterates from its bursts against the anchors' advertised
+positions, held near carry height, and writes its own Position record at most every 3 s; its links
+sync every 5 s. Untested on hardware with the rest.
+
 **Commands through the mesh** (stage 4, second half). `navgrid control --sink PORT N042 blink`
 signs a desired-state record with the controller key, AES-CMAC of the fleet key (`navgrid-mesh`
 `auth`: the MAC covers origin, version, target and command, so relays carry but can't forge or
