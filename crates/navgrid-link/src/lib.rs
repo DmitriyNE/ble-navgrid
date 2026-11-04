@@ -281,6 +281,12 @@ impl Policy {
         if id == self.me {
             return;
         }
+        // The pre-mesh build advertises 14 free links, more than a mesh node has: a node on it
+        // answers no hello, and connecting to it left it off the air (log 2026-11-05). Its own
+        // connections are still accepted. The beacon carries no version (DEF-64).
+        if usize::from(beacon.free_links) > MAX_LINKS {
+            return;
+        }
         let entry = Heard {
             id,
             beacon,

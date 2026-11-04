@@ -101,25 +101,36 @@ async fn request_params(
     }
 }
 
+/// How an offer ended.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Offered {
+    /// Nothing to offer, the peer declined, or the channel never came.
+    Nothing,
+    /// The peer took the whole image.
+    Done,
+    /// A transfer started and broke off: worth offering again soon.
+    BrokeOff,
+}
+
 pub async fn offer(
     stack: &Stack<'_, '_>,
     conn: &Connection<'_, DefaultPacketPool>,
     rram: &'static Rram,
     params: Option<TransferParams>,
-) {
+) -> Offered {
     let Some((header, at)) = firmware::servable() else {
-        return;
+        return Offered::Nothing;
     };
     if at == ACTIVE && !firmware::confirmed(rram).await {
         info!("update: not offering {}: not confirmed here yet", header.firmware);
-        return;
+        return Offered::Nothing;
     }
     info!("update: offering {}", header.firmware);
     let mut channel = match L2capChannel::create(stack, conn, UPDATE_SPSM, &Default::default()).await {
         Ok(channel) => channel,
         Err(e) => {
             warn!("update: channel: {:?}", e);
-            return;
+            return Offered::Nothing;
         }
     };
     let mut buf = [0u8; UPDATE_CHUNK + 5];
@@ -128,7 +139,7 @@ pub async fn offer(
         .await
         .is_err()
     {
-        return;
+        return Offered::Nothing;
     }
     let mut answer = [0u8; 16];
     let from = match with_timeout(ANSWER_WITHIN, channel.receive(stack, &mut answer)).await {
@@ -136,18 +147,18 @@ pub async fn offer(
             Some(UpdateMsg::Want { from }) => from as usize,
             Some(UpdateMsg::Decline) => {
                 info!("update: the peer declined {}", header.firmware);
-                return;
+                return Offered::Nothing;
             }
-            _ => return,
+            _ => return Offered::Nothing,
         },
-        _ => return,
+        _ => return Offered::Nothing,
     };
     if from > header.len as usize {
         warn!(
             "update: the peer wants {} from byte {=usize}, past its end",
             header.firmware, from
         );
-        return;
+        return Offered::Nothing;
     }
     // A fast link for the transfer: an anchor link idles at 1 s, which would take half an hour.
     // Not on a link the policy doesn't know (a peer on another build): the request ended one
@@ -159,6 +170,7 @@ pub async fn offer(
     if let (false, Some(params)) = (done, params) {
         request_params(stack, conn, params.back).await;
     }
+    if done { Offered::Done } else { Offered::BrokeOff }
 }
 
 /// Streams the image from byte `from` and waits for the peer's `Done`: `true` once it has it.
@@ -266,8 +278,11 @@ static TAKING: AtomicBool = AtomicBool::new(false);
 pub(crate) const RECEIVING: L2capChannelConfig = L2capChannelConfig {
     mtu: None,
     mps: None,
-    flow_policy: CreditFlowPolicy::Every(4),
-    initial_credits: None,
+    // Four chunks in flight at most: on a fast mesh link the default let the sender run ahead
+    // of the receiver's packets, and a lost chunk ended every transfer at about 20 KiB (log
+    // 2026-11-05).
+    flow_policy: CreditFlowPolicy::Every(2),
+    initial_credits: Some(4),
 };
 
 /// Full-length packets for a transfer: 251 octets, 2120 µs.

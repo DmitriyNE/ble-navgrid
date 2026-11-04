@@ -4,6 +4,23 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**Two more rules from the night.** Connecting out to a node on the pre-mesh build wedged it: a
+few minutes after the DK's first session attempt, N002 and N004 neither advertised nor
+reconnected, and only a power cycle brought them back. The beacon carries no version (DEF-64),
+but that build advertises 14 free links where a mesh node has at most 8, so the policy ignores
+such beacons for connecting and still accepts the node's own connections. And an offer at
+link-up came before the hello, when the policy didn't know the link, so a transfer to N005 ran
+at the anchor link's idle interval of 1 s; the first offer now waits for the hello (or 45 s).
+The DK's stack high-water mark read 36.5 KiB of 39.6 KiB after the host's upload (the Ed25519
+check), which is too close (DEF-68).
+
+**First link records on hardware.** After the antenna-path fix the DK's burst to N001 ran:
+10 procedures, one path, and a Link record of 1.26 m (sigma 5 cm, quality 255) at the desk,
+then 3.75 m (sigma 7 cm) once N001 went back to its wall, both mirrored to the host through the
+DK's own replica. The four TAGs were all heard again after a power cycle each; two on the old
+build taking the new one over their telemetry links, one on the first new build taking the
+latest over its mesh link.
+
 **The mesh works end to end on one TAG.** N001, flashed by probe with the night's build, booted
 with 40 KiB of stack room (29 KiB used by the boot line; its SDC asked for 92,728 bytes, which
 `SDC_MEM` now gives it), was connected by the DK 49 s later, ran its first session (10 frames,

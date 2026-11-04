@@ -132,6 +132,10 @@ const TELEMETRY_RECEIVING: L2capChannelConfig = L2capChannelConfig {
     initial_credits: Some(3),
 };
 
+/// A transfer that broke off is offered again after this, not after [`update::OFFER_EVERY`]:
+/// the peer resumes from its last whole page (DEF-39).
+const OFFER_AGAIN_SOON: Duration = Duration::from_secs(10);
+
 /// How long a peripheral keeps serving a peer that opened channels but never sent a hello: a
 /// node on a build whose mesh protocol this one can't read, which can still take the update
 /// this node carries over its own channels (DEF-64). Long enough for one transfer.
@@ -854,9 +858,13 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             return core::future::pending().await;
         };
         let _ = carrying.try_get();
+        self.link_known(peer).await;
         loop {
-            update::offer(self.stack, conn, self.rram, self.transfer_params(peer)).await;
-            select(carrying.changed(), Timer::after(update::OFFER_EVERY)).await;
+            let again = match update::offer(self.stack, conn, self.rram, self.transfer_params(peer)).await {
+                update::Offered::BrokeOff => OFFER_AGAIN_SOON,
+                _ => update::OFFER_EVERY,
+            };
+            select(carrying.changed(), Timer::after(again)).await;
         }
     }
 
@@ -864,9 +872,24 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     /// after (DEF-39).
     #[cfg(not(feature = "board-dk"))]
     async fn offers(&self, conn: &Connection<'s, DefaultPacketPool>, peer: NodeId) {
+        self.link_known(peer).await;
         loop {
-            update::offer(self.stack, conn, self.rram, self.transfer_params(peer)).await;
-            Timer::after(update::OFFER_EVERY).await;
+            let again = match update::offer(self.stack, conn, self.rram, self.transfer_params(peer)).await {
+                update::Offered::BrokeOff => OFFER_AGAIN_SOON,
+                _ => update::OFFER_EVERY,
+            };
+            Timer::after(again).await;
+        }
+    }
+
+    /// Waits for the link to `peer` to be in the policy (its hello done), or for the time a
+    /// hello may take: an offer before that transfers at the link's idle interval, 1 s on an
+    /// anchor link, which is half an hour for an image (log 2026-11-05). A hello-less peer gets
+    /// its offer after the wait.
+    async fn link_known(&self, peer: NodeId) {
+        let started = Instant::now();
+        while self.transfer_params(peer).is_none() && started.elapsed() < FIRST_HELLO_WITHIN {
+            Timer::after(Duration::from_millis(500)).await;
         }
     }
 
