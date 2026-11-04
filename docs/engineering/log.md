@@ -4,6 +4,20 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**A mesh burst with a result, and the old links' rate.** Right after N005's first session on
+the new build the DK's burst to it ran: one path, 9 of 10 procedures in 1.4 s, 10.33 m ± 5 cm
+at quality 253, across the room at −77 dBm. The two TAGs on the pre-mesh build take their image
+over their telemetry links at about 210 B/s, a chunk a second, forty minutes each: a credit or
+pool limit on that path that the sink-to-node spike didn't meet at 7 KB/s; not pursued, as
+those are the last two nodes that will ever run that build.
+
+**The first full update over a mesh link.** With the receiver holding four chunks in flight
+and a broken transfer offered again in 10 s, N005 took 0.1.0+355819c3 from the DK over their
+anchor link at the fast interval: 64 KiB every 20 s or so, one break at byte 501,568 resumed
+from the page before, and the last 24 KiB in 9 s. It rebooted on the new build, the DK linked
+to it and ran a session, and its health arrived on the new build two minutes later. The two
+TAGs on the pre-mesh build took theirs over their telemetry links at the same time.
+
 **Two more rules from the night.** Connecting out to a node on the pre-mesh build wedged it: a
 few minutes after the DK's first session attempt, N002 and N004 neither advertised nor
 reconnected, and only a power cycle brought them back. The beacon carries no version (DEF-64),
