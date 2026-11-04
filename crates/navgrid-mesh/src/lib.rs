@@ -18,13 +18,17 @@
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
+mod driver;
 mod record;
 mod replica;
 pub mod session;
 mod table;
 pub mod wire;
 
+pub use driver::{Driver, Protocol};
 pub use navgrid_proto::{NodeId, PointMm, Role};
 pub use record::{
     Body, Class, Command, Desired, Environment, Frame, Health, Key, Link, MAX_NEIGHBOURS, NodeInfo, Position, Record,

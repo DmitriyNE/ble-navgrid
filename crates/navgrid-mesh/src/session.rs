@@ -39,7 +39,7 @@ impl Traffic {
         len
     }
 
-    fn add(&mut self, msg: &Sync, len: u32) {
+    pub(crate) fn add(&mut self, msg: &Sync, len: u32) {
         self.frames += 1;
         let step = match msg {
             Sync::Summary(_) => &mut self.summary,
@@ -52,7 +52,7 @@ impl Traffic {
     }
 }
 
-fn frame_len(msg: &Sync) -> u32 {
+pub(crate) fn frame_len(msg: &Sync) -> u32 {
     let mut buf = [0u8; MAX_FRAME_LEN];
     wire::encode(msg, &mut buf).map_or(MAX_FRAME_LEN, |f| f.len()) as u32
 }
@@ -251,6 +251,9 @@ fn count_summary(sent: &mut Traffic, summary: &[Summary]) {
     sent.count(&Sync::SummaryDone);
 }
 
+/// A class's versions go in full frames and end with a short one, empty if they filled the last
+/// (what the [`Driver`](crate::Driver) sends; the short frame tells the receiver the class is
+/// complete).
 fn count_versions(sent: &mut Traffic, class: crate::Class, versions: &[(Topic, Version)]) {
     for chunk in versions.chunks(VERSIONS_PER_FRAME) {
         sent.count(&Sync::Versions {
@@ -258,7 +261,7 @@ fn count_versions(sent: &mut Traffic, class: crate::Class, versions: &[(Topic, V
             versions: chunk.iter().copied().collect(),
         });
     }
-    if versions.is_empty() {
+    if versions.len().is_multiple_of(VERSIONS_PER_FRAME) {
         sent.count(&Sync::Versions {
             class,
             versions: Vec::new(),
