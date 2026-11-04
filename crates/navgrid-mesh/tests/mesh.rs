@@ -467,3 +467,63 @@ fn a_command_finds_a_node_without_a_route_through_the_node_records_that_place_it
     });
     assert_eq!(pushed, 1, "the command goes to 2, behind which 5 is");
 }
+
+#[test]
+fn a_retire_record_drops_the_node_everywhere_and_refuses_it_after() {
+    let key = navgrid_mesh::auth::controller_key(&[3; 16]);
+    let mut nodes: Vec<Node> = (1..=4u64)
+        .map(|id| {
+            let mut cfg = Config::new(NodeId(id), CONTROLLER, id == 1);
+            cfg.controller_key = Some(key);
+            Replica::new(cfg, 1, info(), 0)
+        })
+        .collect();
+    nodes[3].write(link(3, 4_000), 0).unwrap();
+    nodes[3].write(health(2_900), 0).unwrap();
+    for t in 0..6 {
+        round(&mut nodes, t * MINUTE);
+    }
+    assert!(
+        nodes[0].get(&key_of(4, Topic::Health)).is_some(),
+        "4's health reached the sink"
+    );
+    assert!(
+        nodes[1].get(&key_of(4, Topic::Node)).is_some(),
+        "2 holds 4's node record"
+    );
+    // What 4 would send later: its node record as it stands (4 itself drops everything once
+    // the retire record reaches it).
+    let late = nodes[3].get(&key_of(4, Topic::Node)).unwrap().record().clone();
+    let mut controller = Writer::new(CONTROLLER, 1);
+    let retire = navgrid_mesh::auth::sign_retire(&mut controller, &key, NodeId(4));
+    assert_eq!(nodes[0].inject(retire, 7 * MINUTE), Ok(Received::New));
+    assert!(
+        nodes[0].get(&key_of(4, Topic::Health)).is_none(),
+        "the sink dropped it at once"
+    );
+    for t in 7..12 {
+        round(&mut nodes, t * MINUTE);
+    }
+    for n in &nodes[..3] {
+        assert!(n.is_retired(NodeId(4)), "node {:?} has the retire record", n.id());
+        assert!(
+            n.records().iter().all(|s| s.record().origin != NodeId(4)),
+            "and nothing of 4"
+        );
+        assert!(n.peers().iter().all(|p| p.id != NodeId(4)));
+    }
+    // Whatever 4 sends now is refused.
+    assert_eq!(nodes[2].receive(late, 13 * MINUTE), Ok(Received::Invalid));
+    // A forged retire record, or one without the key to check it, does nothing.
+    let mut forger = Writer::new(CONTROLLER, 9);
+    let forged = forger.record(Body::Retired(navgrid_mesh::Retired {
+        node: NodeId(3),
+        mac: [0; 8],
+    }));
+    assert_eq!(nodes[0].inject(forged, 14 * MINUTE), Ok(Received::Invalid));
+    assert!(!nodes[0].is_retired(NodeId(3)));
+}
+
+fn key_of(origin: u64, topic: Topic) -> Key {
+    key(origin, topic)
+}

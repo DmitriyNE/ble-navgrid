@@ -34,6 +34,7 @@ pub struct Ttl {
     pub desired: u32,
     pub reported: u32,
     pub frame: u32,
+    pub retired: u32,
 }
 
 impl Default for Ttl {
@@ -48,6 +49,7 @@ impl Default for Ttl {
             desired: NEVER,
             reported: NEVER,
             frame: NEVER,
+            retired: NEVER,
         }
     }
 }
@@ -63,6 +65,7 @@ impl Ttl {
             Topic::Desired(..) => self.desired,
             Topic::Reported(_) => self.reported,
             Topic::Frame => self.frame,
+            Topic::Retired(_) => self.retired,
         }
     }
 
@@ -103,6 +106,9 @@ pub struct Config {
     /// Routes not refreshed for this long are forgotten.
     pub route_ttl_ms: u32,
     pub limits: Limits,
+    /// The controller's key, to check a retire record before acting on it; without it retire
+    /// records are kept but not acted on.
+    pub controller_key: Option<[u8; 16]>,
 }
 
 impl Config {
@@ -117,6 +123,7 @@ impl Config {
             outbox_ttl_ms: 24 * 60 * MINUTE,
             route_ttl_ms: 6 * 60 * MINUTE,
             limits: Limits::default(),
+            controller_key: None,
         }
     }
 }
@@ -288,6 +295,10 @@ impl<S: Storage> Replica<S> {
         &self.cfg
     }
 
+    pub fn config_mut(&mut self) -> &mut Config {
+        &mut self.cfg
+    }
+
     pub fn is_sink(&self) -> bool {
         self.cfg.sink
     }
@@ -394,7 +405,7 @@ impl<S: Storage> Replica<S> {
     /// Starts a contact with a peer, from its [`Header`]: updates the peer, the hop count and the
     /// node record.
     pub fn contact(&mut self, peer: &Header, now_ms: u64) {
-        if peer.node == self.cfg.id {
+        if peer.node == self.cfg.id || self.is_retired(peer.node) {
             return;
         }
         match self.peers.iter().position(|p| p.id == peer.node) {
@@ -753,6 +764,9 @@ impl<S: Storage> Replica<S> {
         if record.origin == self.cfg.id {
             return Err(Received::Own);
         }
+        if self.is_retired(record.origin) {
+            return Err(Received::Invalid);
+        }
         if self.cfg.ttl.expired(&key.topic, record.age_ms) {
             return Err(Received::Expired);
         }
@@ -760,12 +774,17 @@ impl<S: Storage> Replica<S> {
     }
 
     fn merge(&mut self, class: Class, record: Record, now_ms: u64) -> Result<Received, Error> {
+        let retire = match (&record.body, self.cfg.controller_key) {
+            (Body::Retired(r), Some(key)) if crate::auth::verify(&key, &record) => Some(r.node),
+            (Body::Retired(_), Some(_)) => return Ok(Received::Invalid),
+            _ => None,
+        };
         let stored = Stored {
             class,
             record,
             since_ms: now_ms,
         };
-        match self.find(class, &stored.record.key()) {
+        let received = match self.find(class, &stored.record.key()) {
             Ok(i) if self.records[i].record.version >= stored.record.version => Ok(Received::Stale),
             Ok(i) => {
                 self.records[i] = stored;
@@ -776,7 +795,34 @@ impl<S: Storage> Replica<S> {
                 self.records.insert(i, stored).map_err(|_| Error::Full)?;
                 Ok(Received::New)
             }
+        };
+        if let (Some(node), Ok(rx)) = (retire, &received)
+            && rx.kept()
+        {
+            self.retire(node);
         }
+        received
+    }
+
+    /// Whether the controller retired `node`, by a record this replica holds.
+    pub fn is_retired(&self, node: NodeId) -> bool {
+        self.get(&Key {
+            origin: self.cfg.controller,
+            topic: Topic::Retired(node),
+        })
+        .is_some()
+    }
+
+    /// Drops everything of and about `node`: its records, the controller's records about it, its
+    /// place among the peers, routes and the outbox.
+    fn retire(&mut self, node: NodeId) {
+        self.records
+            .retain(|s| s.record.origin != node && (s.class.subject() != Some(node) || s.class == Class::Global));
+        self.outbox.retain(|p| {
+            p.record.origin != node && p.record.key().class(self.cfg.controller).and_then(Class::subject) != Some(node)
+        });
+        self.routes.retain(|r| r.origin != node && r.via != node);
+        self.peers.retain(|p| p.id != node);
     }
 
     fn enqueue(&mut self, record: Record, toward: Toward, now_ms: u64) -> Result<Received, Error> {

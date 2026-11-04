@@ -194,6 +194,9 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     async fn drive(&self) {
         loop {
             Timer::after(TICK).await;
+            if status::retired() {
+                continue;
+            }
             while let Ok((id, beacon, rssi)) = HEARD.try_receive() {
                 self.with_policy(|p| p.heard(id, beacon, rssi, Self::now_ms()));
             }
@@ -311,7 +314,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     async fn advertise(&self) {
         let mut peripheral = self.stack.peripheral();
         loop {
-            if self.with_policy(|p| p.free_links()) == 0 {
+            if self.with_policy(|p| p.free_links()) == 0 || status::retired() {
                 self.freed.wait().await;
                 continue;
             }

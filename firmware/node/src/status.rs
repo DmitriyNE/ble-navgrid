@@ -40,6 +40,8 @@ static BATTERY_MV: AtomicU16 = AtomicU16::new(0);
 static ATTENTION_UNTIL_S: AtomicU32 = AtomicU32::new(0);
 static SINK: AtomicBool = AtomicBool::new(false);
 static ENROLLED: AtomicBool = AtomicBool::new(false);
+/// The controller retired this node (a signed retire record): it stops ranging and syncing.
+static RETIRED: AtomicBool = AtomicBool::new(false);
 
 /// What a beacon says changed since advertising started (attention, so far).
 pub static BEACON_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -51,6 +53,15 @@ pub const ATTENTION_FOR_S: u32 = 30;
 
 fn uptime_s() -> u32 {
     Instant::now().as_secs() as u32
+}
+
+pub fn retire() {
+    RETIRED.store(true, Ordering::Relaxed);
+    BEACON_CHANGED.signal(());
+}
+
+pub fn retired() -> bool {
+    RETIRED.load(Ordering::Relaxed)
 }
 
 pub fn set_identity(enrolled: bool, sink: bool) {

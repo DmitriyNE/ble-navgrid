@@ -83,6 +83,8 @@ pub enum Topic {
     /// What a node applied of its desired state for one setting.
     Reported(Setting),
     Frame,
+    /// The controller retired a node: its records go everywhere, and nothing more of it is kept.
+    Retired(NodeId),
 }
 
 impl Topic {
@@ -97,6 +99,7 @@ impl Topic {
             Self::Desired(target, setting) => (5, target.0, setting as u8),
             Self::Reported(setting) => (6, 0, setting as u8),
             Self::Frame => (7, 0, 0),
+            Self::Retired(node) => (8, node.0, 0),
         }
     }
 }
@@ -115,7 +118,7 @@ impl Key {
     pub fn class(&self, controller: NodeId) -> Option<Class> {
         let origin = self.origin;
         match (origin == controller, self.topic) {
-            (true, Topic::Frame) => Some(Class::Global),
+            (true, Topic::Frame | Topic::Retired(_)) => Some(Class::Global),
             (true, Topic::Desired(target, _)) => Some(Class::Desired(target)),
             (true, Topic::Position(of)) => Some(Class::About(of)),
             (true, _) => None,
@@ -193,6 +196,18 @@ pub enum Body {
     Desired(Desired),
     Reported(Reported),
     Frame(Frame),
+    Retired(Retired),
+}
+
+/// The controller retired a node (FR-O4): every replica drops the node's records and takes no
+/// more from it; the node itself stops. Kept for good, so a retired node that comes back is
+/// refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Retired {
+    pub node: NodeId,
+    /// The controller's MAC over origin, version and node ([`auth`](crate::auth)).
+    pub mac: [u8; 8],
 }
 
 impl Body {
@@ -206,6 +221,7 @@ impl Body {
             Self::Desired(d) => Topic::Desired(d.target, d.command.setting()),
             Self::Reported(r) => Topic::Reported(r.setting),
             Self::Frame(_) => Topic::Frame,
+            Self::Retired(r) => Topic::Retired(r.node),
         }
     }
 }

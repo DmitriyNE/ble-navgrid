@@ -37,7 +37,7 @@ pub const CONTROLLER: NodeId = NodeId(0xc0ff_ee00_0000);
 pub use navgrid_proto::{NodeId, PointMm, Role};
 pub use record::{
     Body, Class, Command, Desired, Environment, Frame, Health, Key, Link, MAX_NEIGHBOURS, NodeInfo, Position, Record,
-    Reported, Setting, Status, Topic, Version, Writer,
+    Reported, Retired, Setting, Status, Topic, Version, Writer,
 };
 pub use replica::{
     Config, Error, Limits, MAX_HOPS, MAX_NEIGHBOURHOOD, NEVER, Peer, Pending, Received, Replica, Route, SUMMARY_MEMORY,

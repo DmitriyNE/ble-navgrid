@@ -4,6 +4,15 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Retiring a node, and the registry's names.** A controller-signed retire record (`Retired`,
+Global class, kept for good) makes every replica drop everything of and about the node, refuse
+whatever it sends after, and stop contacting it; the node itself stops ranging and syncing when
+it sees it. Replicas act on it only with the controller key in their configuration (devices and
+the host have it; the simulator doesn't). `navgrid fleet retire N004 --sink PORT` marks the
+registry and sends the record; the number is free for a replacement. `navgrid fleet place N004
+"kitchen ceiling"` names a device and marks it placed; lookups by fleet number skip retired
+devices.
+
 **Routing: poisoned hop counts, and records that find unrouted nodes** (DEF-30, DEF-31 fixed). A
 node's hello to the peer its only sink path runs through says unreachable (split horizon with
 poisoned reverse), so a lost path reads unreachable at once instead of counting up to 32 through

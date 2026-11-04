@@ -285,8 +285,10 @@ pub fn run(args: &ServeArgs) -> Result<()> {
     let log_path = dir.join("serve.jsonl");
     let log = OpenOptions::new().append(true).create(true).open(&log_path).ok();
     let pins_path = dir.join("pins.json");
+    let mut replica = crate::mesh_view::host_replica();
+    replica.config_mut().controller_key = controller_key;
     let mut service = Service {
-        replica: crate::mesh_view::host_replica(),
+        replica,
         registry: registry.clone(),
         pins: BTreeMap::new(),
         pins_path: pins_path.clone(),

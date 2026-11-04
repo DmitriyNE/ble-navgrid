@@ -578,7 +578,7 @@ impl<'a> Sim<'a> {
                 Topic::Environment => "environment",
                 Topic::Link(_) => "link",
                 Topic::Reported(_) => "report",
-                Topic::Position(_) | Topic::Desired(..) | Topic::Frame => "other",
+                Topic::Position(_) | Topic::Desired(..) | Topic::Frame | Topic::Retired(_) => "other",
             };
             self.delivery.entry(kind).or_default().push((now - t) as f32 / 1000.0);
         }

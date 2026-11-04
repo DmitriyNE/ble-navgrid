@@ -36,9 +36,7 @@ pub fn run(args: &FindArgs) -> Result<()> {
     let name = |id: NodeId| node_name(id, registry.as_ref());
     let resolve = |s: &str| -> Result<NodeId> {
         if let Some(number) = s.strip_prefix('N').and_then(|n| n.parse::<u16>().ok())
-            && let Some(d) = registry
-                .as_ref()
-                .and_then(|r| r.devices.iter().find(|d| d.number == number))
+            && let Some(d) = registry.as_ref().and_then(|r| r.by_number(number))
         {
             return Ok(d.id);
         }

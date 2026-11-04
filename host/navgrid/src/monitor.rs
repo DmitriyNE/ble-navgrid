@@ -438,6 +438,7 @@ mod tests {
                 id,
                 role: navgrid_proto::Role::Anchor,
                 sink: false,
+                name: None,
                 enrolled: "2026-11-02".into(),
                 status: Status::Enrolled,
                 firmware: Some("0.1.0+00000001".into()),

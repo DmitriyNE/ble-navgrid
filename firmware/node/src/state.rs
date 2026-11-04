@@ -49,6 +49,7 @@ pub fn now_ms() -> u64 {
 /// Starts the replica at boot.
 pub fn init(node: NodeId, sink: bool, epoch: u32, info: NodeInfo) {
     let replica = Replica::new(Config::new(node, CONTROLLER, sink), epoch, info, now_ms());
+    // The controller's key goes in with `set_controller_key`, once the fleet key is read.
     if sink {
         for s in replica.records() {
             mirror(s.record());
@@ -68,6 +69,7 @@ pub fn set_controller_key(key: Option<[u8; 16]>) {
     STATE.lock(|s| {
         if let Some(s) = s.borrow_mut().as_mut() {
             s.controller_key = key;
+            s.replica.config_mut().controller_key = key;
         }
     });
 }
@@ -365,6 +367,10 @@ pub async fn run(mpsl: &MultiprotocolServiceLayer<'_>) -> ! {
         .unwrap_or((false, u8::MAX, None));
         status::set_hops(hops);
         status::set_position(position);
+        if !status::retired() && with(|r| r.is_retired(r.id())).unwrap_or(false) {
+            warn!("retired by the controller: no more ranging or syncing");
+            status::retire();
+        }
         self_fix();
         if last_health.elapsed() >= HEALTH_EVERY {
             last_health = Instant::now();

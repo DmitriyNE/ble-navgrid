@@ -106,6 +106,11 @@ enum FleetCmd {
     Init(fleet::FleetArgs),
     /// List the enrolled devices.
     List(fleet::FleetArgs),
+    /// Name a device and mark it placed.
+    Place(fleet::PlaceArgs),
+    /// Retire a device: its number is free again, and a signed retire record goes to the mesh
+    /// through a sink, so every replica drops it.
+    Retire(fleet::RetireArgs),
 }
 
 fn main() -> Result<()> {
@@ -145,5 +150,7 @@ fn main() -> Result<()> {
         Cmd::Control(args) => control::run(&args),
         Cmd::Fleet(FleetCmd::Init(args)) => fleet::Fleet::init(&args).map(|_| ()),
         Cmd::Fleet(FleetCmd::List(args)) => fleet::list(&args),
+        Cmd::Fleet(FleetCmd::Place(args)) => fleet::place(&args),
+        Cmd::Fleet(FleetCmd::Retire(args)) => fleet::retire(&args),
     }
 }

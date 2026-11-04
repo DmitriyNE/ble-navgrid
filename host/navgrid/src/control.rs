@@ -122,7 +122,7 @@ pub fn run(args: &ControlArgs) -> Result<()> {
 
 pub fn parse_target(s: &str, registry: &crate::fleet::Registry) -> Result<NodeId> {
     if let Some(number) = s.strip_prefix('N').and_then(|n| n.parse::<u16>().ok())
-        && let Some(d) = registry.devices.iter().find(|d| d.number == number)
+        && let Some(d) = registry.by_number(number)
     {
         return Ok(d.id);
     }

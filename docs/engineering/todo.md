@@ -126,7 +126,6 @@ epoch in RRAM, `navgrid provision`, the FR-M4 beacon, and fleet-key link keys (l
 Protocol follow-ups, in the simulator first:
 
 - [ ] **Compact device layout** for stored records (DEF-29): 48-bit IDs, `u8` lengths.
-- [ ] **Retiring a node:** a controller record that drops a node's records everywhere.
 - [ ] **Fleet key at rest** (DEF-33): APPROTECT on provisioned devices, and the key in the KMU.
 - [ ] **Simulate link loss and mid-session drops,** and reboots (new epochs).
 
@@ -169,8 +168,10 @@ Left over from them:
 
 4. [ ] **Identify and button events through the mesh:** the blink command (with stage 4's desired
        state), an event record for button presses, and `navgrid identify`.
-5. [ ] **Registry operations:** `navgrid place`, `replace` and `retire` (with the mesh's retire
-       record); the monitor shows fleet numbers, names, *unplaced* and *missing*.
+5. [ ] **Registry operations:** `navgrid fleet place` and `retire` exist (log 2026-11-04;
+       replace = retire, then provision the new device under the number). Left: the monitor
+       and the service's page showing names, *unplaced* and *missing* (enrolled but not heard
+       from).
 6. [ ] **Field tool:**
        - a DK field-sink mode: beacon list with RSSI, direct fleet links, and a sync session at
          hop 0;

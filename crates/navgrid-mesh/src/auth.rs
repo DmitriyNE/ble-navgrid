@@ -6,7 +6,7 @@
 use aes::Aes128;
 use cmac::{Cmac, KeyInit, Mac};
 
-use crate::{Body, Command, Desired, NodeId, Record, Version, Writer};
+use crate::{Body, Command, Desired, NodeId, Record, Retired, Version, Writer};
 
 fn cmac(key: &[u8; 16], parts: &[&[u8]]) -> [u8; 16] {
     let mut mac = <Cmac<Aes128> as KeyInit>::new_from_slice(key).expect("AES-128 takes 16-byte keys");
@@ -38,12 +38,30 @@ pub fn sign(writer: &mut Writer, key: &[u8; 16], target: NodeId, command: Comman
     writer.record(Body::Desired(Desired { target, command, mac }))
 }
 
-/// Whether `record` is a desired-state record with the controller's MAC.
+/// The MAC of a retire record with these fields.
+pub fn retired_mac(key: &[u8; 16], origin: NodeId, version: Version, node: NodeId) -> [u8; 8] {
+    let mut buf = [0u8; 32];
+    let signed = postcard::to_slice(&(origin, version, node), &mut buf).map_or(&[][..], |b| &*b);
+    let full = cmac(key, &[b"navgrid retired", signed]);
+    let mut mac = [0u8; 8];
+    mac.copy_from_slice(&full[..8]);
+    mac
+}
+
+/// A retire record from the controller's writer, with its MAC.
+pub fn sign_retire(writer: &mut Writer, key: &[u8; 16], node: NodeId) -> Record {
+    let version = writer.next();
+    let mac = retired_mac(key, writer.origin(), version, node);
+    writer.record(Body::Retired(Retired { node, mac }))
+}
+
+/// Whether `record` is a desired-state or retire record with the controller's MAC.
 pub fn verify(key: &[u8; 16], record: &Record) -> bool {
-    let Body::Desired(d) = &record.body else {
-        return false;
-    };
-    desired_mac(key, record.origin, record.version, d.target, &d.command) == d.mac
+    match &record.body {
+        Body::Desired(d) => desired_mac(key, record.origin, record.version, d.target, &d.command) == d.mac,
+        Body::Retired(r) => retired_mac(key, record.origin, record.version, r.node) == r.mac,
+        _ => false,
+    }
 }
 
 #[cfg(test)]

@@ -52,6 +52,9 @@ pub struct Device {
     /// It also has a host link (a sink).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sink: bool,
+    /// Where it is, in words (FR-O4): "kitchen ceiling", "Dmitriy's keys".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// UTC date of the last enrolment.
     pub enrolled: String,
     pub status: Status,
@@ -69,6 +72,36 @@ pub struct Registry {
 }
 
 impl Registry {
+    pub fn by_number(&self, number: u16) -> Option<&Device> {
+        self.devices
+            .iter()
+            .find(|d| d.number == number && d.status != Status::Retired)
+    }
+
+    /// Names a device and marks it placed (FR-O4).
+    pub fn place(&mut self, number: u16, name: String) -> Result<()> {
+        let d = self
+            .devices
+            .iter_mut()
+            .find(|d| d.number == number && d.status != Status::Retired)
+            .with_context(|| format!("{} is not enrolled", label_name(number)))?;
+        d.name = Some(name);
+        d.status = Status::Placed;
+        Ok(())
+    }
+
+    /// Retires a device: its number is free again, and the mesh is told (the caller sends the
+    /// retire record).
+    pub fn retire(&mut self, number: u16) -> Result<NodeId> {
+        let d = self
+            .devices
+            .iter_mut()
+            .find(|d| d.number == number && d.status != Status::Retired)
+            .with_context(|| format!("{} is not enrolled", label_name(number)))?;
+        d.status = Status::Retired;
+        Ok(d.id)
+    }
+
     pub fn by_id(&self, id: NodeId) -> Option<&Device> {
         self.devices.iter().find(|d| d.id == id)
     }
@@ -81,9 +114,16 @@ impl Registry {
     /// Records an enrolment: updates the device's entry or adds one. A number another device
     /// holds is refused.
     pub fn enrol(&mut self, id: NodeId, number: u16, role: Role, sink: bool, date: String) -> Result<()> {
-        if let Some(other) = self.devices.iter().find(|d| d.number == number && d.id != id) {
+        // A retired device's number is free for its replacement.
+        if let Some(other) = self
+            .devices
+            .iter()
+            .find(|d| d.number == number && d.id != id && d.status != Status::Retired)
+        {
             bail!("{} already belongs to {:012x}", label_name(number), other.id.0);
         }
+        self.devices
+            .retain(|d| !(d.number == number && d.id != id && d.status == Status::Retired));
         match self.devices.iter_mut().find(|d| d.id == id) {
             Some(d) => {
                 d.number = number;
@@ -97,6 +137,7 @@ impl Registry {
                 id,
                 role,
                 sink,
+                name: None,
                 enrolled: date,
                 status: Status::Enrolled,
                 firmware: None,
@@ -314,12 +355,13 @@ pub fn list(args: &FleetArgs) -> Result<()> {
             _ => "firmware unknown".into(),
         };
         println!(
-            "{}  {:012x}  {:<13}  {:<8}  enrolment {}  {firmware}",
+            "{}  {:012x}  {:<13}  {:<8}  enrolment {}  {firmware}{}",
             label_name(d.number),
             d.id.0,
             format!("{:?}{}", d.role, if d.sink { " + sink" } else { "" }),
             format!("{:?}", d.status).to_lowercase(),
-            d.enrolled
+            d.enrolled,
+            d.name.as_ref().map_or(String::new(), |n| format!("  \"{n}\""))
         );
     }
     Ok(())
@@ -378,4 +420,70 @@ mod tests {
         assert!(svg.contains(">N042<") && svg.contains(">ce36dfcc4c2d<"));
         assert!(svg.matches("<rect").count() > 100);
     }
+}
+
+#[derive(clap::Args)]
+pub struct PlaceArgs {
+    /// The device's fleet number (`N042`).
+    number: String,
+    /// Where it is, in words.
+    name: String,
+    #[command(flatten)]
+    fleet: FleetArgs,
+}
+
+pub fn place(args: &PlaceArgs) -> Result<()> {
+    let fleet = Fleet::open(&args.fleet)?;
+    let mut registry = fleet.registry()?;
+    let number = parse_number(&args.number)?;
+    registry.place(number, args.name.clone())?;
+    fleet.save(&registry)?;
+    println!("{} placed: \"{}\"", label_name(number), args.name);
+    Ok(())
+}
+
+#[derive(clap::Args)]
+pub struct RetireArgs {
+    /// The device's fleet number (`N042`).
+    number: String,
+    /// A sink's serial port, to tell the mesh; without it only the registry changes.
+    #[arg(long)]
+    sink: Option<String>,
+    #[arg(long, default_value_t = 115_200)]
+    baud: u32,
+    #[command(flatten)]
+    fleet: FleetArgs,
+}
+
+pub fn retire(args: &RetireArgs) -> Result<()> {
+    let fleet = Fleet::open(&args.fleet)?;
+    let mut registry = fleet.registry()?;
+    let number = parse_number(&args.number)?;
+    let id = registry.retire(number)?;
+    fleet.save(&registry)?;
+    println!("{} retired in the registry ({:012x})", label_name(number), id.0);
+    let Some(port) = &args.sink else {
+        println!("no --sink: the mesh keeps its records until one is told");
+        return Ok(());
+    };
+    let key = navgrid_mesh::auth::controller_key(&fleet.key()?);
+    let mut writer = crate::solve::controller_writer();
+    let record = navgrid_mesh::auth::sign_retire(&mut writer, &key, id);
+    let mut port = serialport::new(port, args.baud)
+        .timeout(std::time::Duration::from_millis(200))
+        .open()
+        .with_context(|| format!("opening {port}"))?;
+    crate::solve::send_record(&mut *port, &record)?;
+    println!(
+        "retire record v{}.{} sent to the sink",
+        record.version.epoch, record.version.counter
+    );
+    Ok(())
+}
+
+fn parse_number(s: &str) -> Result<u16> {
+    s.strip_prefix('N')
+        .unwrap_or(s)
+        .parse::<u16>()
+        .with_context(|| format!("{s}: not a fleet number like N042"))
 }
