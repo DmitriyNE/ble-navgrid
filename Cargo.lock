@@ -753,6 +753,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "navgrid-link"
+version = "0.1.0"
+dependencies = [
+ "defmt",
+ "heapless",
+ "navgrid-mesh",
+ "navgrid-proto",
+]
+
+[[package]]
 name = "navgrid-mesh"
 version = "0.1.0"
 dependencies = [

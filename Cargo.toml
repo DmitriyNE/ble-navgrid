@@ -15,6 +15,7 @@ navgrid-proto = { path = "crates/navgrid-proto" }
 navgrid-ranging = { path = "crates/navgrid-ranging" }
 navgrid-solver = { path = "crates/navgrid-solver" }
 navgrid-mesh = { path = "crates/navgrid-mesh" }
+navgrid-link = { path = "crates/navgrid-link" }
 
 serde = { version = "1.0.228", default-features = false, features = ["derive"] }
 postcard = { version = "1.1", default-features = false }

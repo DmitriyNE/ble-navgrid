@@ -1,0 +1,16 @@
+[package]
+name = "navgrid-link"
+description = "Mesh links: which neighbours a node links with, who connects to whom, when a link bursts to range, and what a burst yields"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+navgrid-proto.workspace = true
+navgrid-mesh.workspace = true
+heapless.workspace = true
+defmt = { workspace = true, optional = true }
+
+[features]
+defmt = ["dep:defmt", "navgrid-proto/defmt", "navgrid-mesh/defmt"]
