@@ -304,7 +304,8 @@ crates/                     no_std, shared by firmware and host
   navgrid-link/             mesh links: neighbours, who connects, duty, bursts (§3)
 host/
   navgrid/                  CLI: sim, track, decode [--json], monitor, calibrate, cs, mesh-sim,
-                            link-sim, mesh, solve, control, provision, flash, sign, update
+                            link-sim, mesh, solve, find, control, provision, flash, sign, update;
+                            serve: the service (port, replica, solves, JSON endpoint, web/index.html)
 firmware/                   separate cargo workspace, thumbv8m.main-none-eabihf
   node/                     single firmware image; role from provisioning (D-2)
     src/mesh.rs             the links: beacons, policy, connects, sessions, bursts, telemetry (§3)
@@ -923,3 +924,4 @@ The DK sink shows host link and connected nodes on its four LEDs.
 | D-35 | Firmware images are signed with an Ed25519 key separate from the fleet key, whose public part is provisioned; the running firmware verifies an update before the bootloader takes it (§13). | **Accepted** (built 2026-11-03) |
 | D-36 | Over-the-air updates come single hop first (before stage 3), then spread mesh-wide over a bulk channel with controller-scheduled, canary-first rollout (after stage 4) (§13). | **Accepted** (2026-11-03) |
 | D-37 | Mesh links by one policy crate (`navgrid-link`): neighbours from beacons, the lower anchor connects, admission by free links, anchor links slow with bursts by parameter update, tag links at the fast interval times their count with spaced events, one burst per node at a time, the sink an anchor with a host link (§3). | **Accepted** (spike 2026-11-04-link-scheduling; firmware to follow) |
+| D-38 | The host service (`navgrid serve`) owns the sink's port and the global replica, solves on a schedule and writes positions back, and serves the page and the JSON endpoint over plain `std` HTTP on the loopback; the offline commands (`mesh`, `solve`, `find`) read its log. | **Accepted** (built 2026-11-04) |

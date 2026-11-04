@@ -63,7 +63,7 @@ pub struct Device {
     pub flashed: Option<String>,
 }
 
-#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Registry {
     pub devices: Vec<Device>,
 }

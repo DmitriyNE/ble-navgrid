@@ -6,12 +6,11 @@
 //! range against it.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use navgrid_mesh::{Body, CONTROLLER, NodeId, PointMm, Position, Record, Writer};
+use navgrid_mesh::{Body, CONTROLLER, Heap, NodeId, PointMm, Position, Record, Replica, Writer};
 use navgrid_proto::{MAX_DOWNLINK_FRAME, Message, UpdateMsg};
 use navgrid_solver::mesh::{LinkObs, MeshOptions, Pin, solve};
 
@@ -62,19 +61,37 @@ fn parse_pin(s: &str) -> Result<(String, [f32; 3]), String> {
 const FRAME: u16 = 1;
 const ECHO_WITHIN: Duration = Duration::from_secs(5);
 
-pub fn run(args: &SolveArgs) -> Result<()> {
-    let fleet = Fleet::open(&args.fleet).ok();
-    let registry = fleet.as_ref().and_then(|f| f.registry().ok());
-    let (replica, _, _) = replica_from_logs(&args.files)?;
-    let name = |id: NodeId| node_name(id, registry.as_ref());
-    let by_name: BTreeMap<String, NodeId> = replica
-        .records()
-        .iter()
-        .map(|s| s.record().origin)
-        .filter(|&o| o != CONTROLLER && o != crate::mesh_view::HOST)
-        .map(|o| (name(o), o))
-        .collect();
+/// One node of a solution.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placed {
+    pub id: NodeId,
+    pub position: [f32; 3],
+    pub sigma_m: [f32; 3],
+    pub pinned: bool,
+}
 
+/// What the solver made of the mesh.
+#[derive(Clone, Debug)]
+pub struct Solution {
+    pub nodes: usize,
+    pub pins: usize,
+    pub links: usize,
+    pub iterations: u8,
+    pub normalized_rms: f32,
+    pub outliers: usize,
+    pub placed: Vec<Placed>,
+    pub unsolved: Vec<NodeId>,
+}
+
+/// Solves the mesh in `replica` from its Link records, with the pins in its node records and
+/// `extra_pins` (which override them).
+pub fn solve_replica(
+    replica: &Replica<Heap>,
+    extra_pins: &[(NodeId, [f32; 3])],
+    offset_m: f32,
+    height_sigma_m: f32,
+    min_quality: u8,
+) -> Result<Solution> {
     // Nodes: every origin with a node record or a link.
     let mut ids: Vec<NodeId> = Vec::new();
     let mut pins: Vec<(NodeId, [f32; 3])> = Vec::new();
@@ -93,7 +110,7 @@ pub fn run(args: &SolveArgs) -> Result<()> {
                     ));
                 }
             }
-            Body::Link(l) if l.quality >= args.min_quality => {
+            Body::Link(l) if l.quality >= min_quality => {
                 for id in [r.origin, l.peer] {
                     if !ids.contains(&id) {
                         ids.push(id);
@@ -112,18 +129,15 @@ pub fn run(args: &SolveArgs) -> Result<()> {
             _ => {}
         }
     }
-    for (pin_name, xyz) in &args.pins {
-        let Some(&id) = by_name.get(pin_name) else {
-            bail!("pin {pin_name}: no such node in the logs");
-        };
+    for &(id, xyz) in extra_pins {
         pins.retain(|(p, _)| *p != id);
-        pins.push((id, *xyz));
+        pins.push((id, xyz));
         if !ids.contains(&id) {
             ids.push(id);
         }
     }
     if ids.is_empty() {
-        bail!("no nodes or links in the logs");
+        bail!("no nodes or links in the mesh state");
     }
     let index = |id: NodeId| ids.iter().position(|&x| x == id).expect("listed");
     let pin_list: Vec<Pin> = pins
@@ -148,86 +162,139 @@ pub fn run(args: &SolveArgs) -> Result<()> {
         &pin_list,
         &links,
         &MeshOptions {
-            offset_m: args.offset_m,
-            height_sigma_m: args.height_sigma_m,
+            offset_m,
+            height_sigma_m,
             ..MeshOptions::default()
         },
     );
+    let mut placed = Vec::new();
+    let mut unsolved = Vec::new();
+    for (i, &id) in ids.iter().enumerate() {
+        match solved.positions[i] {
+            Some(position) => placed.push(Placed {
+                id,
+                position,
+                sigma_m: solved.sigma_m[i].unwrap_or([f32::NAN; 3]),
+                pinned: pin_list.iter().any(|p| p.node == i),
+            }),
+            None => unsolved.push(id),
+        }
+    }
+    Ok(Solution {
+        nodes: ids.len(),
+        pins: pin_list.len(),
+        links: links.len(),
+        iterations: solved.iterations,
+        normalized_rms: solved.normalized_rms,
+        outliers: solved.outliers,
+        placed,
+        unsolved,
+    })
+}
+
+/// The controller's Position records for a solution.
+pub fn position_records(solution: &Solution, writer: &mut Writer) -> Vec<Record> {
+    let mm = |v: f32| (v * 1000.0).round() as i32;
+    let smm = |v: f32| if v.is_finite() { (v * 1000.0).round() as u32 } else { 0 };
+    solution
+        .placed
+        .iter()
+        .map(|p| {
+            writer.record(Body::Position(Position {
+                of: p.id,
+                point: PointMm {
+                    x: mm(p.position[0]),
+                    y: mm(p.position[1]),
+                    z: mm(p.position[2]),
+                },
+                sigma_mm: [smm(p.sigma_m[0]), smm(p.sigma_m[1]), smm(p.sigma_m[2])],
+                frame: FRAME,
+            }))
+        })
+        .collect()
+}
+
+/// A controller writer whose epoch is the clock, so every run writes newer versions than the
+/// last.
+pub fn controller_writer() -> Writer {
+    let epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(1, |d| d.as_secs() as u32);
+    Writer::new(CONTROLLER, epoch)
+}
+
+/// Sends one record down to the sink as a downlink frame.
+pub fn send_record(port: &mut dyn std::io::Write, record: &Record) -> Result<()> {
+    let mut record_buf = [0u8; navgrid_proto::MESH_RECORD_LEN];
+    let bytes = postcard::to_slice(record, &mut record_buf).context("encoding a record")?;
+    let mut out = vec![0u8; MAX_DOWNLINK_FRAME];
+    let frame = navgrid_proto::encode_downlink(&UpdateMsg::Record(bytes), &mut out);
+    port.write_all(frame).context("writing to the sink")
+}
+
+pub fn run(args: &SolveArgs) -> Result<()> {
+    let fleet = Fleet::open(&args.fleet).ok();
+    let registry = fleet.as_ref().and_then(|f| f.registry().ok());
+    let (replica, _, _) = replica_from_logs(&args.files)?;
+    let name = |id: NodeId| node_name(id, registry.as_ref());
+    let by_name: BTreeMap<String, NodeId> = replica
+        .records()
+        .iter()
+        .map(|s| s.record().origin)
+        .filter(|&o| o != CONTROLLER && o != crate::mesh_view::HOST)
+        .map(|o| (name(o), o))
+        .collect();
+    let mut extra = Vec::new();
+    for (pin_name, xyz) in &args.pins {
+        let Some(&id) = by_name.get(pin_name) else {
+            bail!("pin {pin_name}: no such node in the logs");
+        };
+        extra.push((id, *xyz));
+    }
+    let solution = solve_replica(&replica, &extra, args.offset_m, args.height_sigma_m, args.min_quality)?;
     println!(
         "{} nodes, {} pins, {} links; {} iterations, normalized rms {:.2}, {} links cut as bounces\n",
-        ids.len(),
-        pin_list.len(),
-        links.len(),
-        solved.iterations,
-        solved.normalized_rms,
-        solved.outliers
+        solution.nodes, solution.pins, solution.links, solution.iterations, solution.normalized_rms, solution.outliers
     );
     println!(
         "{:<8} {:>8} {:>8} {:>8} {:>18} how",
         "node", "x m", "y m", "z m", "σ m (x y z)"
     );
-    let mut positions: Vec<Record> = Vec::new();
-    let epoch = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(1, |d| d.as_secs() as u32);
-    let mut writer = Writer::new(CONTROLLER, epoch);
-    for (i, &id) in ids.iter().enumerate() {
-        let how = if pin_list.iter().any(|p| p.node == i) {
-            "pinned"
-        } else {
-            "solved"
-        };
-        match (solved.positions[i], solved.sigma_m[i]) {
-            (Some(p), sigma) => {
-                let s = sigma.unwrap_or([f32::NAN; 3]);
-                println!(
-                    "{:<8} {:>8.2} {:>8.2} {:>8.2} {:>6.2} {:>5.2} {:>5.2} {}",
-                    name(id),
-                    p[0],
-                    p[1],
-                    p[2],
-                    s[0],
-                    s[1],
-                    s[2],
-                    how
-                );
-                let mm = |v: f32| (v * 1000.0).round() as i32;
-                let smm = |v: f32| if v.is_finite() { (v * 1000.0).round() as u32 } else { 0 };
-                positions.push(writer.record(Body::Position(Position {
-                    of: id,
-                    point: PointMm {
-                        x: mm(p[0]),
-                        y: mm(p[1]),
-                        z: mm(p[2]),
-                    },
-                    sigma_mm: [smm(s[0]), smm(s[1]), smm(s[2])],
-                    frame: FRAME,
-                })));
-            }
-            (None, _) => println!(
-                "{:<8} {:>8} {:>8} {:>8} {:>18} unsolved (fewer than two placed neighbours)",
-                name(id),
-                "-",
-                "-",
-                "-",
-                ""
-            ),
-        }
+    for p in &solution.placed {
+        println!(
+            "{:<8} {:>8.2} {:>8.2} {:>8.2} {:>6.2} {:>5.2} {:>5.2} {}",
+            name(p.id),
+            p.position[0],
+            p.position[1],
+            p.position[2],
+            p.sigma_m[0],
+            p.sigma_m[1],
+            p.sigma_m[2],
+            if p.pinned { "pinned" } else { "solved" }
+        );
+    }
+    for id in &solution.unsolved {
+        println!(
+            "{:<8} {:>8} {:>8} {:>8} {:>18} unsolved (fewer than two placed neighbours)",
+            name(*id),
+            "-",
+            "-",
+            "-",
+            ""
+        );
     }
     let Some(port) = &args.sink else {
         return Ok(());
     };
+    let mut writer = controller_writer();
+    let positions = position_records(&solution, &mut writer);
     let mut port = serialport::new(port, args.baud)
         .timeout(Duration::from_millis(200))
         .open()
         .with_context(|| format!("opening {port}"))?;
     let mut sent = 0;
     for record in &positions {
-        let mut record_buf = [0u8; navgrid_proto::MESH_RECORD_LEN];
-        let bytes = postcard::to_slice(record, &mut record_buf).context("encoding a position")?;
-        let mut out = vec![0u8; MAX_DOWNLINK_FRAME];
-        let frame = navgrid_proto::encode_downlink(&UpdateMsg::Record(bytes), &mut out);
-        port.write_all(frame).context("writing to the sink")?;
+        send_record(&mut *port, record)?;
         if !echoed(&mut *port, record)? {
             bail!(
                 "the sink didn't mirror the position of {} back within {} s",

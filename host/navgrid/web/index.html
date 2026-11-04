@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>navgrid</title>
+<style>
+  :root { --bg: #fafafa; --fg: #1a1a1a; --muted: #6b6b6b; --line: #d8d8d8; --accent: #1f5fbf; --warn: #b85c00; --ok: #2a7f3f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #141518; --fg: #e8e8e8; --muted: #9a9a9a; --line: #33363b; --accent: #6aa0ff; --warn: #f0a050; --ok: #6fd08c; } }
+  body { margin: 0; padding: 16px; font: 14px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 18px 0 6px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .muted { color: var(--muted); }
+  .grid { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.2fr); gap: 20px; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  canvas { width: 100%; height: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  td.r, th.r { text-align: right; }
+  pre { font: 12px/1.35 ui-monospace, monospace; max-height: 240px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+  input, select, button { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); color: var(--fg); }
+  input[type=number] { width: 90px; }
+  button { cursor: pointer; border-color: var(--accent); color: var(--accent); }
+  button:hover { background: var(--accent); color: var(--bg); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); }
+  #pointer { font-size: 16px; }
+</style>
+</head>
+<body>
+<h1>navgrid <span id="status" class="muted"></span></h1>
+<div class="muted" id="solve"></div>
+<div class="grid">
+  <div>
+    <h2>Floor plan</h2>
+    <canvas id="map" width="640" height="480"></canvas>
+    <div class="muted">squares: anchors (filled: pinned); circles: tags; lines: links, darker when better; the controller's positions, own fixes hollow.</div>
+    <h2>Find</h2>
+    <form id="find">
+      <label>from <select name="from"></select></label>
+      <label>to <select name="to"></select></label>
+      <label>heading <input type="number" name="heading" value="0" step="1">°</label>
+      <button type="submit">point</button>
+    </form>
+    <div id="pointer"></div>
+    <h2>Control</h2>
+    <form id="control">
+      <label>node <select name="target"></select></label>
+      <select name="kind">
+        <option value="Blink">blink</option>
+        <option value="Advertising">advertising interval (ms)</option>
+        <option value="Diversity">diversity</option>
+        <option value="Environment">environment period (s)</option>
+      </select>
+      <input type="number" name="value" value="3" step="1">
+      <label><input type="checkbox" name="flag"> on / gas</label>
+      <button type="submit">send</button>
+      <span id="control-result" class="muted"></span>
+    </form>
+    <h2>Pins</h2>
+    <form id="pin">
+      <label>node <select name="node"></select></label>
+      <input type="number" name="x" placeholder="x m" step="0.01">
+      <input type="number" name="y" placeholder="y m" step="0.01">
+      <input type="number" name="z" placeholder="z m" step="0.01">
+      <button type="submit">place</button>
+      <button type="button" id="unpin">clear</button>
+      <button type="button" id="resolve">solve now</button>
+      <span id="pin-result" class="muted"></span>
+    </form>
+  </div>
+  <div>
+    <h2>Nodes</h2>
+    <table id="nodes"><thead><tr><th>node</th><th>role</th><th class="r">hops</th><th>neighbours</th><th>position (m)</th><th class="r">mV</th><th class="r">°C</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
+    <h2>Links</h2>
+    <table id="links"><thead><tr><th>from</th><th>to</th><th class="r">m</th><th class="r">σ</th><th class="r">quality</th><th class="r">proc</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
+    <h2>Commands</h2>
+    <table id="commands"><thead><tr><th>target</th><th>command</th><th>version</th><th>reported</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
+    <h2>Recent</h2>
+    <pre id="recent"></pre>
+  </div>
+</div>
+<script>
+let state = null;
+const $ = (s) => document.querySelector(s);
+const fmt = (v, d = 2) => (v == null || Number.isNaN(v)) ? '' : Number(v).toFixed(d);
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/state', { cache: 'no-store' });
+    state = await r.json();
+    render();
+    $('#status').textContent = `${state.frames} frames, ${state.records} records, up ${state.uptime_s} s`;
+  } catch (e) {
+    $('#status').textContent = 'no service';
+  }
+}
+
+function positionOf(n) {
+  if (n.pinned) return { x: n.pinned.x, y: n.pinned.y, z: n.pinned.z, how: 'pin' };
+  if (n.position) return { ...n.position, how: 'solved' };
+  if (n.own_position) return { ...n.own_position, how: 'own' };
+  return null;
+}
+
+function render() {
+  const nodes = state.nodes.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const tb = $('#nodes tbody');
+  tb.innerHTML = '';
+  for (const n of nodes) {
+    const p = positionOf(n);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${n.name}</td><td>${n.role}${n.sink ? ' (sink)' : ''}</td><td class="r">${n.hops ?? '-'}</td>` +
+      `<td>${n.neighbours.join(' ')}</td><td>${p ? `${fmt(p.x)} ${fmt(p.y)} ${fmt(p.z)} <span class="muted">${p.how}</span>` : ''}</td>` +
+      `<td class="r">${n.health ? n.health.battery_mv : ''}</td><td class="r">${n.health ? fmt(n.health.temperature_c, 1) : ''}</td><td class="r">${n.age_s}</td>`;
+    tb.appendChild(tr);
+  }
+  const lb = $('#links tbody');
+  lb.innerHTML = '';
+  for (const l of state.links.slice().sort((a, b) => (a.from + a.to).localeCompare(b.from + b.to))) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${l.from}</td><td>${l.to}</td><td class="r">${fmt(l.distance_m)}</td><td class="r">${fmt(l.sigma_m)}</td><td class="r">${l.quality}</td><td class="r">${l.procedures}/${l.failures}</td><td class="r">${l.age_s}</td>`;
+    lb.appendChild(tr);
+  }
+  const cb = $('#commands tbody');
+  cb.innerHTML = '';
+  for (const c of state.commands) {
+    const tr = document.createElement('tr');
+    const cls = c.reported === 'applied' ? 'ok' : (c.reported === 'pending' ? 'muted' : 'warn');
+    tr.innerHTML = `<td>${c.target}</td><td>${JSON.stringify(c.command)}</td><td>${c.version}</td><td class="${cls}">${c.reported}</td><td class="r">${c.age_s}</td>`;
+    cb.appendChild(tr);
+  }
+  $('#recent').textContent = state.recent.join('\n');
+  $('#solve').textContent = state.solve
+    ? `solved ${state.solve.ago_s} s ago: ${state.solve.nodes} nodes, ${state.solve.pins} pins, ${state.solve.links} links, rms ${fmt(state.solve.normalized_rms)}, ${state.solve.outliers} bounces cut` + (state.solve.unsolved.length ? `, unsolved: ${state.solve.unsolved.join(' ')}` : '')
+    : 'not solved yet';
+  for (const sel of document.querySelectorAll('select[name=from], select[name=to], select[name=target], select[name=node]')) {
+    const current = sel.value;
+    sel.innerHTML = nodes.map((n) => `<option value="${n.name}">${n.name} (${n.role})</option>`).join('');
+    if (current) sel.value = current;
+  }
+  drawMap(nodes);
+}
+
+function drawMap(nodes) {
+  const canvas = $('#map');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const placed = nodes.map((n) => ({ n, p: positionOf(n) })).filter((e) => e.p);
+  if (placed.length === 0) {
+    ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--muted');
+    ctx.fillText('no positions yet', 16, 24);
+    return;
+  }
+  const xs = placed.map((e) => e.p.x), ys = placed.map((e) => e.p.y);
+  const minX = Math.min(...xs) - 1, maxX = Math.max(...xs) + 1, minY = Math.min(...ys) - 1, maxY = Math.max(...ys) + 1;
+  const scale = Math.min((W - 40) / Math.max(maxX - minX, 1), (H - 40) / Math.max(maxY - minY, 1));
+  const sx = (x) => 20 + (x - minX) * scale;
+  const sy = (y) => H - 20 - (y - minY) * scale;
+  const fg = getComputedStyle(document.body).getPropertyValue('--fg');
+  const accent = getComputedStyle(document.body).getPropertyValue('--accent');
+  const byName = Object.fromEntries(placed.map((e) => [e.n.name, e.p]));
+  for (const l of state.links) {
+    const a = byName[l.from], b = byName[l.to];
+    if (!a || !b) continue;
+    ctx.strokeStyle = fg;
+    ctx.globalAlpha = 0.15 + 0.6 * (l.quality / 255);
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(sx(a.x), sy(a.y)); ctx.lineTo(sx(b.x), sy(b.y)); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  for (const { n, p } of placed) {
+    const x = sx(p.x), y = sy(p.y);
+    ctx.strokeStyle = n.role === 'Anchor' ? fg : accent;
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.lineWidth = 2;
+    if (n.role === 'Anchor') {
+      ctx.beginPath(); ctx.rect(x - 6, y - 6, 12, 12);
+      if (p.how === 'pin') ctx.fill(); else ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
+      if (p.how === 'own') ctx.stroke(); else ctx.fill();
+    }
+    ctx.fillStyle = fg;
+    ctx.fillText(n.name, x + 9, y + 4);
+  }
+  ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--muted');
+  ctx.fillText(`${fmt(maxX - minX, 0)} × ${fmt(maxY - minY, 0)} m`, 16, H - 6);
+}
+
+async function post(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return r.json();
+}
+
+$('#find').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const r = await fetch(`/api/pointer?from=${encodeURIComponent(f.get('from'))}&to=${encodeURIComponent(f.get('to'))}&heading=${encodeURIComponent(f.get('heading'))}`);
+  const p = await r.json();
+  $('#pointer').textContent = p.error ? p.error
+    : `${p.to}: ${fmt(Math.abs(p.relative_azimuth_deg), 0)}° to the ${p.relative_azimuth_deg >= 0 ? 'left' : 'right'}, ${fmt(Math.abs(p.elevation_deg), 0)}° ${p.elevation_deg >= 0 ? 'up' : 'down'}, ${fmt(p.distance_m)} m away (${p.from}: ${p.from_how}; ${p.to}: ${p.to_how})`;
+});
+
+$('#control').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const value = Number(f.get('value')), flag = f.get('flag') === 'on';
+  const command = {
+    Blink: { Blink: { times: value } },
+    Advertising: { Advertising: { interval_ms: value } },
+    Diversity: { Diversity: flag },
+    Environment: { Environment: { period_s: value, gas: flag } },
+  }[f.get('kind')];
+  const r = await post('/api/control', { target: f.get('target'), command });
+  $('#control-result').textContent = r.error ? r.error : `sent v${r.version}`;
+});
+
+$('#pin').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const r = await post('/api/pin', { node: f.get('node'), x: Number(f.get('x')), y: Number(f.get('y')), z: Number(f.get('z')) });
+  $('#pin-result').textContent = r.error ? r.error : `${r.pins} pins`;
+  refresh();
+});
+$('#unpin').addEventListener('click', async () => {
+  const r = await post('/api/pin', { node: new FormData($('#pin')).get('node'), clear: true });
+  $('#pin-result').textContent = r.error ? r.error : `${r.pins} pins`;
+  refresh();
+});
+$('#resolve').addEventListener('click', async () => {
+  const r = await post('/api/solve', {});
+  $('#pin-result').textContent = r.error ? r.error : `solved: ${r.placed} placed, rms ${fmt(r.normalized_rms)}`;
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

@@ -13,6 +13,7 @@ mod monitor;
 mod probe;
 mod provision;
 mod scenario;
+mod serve;
 mod sign;
 mod solve;
 mod tones;
@@ -81,6 +82,9 @@ enum Cmd {
     Solve(solve::SolveArgs),
     /// The find-my-keys pointer from a mobile tag to an asset, from the mirrored positions.
     Find(find::FindArgs),
+    /// The host as a service: the sink's port, the live mesh state, periodic solves, a JSON
+    /// endpoint and one page with the floor plan, tables, controls, the pointer and pins.
+    Serve(serve::ServeArgs),
     /// Enrol a device through its probe: fleet key, fleet number, role, bring-up peer and sink.
     Provision(provision::ProvisionArgs),
     /// Flash firmware through one or more probes at once, and record the build in the registry.
@@ -133,6 +137,7 @@ fn main() -> Result<()> {
         Cmd::Mesh(args) => mesh_view::run(&args),
         Cmd::Solve(args) => solve::run(&args),
         Cmd::Find(args) => find::run(&args),
+        Cmd::Serve(args) => serve::run(&args),
         Cmd::Provision(args) => provision::run(&args),
         Cmd::Flash(args) => flash::run(&args),
         Cmd::Sign(args) => sign::run_sign(&args),

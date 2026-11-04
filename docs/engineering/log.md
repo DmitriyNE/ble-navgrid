@@ -4,6 +4,18 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**The host as a service** (S3). `navgrid serve --sink PORT` owns the sink's port: every frame
+goes into the host replica, the monitor's lines and a JSON log the offline commands read; the
+mesh is solved on a schedule (`--solve-every-s`) and the positions written back through the sink
+and into the host's own view; `http://127.0.0.1:8080` serves one page (floor plan, nodes, links,
+health, commands, a control form, the find pointer, pin placement, the recent frames) over a JSON
+endpoint (`/api/state`, `/api/pointer`, `/api/solve`, `/api/control`, `/api/pin`), plain `std`
+HTTP, one thread a connection. `--stream FILE` takes a FIFO or a file of raw frames instead of a
+port, for replays and a bench without a sink; pins placed on the page persist in `pins.json` in
+the fleet directory. Tested against a FIFO end to end and with unit tests on the frame, solve,
+pointer, pin and control paths. The serialport crate can't open a pseudo-terminal on macOS
+(IOSSIOSPEED), hence the stream option.
+
 **The pointer and the anchors' own fixes.** `navgrid find --from N009 --to N010 --heading-deg 90`
 gives the find-my-keys pointer (bearing relative to the seeker's heading, elevation, distance)
 from the mirrored positions: a node's own fix first, else the controller's. An anchor without a

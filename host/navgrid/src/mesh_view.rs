@@ -27,21 +27,7 @@ pub struct MeshViewArgs {
 /// A host replica (a sink's view) filled from the records in monitor logs; how many record
 /// lines there were and how many were kept as newest.
 pub fn replica_from_logs(files: &[PathBuf]) -> Result<(Replica<Heap>, usize, usize)> {
-    let mut replica: Replica<Heap> = Replica::new(
-        Config::new(HOST, CONTROLLER, true),
-        1,
-        navgrid_mesh::NodeInfo {
-            role: navgrid_mesh::Role::Anchor,
-            number: None,
-            firmware: navgrid_proto::Firmware::new(0, 0, 0, 0, false),
-            config: 0,
-            hops: 0,
-            frame: 0,
-            pinned: None,
-            neighbours: Default::default(),
-        },
-        0,
-    );
+    let mut replica = host_replica();
     let mut taken = 0usize;
     let mut lines = 0usize;
     for path in files {
@@ -66,6 +52,25 @@ pub fn replica_from_logs(files: &[PathBuf]) -> Result<(Replica<Heap>, usize, usi
         bail!("no Record lines in the logs: the sink mirrors them on protocol 6");
     }
     Ok((replica, lines, taken))
+}
+
+/// An empty host replica: a sink's view of everything, under the host's own ID.
+pub fn host_replica() -> Replica<Heap> {
+    Replica::new(
+        Config::new(HOST, CONTROLLER, true),
+        1,
+        navgrid_mesh::NodeInfo {
+            role: navgrid_mesh::Role::Anchor,
+            number: None,
+            firmware: navgrid_proto::Firmware::new(0, 0, 0, 0, false),
+            config: 0,
+            hops: 0,
+            frame: 0,
+            pinned: None,
+            neighbours: Default::default(),
+        },
+        0,
+    )
 }
 
 /// The host replica's own ID, kept out of the tables.

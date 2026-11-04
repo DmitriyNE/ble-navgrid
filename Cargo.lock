@@ -857,6 +857,7 @@ dependencies = [
  "clap",
  "defmt-decoder",
  "ed25519-dalek",
+ "heapless",
  "navgrid-link",
  "navgrid-mesh",
  "navgrid-proto",

@@ -227,6 +227,8 @@ Left over from them:
 - [ ] **Heading-learned referencing** (FR-A3c): extract straight, steady walking segments from
       tracks, pair them with the HUD's heading stream, and run `frame::fit_headings` with
       place/direction weighting. This references a mesh without presets.
-- [ ] **Thin web UI** (FR-S6, D-23): a static page plus a JSON endpoint on the host tool. It
-      shows the floor plan, mesh, health and sideband, and the asset registry, and handles pin
-      placement.
+- [ ] **Web UI, next** (FR-S6, D-23; `navgrid serve` has the page and the endpoint, log
+      2026-11-04): the asset registry as its own list (last settled fix per asset tag, age); the
+      floor plan with a background image and axes; sideband (environment) once the BME688 is
+      read; commissioning presets for referencing (FR-A3) on the page; names for nodes beyond
+      their fleet numbers.

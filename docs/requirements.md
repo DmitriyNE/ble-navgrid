@@ -255,7 +255,7 @@ Decided 2026-11-01:
 | — | Heading | Provided by another sensor (e.g. the HUD's magnetometer), not by tags. The mesh must be **absolutely referenced** so the two combine (FR-A). |
 | Q13 | The HUD | Not relevant for now. The host view stands in. |
 | Q14 | Asset registry location | **Host only** for now; may extend into the mesh later (FR-F1). |
-| — | Monitoring UI | Terminal tool now; a **thin web UI later** (FR-S6). |
+| — | Monitoring UI | Terminal tool, and the service's page (`navgrid serve`, D-38) since 2026-11-04 (FR-S6). |
 | Q15 | Referencing source | **Commissioning presets:** a few nodes with known absolute coordinates, or preset bearings between node pairs (FR-A3a/b). Learning from HUD headings is a later option. |
 | — | Phases | P0–P3 as in §3. |
 
