@@ -569,6 +569,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             Timer::after(Duration::from_millis(200)).await;
         }
         let result = self.exchange(channel, first).await;
+        status::count_session();
         let side = state::session_side();
         let theirs = state::end_session();
         state::log_session(peer, side, started.elapsed().as_millis());
@@ -743,6 +744,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         match cs::burst(self.stack, conn.handle(), self.node, peer, status::antennas(), procedures).await {
             Ok(burst) => {
                 let (ok, failed) = (burst.estimates(), burst.failures);
+                status::count_burst(burst.procedures());
                 match burst.finish() {
                     Some(link) => {
                         info!(

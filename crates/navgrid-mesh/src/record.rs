@@ -241,6 +241,11 @@ pub struct Health {
     pub uptime_s: u32,
     /// Records waiting in the outbox.
     pub queued: u16,
+    /// Radio work since boot, for the energy accounting (NFR-6): ranging bursts run as initiator,
+    /// CS procedures in them, and sync sessions.
+    pub bursts: u16,
+    pub procedures: u16,
+    pub sessions: u16,
 }
 
 /// BME688 sample (FR-S3). Neighbours keep it: pressure is their barometric height reference.

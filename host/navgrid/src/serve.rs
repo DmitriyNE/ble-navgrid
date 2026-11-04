@@ -31,9 +31,10 @@ use crate::solve::{Solution, controller_writer, position_records, send_record, s
 
 #[derive(clap::Args)]
 pub struct ServeArgs {
-    /// The sink's serial port (its VCOM1).
+    /// A sink's serial port (its VCOM1); repeat for several sinks, whose records merge here and
+    /// which all get the controller's records.
     #[arg(long, required_unless_present = "stream", conflicts_with = "stream")]
-    sink: Option<String>,
+    sink: Vec<String>,
     /// Instead of a port: a file or FIFO with the sink's raw frames (a replay, or a bench
     /// without a sink); nothing is written back.
     #[arg(long)]
@@ -80,8 +81,8 @@ struct Service {
 }
 
 type Shared = Arc<Mutex<Service>>;
-/// The way down to the sink, if there is one.
-type Port = Arc<Mutex<Option<Box<dyn Write + Send>>>>;
+/// The ways down to the sinks, if any.
+type Port = Arc<Mutex<Vec<Box<dyn Write + Send>>>>;
 
 impl Service {
     fn now_ms(&self) -> u64 {
@@ -310,30 +311,38 @@ pub fn run(args: &ServeArgs) -> Result<()> {
             }
         }
     }
-    let (mut reader, writer_port, source): (Box<dyn Read + Send>, Port, String) = match (&args.sink, &args.stream) {
-        (Some(sink), _) => {
-            let port = serialport::new(sink, args.baud)
-                .timeout(Duration::from_millis(200))
-                .open()
-                .with_context(|| format!("opening {sink}"))?;
-            let down: Box<dyn Write + Send> = Box::new(port.try_clone().context("cloning the port")?);
-            (Box::new(port), Arc::new(Mutex::new(Some(down))), sink.clone())
-        }
-        (None, Some(stream)) => {
-            let file = std::fs::File::open(stream).with_context(|| format!("opening {stream}"))?;
-            (Box::new(file), Arc::new(Mutex::new(None)), stream.clone())
-        }
-        (None, None) => bail!("a --sink port or a --stream path"),
-    };
+    let mut readers: Vec<(String, Box<dyn Read + Send>)> = Vec::new();
+    let mut downs: Vec<Box<dyn Write + Send>> = Vec::new();
+    for sink in &args.sink {
+        let port = serialport::new(sink, args.baud)
+            .timeout(Duration::from_millis(200))
+            .open()
+            .with_context(|| format!("opening {sink}"))?;
+        downs.push(Box::new(port.try_clone().context("cloning the port")?));
+        readers.push((sink.clone(), Box::new(port)));
+    }
+    if let Some(stream) = &args.stream {
+        let file = std::fs::File::open(stream).with_context(|| format!("opening {stream}"))?;
+        readers.push((stream.clone(), Box::new(file)));
+    }
+    if readers.is_empty() {
+        bail!("a --sink port or a --stream path");
+    }
+    let writer_port: Port = Arc::new(Mutex::new(downs));
     let shared: Shared = Arc::new(Mutex::new(service));
     println!(
-        "serving {source} on http://{} ; frames logged to {}",
+        "serving {} on http://{} ; frames logged to {}",
+        readers
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
         args.http,
         log_path.display()
     );
 
-    // The reader: frames from the sink.
-    {
+    // A reader per sink: its frames into the one state.
+    for (name, mut reader) in readers {
         let shared = shared.clone();
         thread::spawn(move || {
             let mut pending = Vec::new();
@@ -345,7 +354,7 @@ pub fn run(args: &ServeArgs) -> Result<()> {
                     Ok(n) => pending.extend_from_slice(&buf[..n]),
                     Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
                     Err(e) => {
-                        eprintln!("sink: {e}");
+                        eprintln!("{name}: {e}");
                         thread::sleep(Duration::from_secs(1));
                         continue;
                     }
@@ -402,8 +411,8 @@ fn solve_now(shared: &Shared, port: &Port) -> Result<Value> {
         (solution, records)
     };
     {
-        let mut port = port.lock().expect("port");
-        if let Some(port) = port.as_mut() {
+        let mut ports = port.lock().expect("port");
+        for port in ports.iter_mut() {
             for r in &records {
                 send_record(&mut **port, r)?;
             }
@@ -512,11 +521,13 @@ fn control(shared: &Shared, port: &Port, body: &[u8]) -> Result<Value> {
         let key = s.controller_key.context("no fleet key to sign with")?;
         auth::sign(&mut s.writer, &key, id, command)
     };
-    let mut port = port.lock().expect("port");
-    let Some(port) = port.as_mut() else {
+    let mut ports = port.lock().expect("port");
+    if ports.is_empty() {
         bail!("no sink to send to (a stream, not a port)");
-    };
-    send_record(&mut **port, &record)?;
+    }
+    for port in ports.iter_mut() {
+        send_record(&mut **port, &record)?;
+    }
     Ok(json!({"sent": true, "version": format!("{}.{}", record.version.epoch, record.version.counter)}))
 }
 
@@ -629,6 +640,9 @@ mod tests {
             temperature_cdeg: 2200,
             uptime_s: 10,
             queued: 0,
+            bursts: 0,
+            procedures: 0,
+            sessions: 0,
         }));
         w.record(Body::Link(Link {
             peer: NodeId(to),
@@ -672,7 +686,7 @@ mod tests {
         assert_eq!(state["nodes"][0]["pinned"]["x"], 0.0);
         assert_eq!(state["recent"].as_array().unwrap().len(), 10);
 
-        let port: Port = Arc::new(Mutex::new(None));
+        let port: Port = Arc::new(Mutex::new(Vec::new()));
         let summary = solve_now(&shared, &port).unwrap();
         assert_eq!(summary["placed"], 4);
         let state = shared.lock().unwrap().state();
@@ -714,7 +728,7 @@ mod tests {
     #[test]
     fn a_command_needs_a_sink_and_a_known_target() {
         let shared: Shared = Arc::new(Mutex::new(service()));
-        let port: Port = Arc::new(Mutex::new(None));
+        let port: Port = Arc::new(Mutex::new(Vec::new()));
         let body = br#"{"target":"000000000004","command":{"Blink":{"times":2}}}"#;
         let err = control(&shared, &port, body).unwrap_err();
         assert!(format!("{err:#}").contains("no sink"), "{err:#}");

@@ -4,6 +4,15 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Handover, work counters, several sinks** (S4, first items). A walking tag with all its links
+swaps the weakest for an anchor heard 6 dB stronger (`Settings::hysteresis_db`), and its connects
+now come before its bursts, which never pause while it moves (a bug the simulator had hidden: a
+tag that lost a link never made another). The mesh Health record counts bursts, procedures and
+sessions since boot, for the energy accounting (NFR-6). `navgrid serve --sink` repeats for
+several sinks: their records merge in the one replica and all of them get the controller's
+records. The link simulator reads the same with the handover in (2.0 ranges/s over 1.9 anchors
+at 3 × 90 ms, four paths).
+
 **The host as a service** (S3). `navgrid serve --sink PORT` owns the sink's port: every frame
 goes into the host replica, the monitor's lines and a JSON log the offline commands read; the
 mesh is solved on a schedule (`--solve-every-s`) and the positions written back through the sink

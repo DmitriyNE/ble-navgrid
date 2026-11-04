@@ -352,11 +352,15 @@ pub async fn run(mpsl: &MultiprotocolServiceLayer<'_>) -> ! {
         if last_health.elapsed() >= HEALTH_EVERY {
             last_health = Instant::now();
             let t = mpsl.get_temperature();
+            let (bursts, procedures, sessions) = status::work();
             write(Body::Health(Health {
                 battery_mv: status::battery_mv().unwrap_or(0),
                 temperature_cdeg: (t.raw() * 25) as i16,
                 uptime_s: Instant::now().as_secs() as u32,
                 queued: with(|r| r.outbox().len() as u16).unwrap_or(0),
+                bursts,
+                procedures,
+                sessions,
             }));
         }
         if sink && last_mirror.elapsed() >= MIRROR_EVERY {

@@ -48,6 +48,8 @@ pub struct Settings {
     pub tag_links: u8,
     /// Weakest beacon worth linking to.
     pub min_rssi_dbm: i8,
+    /// A tag with all its links swaps its weakest for a candidate this much stronger (dB).
+    pub hysteresis_db: u8,
     /// Beacons older than this are forgotten.
     pub heard_ttl_ms: u32,
     /// Between survey bursts on an anchor link.
@@ -77,6 +79,7 @@ impl Default for Settings {
             degree: 6,
             tag_links: 3,
             min_rssi_dbm: -85,
+            hysteresis_db: 6,
             heard_ttl_ms: 30_000,
             survey_period_ms: 15 * 60 * 1000,
             retry_ms: 20_000,
@@ -422,6 +425,17 @@ impl Policy {
     /// What to do now. One burst at a time; connections while there are free central slots and
     /// wanted neighbours; a still tag drops its links once settled.
     pub fn next(&mut self, now_ms: u64) -> Action {
+        // A walking tag's bursts never pause, so the handover and the connects come first.
+        if let Some(weakest) = self.handover(now_ms) {
+            return Action::Disconnect(weakest);
+        }
+        if (self.role == Role::Anchor || self.moving)
+            && let Some(peer) = self.wanted(now_ms)
+        {
+            // One attempt at a time per peer, and it takes a slot while it runs.
+            let _ = self.pending.push((peer, now_ms + CONNECT_TIMEOUT_MS));
+            return Action::Connect(peer);
+        }
         if self.busy.is_none()
             && let Some(l) = self
                 .links
@@ -439,12 +453,39 @@ impl Policy {
             }
             return Action::Nothing;
         }
-        if let Some(peer) = self.wanted(now_ms) {
-            // One attempt at a time per peer, and it takes a slot while it runs.
-            let _ = self.pending.push((peer, now_ms + CONNECT_TIMEOUT_MS));
-            return Action::Connect(peer);
-        }
         Action::Nothing
+    }
+
+    /// A moving tag with all its links: the link to drop for a candidate heard
+    /// [`Settings::hysteresis_db`] stronger than it (FR-T1; handover as the tag walks).
+    fn handover(&self, now_ms: u64) -> Option<NodeId> {
+        if self.role == Role::Anchor || !self.moving || !self.pending.is_empty() {
+            return None;
+        }
+        if self.anchor_links() < self.settings.tag_links {
+            return None;
+        }
+        let level = |id: NodeId| -> i16 {
+            self.heard
+                .iter()
+                .find(|h| h.id == id)
+                .map_or(i16::from(i8::MIN), |h| i16::from(h.rssi_dbm))
+        };
+        let weakest = self
+            .links
+            .iter()
+            .filter(|l| l.central && l.peer_role == Role::Anchor && self.busy != Some(l.peer))
+            .min_by_key(|l| level(l.peer))?;
+        let best = self
+            .heard
+            .iter()
+            .filter(|h| h.beacon.role == Role::Anchor && h.beacon.free_links > 0)
+            .filter(|h| h.rssi_dbm >= self.settings.min_rssi_dbm)
+            .filter(|h| self.link(h.id).is_none())
+            .filter(|h| !self.retry.iter().any(|(p, until)| *p == h.id && *until > now_ms))
+            .max_by_key(|h| h.rssi_dbm)?;
+        (i16::from(best.rssi_dbm) >= level(weakest.peer) + i16::from(self.settings.hysteresis_db))
+            .then_some(weakest.peer)
     }
 
     /// The best neighbour to connect to now, if any.
@@ -859,6 +900,54 @@ mod tests {
         assert_eq!(a.event_spacing_1250us(), 0);
         assert!(a.switches_for_burst(NodeId(2)));
         assert!(!t.switches_for_burst(NodeId(2)));
+    }
+
+    #[test]
+    fn a_walking_tag_swaps_its_weakest_link_for_a_much_stronger_anchor() {
+        let mut t = Policy::new(NodeId(900), Role::Mobile, Settings::default());
+        t.set_moving(true, 0);
+        for (id, rssi) in [(1, -60), (2, -65), (3, -70)] {
+            t.heard(NodeId(id), beacon(Role::Anchor, 2), rssi, 0);
+            t.link_up(NodeId(id), true, Role::Anchor, false, 0);
+        }
+        // Take the first burst so nothing is busy, then nothing to do.
+        let Action::Burst(b) = t.next(1) else { panic!() };
+        t.burst_done(b, 2);
+        t.set_moving(true, 2);
+        // A new anchor 4 dB better than the weakest: not enough.
+        t.heard(NodeId(4), beacon(Role::Anchor, 2), -66, 3);
+        let mut bursts = 0;
+        for i in 0..3 {
+            match t.next(10 + i) {
+                Action::Burst(p) => {
+                    bursts += 1;
+                    t.burst_done(p, 11 + i);
+                }
+                Action::Disconnect(_) => panic!("4 dB is within the hysteresis"),
+                _ => {}
+            }
+        }
+        assert!(bursts > 0);
+        // 10 dB better: the weakest goes, and the newcomer is connected next.
+        t.heard(NodeId(4), beacon(Role::Anchor, 2), -58, 20);
+        let mut saw_disconnect = false;
+        for i in 0..6 {
+            match t.next(30 + i) {
+                Action::Burst(p) => t.burst_done(p, 31 + i),
+                Action::Disconnect(p) => {
+                    assert_eq!(p, NodeId(3));
+                    saw_disconnect = true;
+                    t.link_down(p, 31 + i);
+                }
+                Action::Connect(p) => {
+                    assert!(saw_disconnect);
+                    assert_eq!(p, NodeId(4));
+                    return;
+                }
+                Action::Nothing => {}
+            }
+        }
+        panic!("no handover");
     }
 
     #[test]

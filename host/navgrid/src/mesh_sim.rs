@@ -382,6 +382,9 @@ impl<'a> Sim<'a> {
                         temperature_cdeg: 2500,
                         uptime_s: (now / SECOND) as u32,
                         queued: self.nodes[i].outbox().len() as u16,
+                        bursts: 0,
+                        procedures: 0,
+                        sessions: 0,
                     });
                     self.write(i, body, now);
                     self.at(now + HEALTH_EVERY, Event::Health(i));

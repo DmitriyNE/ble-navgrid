@@ -27,6 +27,10 @@ static HOPS: AtomicU8 = AtomicU8::new(u8::MAX);
 /// antennas used for CS.
 static ADV_INTERVAL_MS: AtomicU16 = AtomicU16::new(1000);
 static ANTENNAS: AtomicU8 = AtomicU8::new(1);
+/// Radio work since boot, for the health record's energy accounting (NFR-6).
+static BURSTS: AtomicU16 = AtomicU16::new(0);
+static PROCEDURES: AtomicU16 = AtomicU16::new(0);
+static SESSIONS: AtomicU16 = AtomicU16::new(0);
 /// The controller's position of this node, with its 1-sigma (mm, the largest axis), for the
 /// beacon of a node that isn't pinned.
 static POSITION: Mutex<CriticalSectionRawMutex, Cell<Option<(PointMm, u32)>>> = Mutex::new(Cell::new(None));
@@ -118,6 +122,24 @@ pub fn set_antennas(n: u8) {
 
 pub fn antennas() -> u8 {
     ANTENNAS.load(Ordering::Relaxed)
+}
+
+pub fn count_burst(procedures: u16) {
+    BURSTS.fetch_add(1, Ordering::Relaxed);
+    PROCEDURES.fetch_add(procedures, Ordering::Relaxed);
+}
+
+pub fn count_session() {
+    SESSIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Bursts, procedures and sessions since boot.
+pub fn work() -> (u16, u16, u16) {
+    (
+        BURSTS.load(Ordering::Relaxed),
+        PROCEDURES.load(Ordering::Relaxed),
+        SESSIONS.load(Ordering::Relaxed),
+    )
 }
 
 /// The controller solved this node's position.

@@ -437,6 +437,9 @@ mod tests {
             temperature_cdeg: 2500,
             uptime_s: 0,
             queued: 0,
+            bursts: 0,
+            procedures: 0,
+            sessions: 0,
         })
     }
 
