@@ -12,7 +12,7 @@ navgrid-mesh = { workspace = true, features = ["alloc"] }
 navgrid-link.workspace = true
 postcard.workspace = true
 navgrid-ranging.workspace = true
-navgrid-solver.workspace = true
+navgrid-solver = { workspace = true, features = ["alloc"] }
 anyhow.workspace = true
 clap.workspace = true
 serde = { workspace = true, features = ["std"] }

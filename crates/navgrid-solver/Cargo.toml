@@ -12,6 +12,8 @@ defmt = { workspace = true, optional = true }
 
 [features]
 defmt = ["dep:defmt"]
+# The central mesh solver (`mesh`), which grows with the node count: for the host.
+alloc = []
 
 [dev-dependencies]
 navgrid-ranging.workspace = true
