@@ -77,6 +77,10 @@
     <table id="links"><thead><tr><th>from</th><th>to</th><th class="r">m</th><th class="r">σ</th><th class="r">quality</th><th class="r">proc</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
     <h2>Commands</h2>
     <table id="commands"><thead><tr><th>target</th><th>command</th><th>version</th><th>reported</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
+    <h2>Fleet</h2>
+    <table id="fleet"><thead><tr><th>node</th><th>label</th><th>role</th><th>status</th><th>heard</th></tr></thead><tbody></tbody></table>
+    <h2>Nearby (what the sinks hear)</h2>
+    <table id="nearby"><thead><tr><th>node</th><th>by</th><th class="r">dBm</th><th>role</th><th class="r">hops</th><th class="r">free</th><th class="r">mV</th><th>flags</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
     <h2>Recent</h2>
     <pre id="recent"></pre>
   </div>
@@ -111,7 +115,7 @@ function render() {
   for (const n of nodes) {
     const p = positionOf(n);
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${n.name}</td><td>${n.role}${n.sink ? ' (sink)' : ''}</td><td class="r">${n.hops ?? '-'}</td>` +
+    tr.innerHTML = `<td>${n.name}${n.label ? ` <span class="muted">${n.label}</span>` : ''}</td><td>${n.role}${n.sink ? ' (sink)' : ''}</td><td class="r">${n.hops ?? '-'}</td>` +
       `<td>${n.neighbours.join(' ')}</td><td>${p ? `${fmt(p.x)} ${fmt(p.y)} ${fmt(p.z)} <span class="muted">${p.how}</span>` : ''}</td>` +
       `<td class="r">${n.health ? n.health.battery_mv : ''}</td><td class="r">${n.health ? fmt(n.health.temperature_c, 1) : ''}</td><td class="r">${n.age_s}</td>`;
     tb.appendChild(tr);
@@ -130,6 +134,22 @@ function render() {
     const cls = c.reported === 'applied' ? 'ok' : (c.reported === 'pending' ? 'muted' : 'warn');
     tr.innerHTML = `<td>${c.target}</td><td>${JSON.stringify(c.command)}</td><td>${c.version}</td><td class="${cls}">${c.reported}</td><td class="r">${c.age_s}</td>`;
     cb.appendChild(tr);
+  }
+  const fb = $('#fleet tbody');
+  fb.innerHTML = '';
+  for (const d of state.fleet || []) {
+    const tr = document.createElement('tr');
+    const cls = d.status === 'retired' ? 'muted' : (d.heard ? 'ok' : 'warn');
+    tr.innerHTML = `<td>${d.name}</td><td>${d.label || '<span class="muted">unplaced</span>'}</td><td>${d.role}${d.sink ? ' (sink)' : ''}</td><td>${d.status}</td><td class="${cls}">${d.status === 'retired' ? '' : (d.heard ? 'yes' : 'missing')}</td>`;
+    fb.appendChild(tr);
+  }
+  const nb = $('#nearby tbody');
+  nb.innerHTML = '';
+  for (const h of (state.nearby || []).slice().sort((a, b) => b.rssi_dbm - a.rssi_dbm)) {
+    const tr = document.createElement('tr');
+    const flags = [h.sink && 'sink', h.attention && 'attention', h.install && 'installing'].filter(Boolean).join(' ');
+    tr.innerHTML = `<td>${h.name}</td><td>${h.by}</td><td class="r">${h.rssi_dbm}</td><td>${h.role}</td><td class="r">${h.hops ?? '-'}</td><td class="r">${h.free_links}</td><td class="r">${h.battery_mv ?? ''}</td><td>${flags}</td><td class="r">${h.age_s}</td>`;
+    nb.appendChild(tr);
   }
   $('#recent').textContent = state.recent.join('\n');
   $('#solve').textContent = state.solve

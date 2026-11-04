@@ -50,6 +50,10 @@ pub static BEACON_CHANGED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 const FOREIGN_FOR_S: u32 = 60;
 /// How long a button press keeps the beacon's attention flag up.
 pub const ATTENTION_FOR_S: u32 = 30;
+/// How long a long press keeps install mode: the beacon's install flag, fast advertising, and
+/// the LED showing connectivity now and then (architecture §13).
+pub const INSTALL_FOR_S: u32 = 600;
+static INSTALL_UNTIL_S: AtomicU32 = AtomicU32::new(0);
 
 fn uptime_s() -> u32 {
     Instant::now().as_secs() as u32
@@ -62,6 +66,10 @@ pub fn retire() {
 
 pub fn retired() -> bool {
     RETIRED.load(Ordering::Relaxed)
+}
+
+pub fn is_sink() -> bool {
+    SINK.load(Ordering::Relaxed)
 }
 
 pub fn set_identity(enrolled: bool, sink: bool) {
@@ -191,6 +199,19 @@ pub fn attention() {
 /// Seconds left on the attention flag.
 pub fn attention_left_s() -> u32 {
     ATTENTION_UNTIL_S.load(Ordering::Relaxed).saturating_sub(uptime_s())
+}
+
+/// Starts install mode for [`INSTALL_FOR_S`], or ends it if it is on.
+pub fn toggle_install() -> bool {
+    let on = install_left_s() == 0;
+    INSTALL_UNTIL_S.store(if on { uptime_s() + INSTALL_FOR_S } else { 0 }, Ordering::Relaxed);
+    BEACON_CHANGED.signal(());
+    on
+}
+
+/// Seconds left of install mode.
+pub fn install_left_s() -> u32 {
+    INSTALL_UNTIL_S.load(Ordering::Relaxed).saturating_sub(uptime_s())
 }
 
 /// Can this node get data out, as the status display shows it.

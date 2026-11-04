@@ -68,6 +68,8 @@ struct Service {
     pins: BTreeMap<NodeId, [f32; 3]>,
     pins_path: PathBuf,
     recent: VecDeque<String>,
+    /// Beacons the sinks heard, by node: the latest, and when.
+    nearby: BTreeMap<NodeId, (navgrid_proto::Heard, Instant)>,
     frames: u64,
     last_solve: Option<(Instant, Solution)>,
     writer: Writer,
@@ -121,11 +123,17 @@ impl Service {
             }
             self.recent.push_back(line);
         }
-        if let Ok(Message::Record(r)) = navgrid_proto::decode(&mut frame.to_vec())
-            && let Ok(record) = postcard::from_bytes::<Record>(&r.bytes)
-        {
-            let now = self.now_ms();
-            let _ = self.replica.receive(record, now);
+        match navgrid_proto::decode(&mut frame.to_vec()) {
+            Ok(Message::Record(r)) => {
+                if let Ok(record) = postcard::from_bytes::<Record>(&r.bytes) {
+                    let now = self.now_ms();
+                    let _ = self.replica.receive(record, now);
+                }
+            }
+            Ok(Message::Heard(h)) => {
+                self.nearby.insert(h.of, (h, Instant::now()));
+            }
+            _ => {}
         }
     }
 
@@ -178,8 +186,13 @@ impl Service {
                                 json!({"x": p.x as f64 / 1000.0, "y": p.y as f64 / 1000.0, "z": p.z as f64 / 1000.0, "placed": false})
                             })
                         });
+                    let label = self
+                        .registry
+                        .as_ref()
+                        .and_then(|reg| reg.by_id(r.origin))
+                        .and_then(|d| d.name.clone());
                     nodes.push(json!({
-                        "id": format!("{:012x}", r.origin.0), "name": self.name(r.origin),
+                        "id": format!("{:012x}", r.origin.0), "name": self.name(r.origin), "label": label,
                         "role": format!("{:?}", n.role), "number": n.number,
                         "hops": if n.hops == u8::MAX { Value::Null } else { n.hops.into() },
                         "neighbours": n.neighbours.iter().map(|&id| self.name(id)).collect::<Vec<_>>(),
@@ -228,10 +241,49 @@ impl Service {
                 "unsolved": s.unsolved.iter().map(|&id| self.name(id)).collect::<Vec<_>>(),
             })
         });
+        let heard_ids: Vec<NodeId> = nodes
+            .iter()
+            .filter_map(|n| {
+                n["id"]
+                    .as_str()
+                    .and_then(|s| u64::from_str_radix(s, 16).ok())
+                    .map(NodeId)
+            })
+            .collect();
+        let fleet: Vec<Value> = self
+            .registry
+            .as_ref()
+            .map(|r| {
+                r.devices
+                    .iter()
+                    .map(|d| {
+                        json!({
+                            "name": crate::fleet::label_name(d.number), "label": d.name,
+                            "role": format!("{:?}", d.role), "sink": d.sink,
+                            "status": format!("{:?}", d.status).to_lowercase(),
+                            "heard": heard_ids.contains(&d.id) || self.nearby.contains_key(&d.id),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let nearby: Vec<Value> = self
+            .nearby
+            .iter()
+            .map(|(id, (h, at))| {
+                json!({
+                    "name": self.name(*id), "by": self.name(h.node), "rssi_dbm": h.rssi_dbm,
+                    "role": format!("{:?}", h.role), "sink": h.sink, "attention": h.attention, "install": h.install,
+                    "hops": if h.hops == u8::MAX { Value::Null } else { h.hops.into() },
+                    "free_links": h.free_links, "battery_mv": h.battery_mv, "age_s": at.elapsed().as_secs(),
+                })
+            })
+            .collect();
         json!({
             "uptime_s": self.started.elapsed().as_secs(), "frames": self.frames,
             "records": self.replica.records().len(),
             "nodes": nodes, "links": links, "commands": commands, "solve": solve,
+            "fleet": fleet, "nearby": nearby,
             "recent": self.recent.iter().rev().take(50).collect::<Vec<_>>(),
         })
     }
@@ -293,6 +345,7 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         pins: BTreeMap::new(),
         pins_path: pins_path.clone(),
         recent: VecDeque::new(),
+        nearby: BTreeMap::new(),
         frames: 0,
         last_solve: None,
         writer: controller_writer(),
@@ -593,6 +646,7 @@ mod tests {
             pins: BTreeMap::new(),
             pins_path: std::env::temp_dir().join(format!("navgrid-serve-test-{}.json", std::process::id())),
             recent: VecDeque::new(),
+            nearby: BTreeMap::new(),
             frames: 0,
             last_solve: None,
             writer: controller_writer(),

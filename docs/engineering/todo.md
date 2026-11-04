@@ -171,11 +171,11 @@ Left over from them:
        replace = retire, then provision the new device under the number). Left: the monitor
        and the service's page showing names, *unplaced* and *missing* (enrolled but not heard
        from).
-6. [ ] **Field tool:**
-       - a DK field-sink mode: beacon list with RSSI, direct fleet links, and a sync session at
-         hop 0;
-       - `navgrid field`: list, identify, name and place, plus install-mode readings.
-7. [ ] **Install mode:** link and route quality on the LED, with fast advertising, for 10 min.
+6. [ ] **Field tool:** a DK sink with `navgrid serve` on a laptop does it (log 2026-11-04): the
+       sinks' heard beacons as a nearby list, the fleet table, controls and pins on the page.
+       Left: identify (blink from the page: the control form does it), and the page on a phone.
+7. [ ] **Install mode** is on the long press (log 2026-11-04). Left: try it on a TAG; the
+       route quality beyond hops (link sigma) once measured.
 - [ ] **Floor tests with the node high** (spike 2026-11-03-four-tags-proximity, last section): a tag
       under a table, against a wall, in a bag, at 2–5 m sideways from a node 2.3 m up; then two
       nodes at once. The calibration (DEF-6) in that geometry, by pair and antenna path.

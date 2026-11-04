@@ -105,6 +105,54 @@ pub fn push_rtt(initiator: NodeId, reflector: NodeId, distance_m: f32, steps: u8
     let _ = OUTBOX.try_send(Message::Range(range));
 }
 
+/// Beacons heard, reported to the host once per node per [`HEARD_EVERY`]: a sink's nearby list
+/// for the field tool (FR-O6). Other nodes keep what they hear to themselves.
+const HEARD_EVERY: Duration = Duration::from_secs(10);
+const HEARD_NODES: usize = 24;
+static HEARD_LAST: embassy_sync::blocking_mutex::Mutex<
+    CriticalSectionRawMutex,
+    core::cell::RefCell<heapless::Vec<(NodeId, Instant), HEARD_NODES>>,
+> = embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new(heapless::Vec::new()));
+
+/// A beacon `node` heard from `of`.
+pub fn push_heard(node: NodeId, of: NodeId, rssi_dbm: i8, beacon: &navgrid_proto::Beacon) {
+    let now = Instant::now();
+    let due = HEARD_LAST.lock(|l| {
+        let mut l = l.borrow_mut();
+        match l.iter_mut().find(|(id, _)| *id == of) {
+            Some((_, last)) if now - *last < HEARD_EVERY => false,
+            Some((_, last)) => {
+                *last = now;
+                true
+            }
+            None => {
+                if l.is_full() {
+                    let (i, _) = l.iter().enumerate().min_by_key(|(_, (_, t))| *t).expect("not empty");
+                    l.swap_remove(i);
+                }
+                let _ = l.push((of, now));
+                true
+            }
+        }
+    });
+    if !due || OUTBOX.len() >= RANGE_QUEUE_LIMIT {
+        return;
+    }
+    let _ = OUTBOX.try_send(Message::Heard(navgrid_proto::Heard {
+        node,
+        of,
+        rssi_dbm,
+        role: beacon.role,
+        sink: beacon.sink,
+        attention: beacon.attention,
+        install: beacon.install,
+        hops: beacon.hops,
+        free_links: beacon.free_links,
+        battery_mv: beacon.battery_mv,
+        number: beacon.number,
+    }));
+}
+
 /// Queues one chunk of raw tones (`cs::send_tones`), as the initiator of the link.
 pub fn push_tones(
     node: NodeId,

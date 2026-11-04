@@ -4,7 +4,9 @@
 //! - **Boot:** 1 s green when enrolled, blue when not, red when the provisioning page is corrupt.
 //! - **Short press:** a white acknowledgement, connectivity, then battery, as colour plus pattern
 //!   ([`show_status`]); the beacon raises its attention flag.
-//! - **Long press (3 s):** acknowledged with two blue blinks; install mode will hang off it.
+//! - **Long press (3 s):** toggles install mode (two blue blinks on, one off): for 10 minutes the
+//!   beacon's install flag is up, advertising is fast, and the LED shows connectivity every
+//!   10 s, so an installer sees the node find its links and a route.
 //! - **Held for 5 s at power-up:** factory reset ([`factory_reset_if_held`]).
 
 use defmt::{info, warn};
@@ -116,10 +118,18 @@ pub async fn run(mut led: Led, mut button: Input<'static>, boot: Colour) -> ! {
         let pressed = Instant::now();
         Timer::after(DEBOUNCE).await;
         if with_timeout(LONG_PRESS, button.wait_for_high()).await.is_err() {
-            info!("button: long press");
-            led.blink(Colour::Blue, 2, 150, 150).await;
+            let on = status::toggle_install();
+            info!("button: long press: install mode {}", if on { "on" } else { "off" });
+            led.blink(Colour::Blue, if on { 2 } else { 1 }, 150, 150).await;
             button.wait_for_high().await;
             Timer::after(DEBOUNCE).await;
+            while status::install_left_s() > 0 {
+                // Connectivity every 10 s, until the mode ends or the button is pressed again.
+                if let Either::Second(()) = select(Timer::after_secs(10), button.wait_for_low()).await {
+                    break;
+                }
+                show_connectivity(&mut led).await;
+            }
             continue;
         }
         info!("button: short press ({=u64} ms)", pressed.elapsed().as_millis());
@@ -133,17 +143,11 @@ pub async fn run(mut led: Led, mut button: Input<'static>, boot: Colour) -> ! {
 }
 
 /// The short-press display (architecture §13): a white flash, connectivity, a 0.7 s gap, then
-/// battery. Connectivity blinks are short and battery blinks long, so the two don't run together.
-/// A critically low cell shows only one short red blink.
-async fn show_status(led: &mut Led) {
-    let battery = status::battery_mv();
-    if battery.is_some_and(|mv| mv < BATTERY_CRITICAL_MV) {
-        led.blink(Colour::Red, 1, 100, 0).await;
-        return;
-    }
-    led.blink(Colour::White, 1, 50, 300).await;
+/// Connectivity as colour plus pattern: green for a route to a sink (one blink per hop, long at
+/// a sink), yellow for peers without a route, magenta for another fleet, red for no one.
+async fn show_connectivity(led: &mut Led) {
     let connectivity = status::connectivity();
-    info!("status: {}, battery {} mV", connectivity, battery);
+    info!("status: {}", connectivity);
     match connectivity {
         Connectivity::Sink(0) => led.blink(Colour::Green, 1, 1000, 0).await,
         Connectivity::Sink(hops @ 1..=4) => led.blink(Colour::Green, hops, 100, 150).await,
@@ -153,6 +157,19 @@ async fn show_status(led: &mut Led) {
         Connectivity::Alone => led.blink(Colour::Red, 5, 50, 50).await,
         Connectivity::Unenrolled => led.blink(Colour::Blue, 1, 1000, 0).await,
     }
+}
+
+/// battery. Connectivity blinks are short and battery blinks long, so the two don't run together.
+/// A critically low cell shows only one short red blink.
+async fn show_status(led: &mut Led) {
+    let battery = status::battery_mv();
+    if battery.is_some_and(|mv| mv < BATTERY_CRITICAL_MV) {
+        led.blink(Colour::Red, 1, 100, 0).await;
+        return;
+    }
+    led.blink(Colour::White, 1, 50, 300).await;
+    info!("status: battery {} mV", battery);
+    show_connectivity(led).await;
     let Some(mv) = battery else {
         return;
     };

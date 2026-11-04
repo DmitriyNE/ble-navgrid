@@ -846,6 +846,26 @@ pub enum Message {
     /// A mesh-state record a sink holds (`navgrid-mesh`, architecture §12), as the sink mirrors
     /// its replica to the host: the record encoded with postcard, opaque here.
     Record(MeshRecord),
+    /// A beacon a sink heard while scanning (the field tool's view, FR-O6): who, how loud, and
+    /// what the beacon said.
+    Heard(Heard),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct Heard {
+    /// The node that heard it.
+    pub node: NodeId,
+    pub of: NodeId,
+    pub rssi_dbm: i8,
+    pub role: Role,
+    pub sink: bool,
+    pub attention: bool,
+    pub install: bool,
+    pub hops: u8,
+    pub free_links: u8,
+    pub battery_mv: Option<u16>,
+    pub number: Option<u16>,
 }
 
 /// Room for a mesh record on the wire: a node record with its eight neighbours is the largest.

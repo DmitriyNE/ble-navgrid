@@ -39,6 +39,21 @@ use crate::{Host, cs, fix, report, state, status, update};
 /// Beacons heard while scanning, from the event handler to the policy: who, what, how loud.
 pub static HEARD: Channel<CriticalSectionRawMutex, (NodeId, Beacon, i8), 8> = Channel::new();
 
+/// This node's ID, for the event handler's reports (no 64-bit atomics on this core).
+pub struct OwnId(BlockingMutex<CriticalSectionRawMutex, Cell<u64>>);
+
+impl OwnId {
+    pub fn load(&self) -> NodeId {
+        NodeId(self.0.lock(Cell::get))
+    }
+
+    fn store(&self, id: NodeId) {
+        self.0.lock(|c| c.set(id.0));
+    }
+}
+
+pub static SELF: OwnId = OwnId(BlockingMutex::new(Cell::new(0)));
+
 /// How often the policy is asked what to do.
 const TICK: Duration = Duration::from_millis(500);
 /// How long a connection attempt may take; the policy gives up on it at the same time.
@@ -140,6 +155,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         sink: bool,
         uart: Uart<'s>,
     ) -> Self {
+        SELF.store(node);
         let mut policy = Policy::with_sink(node, role, sink, Settings::default());
         // Until the accelerometer drives it (FR-T6), a tag is taken to be moving: it keeps links
         // and ranges continuously.

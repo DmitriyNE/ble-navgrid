@@ -155,6 +155,9 @@ impl EventHandler for Events {
                     if crate::mesh::HEARD.try_send((id, beacon, report.rssi)).is_err() {
                         warn!("beacon from {=u64:012x}: no room to keep it", id.0);
                     }
+                    if crate::status::is_sink() {
+                        crate::report::push_heard(crate::mesh::SELF.load(), id, report.rssi, &beacon);
+                    }
                 }
             }
         }

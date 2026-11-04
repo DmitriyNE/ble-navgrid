@@ -49,7 +49,7 @@ impl Beacons {
             role: self.cfg.role,
             sink: self.cfg.sink,
             attention: status::attention_left_s() > 0,
-            install: false,
+            install: status::install_left_s() > 0,
             hops: if self.cfg.sink { 0 } else { status::hops() },
             free_links: status::free_links(),
             battery_mv: status::battery_mv(),
@@ -94,7 +94,8 @@ impl Beacons {
                 ],
                 &mut adv_data[..],
             ));
-            let attention = status::attention_left_s();
+            // Fast while attention or install mode is up, so a field tool sees it at once.
+            let attention = status::attention_left_s().max(status::install_left_s());
             let fast = AdvertisementParameters {
                 interval_min: FAST,
                 interval_max: FAST,

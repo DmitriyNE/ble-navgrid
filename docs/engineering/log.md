@@ -4,6 +4,14 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**The field tool's pieces** (FR-O6, FR-O7). A sink reports the beacons it hears to the host
+(`Message::Heard`: who, how loud, role, sink, hops, free links, battery, attention and install
+flags), once per node per 10 s; the service shows them as a nearby list, and the page a fleet
+table with each enrolled device's label, status and whether it has been heard (*missing*
+otherwise, *unplaced* without a label). A long press on a TAG's button toggles install mode for
+10 minutes: the beacon's install flag, fast advertising, and the LED showing connectivity every
+10 s. A DK sink on a laptop running `navgrid serve` is the field tool.
+
 **Faults in the state simulator.** `mesh-sim` takes `--outages-per-link-h` (links down for
 `--outage-min`), `--reboots-per-node-day` (a fresh replica, new epoch, nothing remembered) and
 `--session-drops` (a share of sessions breaking off, both sides forgetting). Twenty nodes over 6 h

@@ -116,6 +116,7 @@ impl View {
             Message::Log(l) => Some(l.node),
             Message::Tones(t) => Some(t.node),
             Message::Record(_) => None,
+            Message::Heard(h) => Some(h.node),
         };
         // A mesh record the sink mirrors: decoded here, as the device can't name its type.
         let record = match &msg {
@@ -218,6 +219,23 @@ impl View {
                 t.paths,
                 t.first,
                 usize::from(t.first) + t.pct.len() / 3 - 1
+            ),
+            (Message::Heard(h), _) => format!(
+                "{} heard {} at {} dBm: {:?}{}{}{}, {} hops, {} free links{}",
+                self.name(h.node),
+                self.name(h.of),
+                h.rssi_dbm,
+                h.role,
+                if h.sink { " sink" } else { "" },
+                if h.attention { " attention" } else { "" },
+                if h.install { " installing" } else { "" },
+                if h.hops == u8::MAX {
+                    "-".into()
+                } else {
+                    h.hops.to_string()
+                },
+                h.free_links,
+                h.battery_mv.map_or(String::new(), |mv| format!(", {mv} mV"))
             ),
             (Message::Record(_), _) => match &record {
                 Some(r) => format!(
