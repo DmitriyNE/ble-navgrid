@@ -72,15 +72,45 @@ pairing and forgets the key when the link drops.
 Capabilities and the FAE table are cached per peer to cut reconnect time. `bt-hci` has
 `LeCsWriteCachedRemoteSupportedCapabilities` / `...FaeTable` for this.
 
+### Mesh links (stage 3, `navgrid-link`)
+
+Every node keeps several links; the policy is one crate, shared by the firmware and the
+`link-sim` simulator ([spike](engineering/spikes/2026-11-04-link-scheduling.md), D-37):
+
+- **Neighbours** come from beacons. An anchor links with up to its degree (6) of anchors, the
+  strongest first; a tag with up to 3 anchors. A beacon with no free links is not a candidate
+  (admission, FR-M4). A tag forgets its beacon table when it sets off.
+- **Who connects:** between two anchors the lower node ID is central and connects; the higher
+  advertises and accepts. A tag is central toward anchors (D-3); an asset tag accepts a mobile tag
+  for the final approach (FR-F5). Tags are never references for anyone.
+- **Duty:** an anchor link idles at a 1 s interval with peripheral latency 4 and switches to 30 ms
+  by a connection parameter update for a burst; a tag's links are made at the fast interval
+  times its link count (90 ms for three) and never switch, their connection events spaced one
+  fast interval apart, planned for the full count, through the SDC's central event spacing (what
+  DEF-26 did for two links).
+- **Bursts:** the central drives ranging, one burst at a time per node. An anchor link surveys
+  every 15 min and when the node is moved (FR-M5), 12 procedures to one Link record; a moving tag
+  rotates 4-procedure bursts over its links without a pause and takes one settling burst per
+  link when it stops (FR-T6), then drops them. Due times carry a jitter.
+- **The sink is an anchor with a host link:** telemetry rides whichever mesh link reaches a sink;
+  the dedicated sink link of the bring-up firmware goes.
+
+In the simulator three 90 ms links with four antenna paths give a moving tag about two ranges a
+second over two anchors; one path at 45 ms gives eight without diversity. The anchors' slow-link
+events on both ends empty a third to a half of the procedures in the model; the bench measures
+the real figure (S5).
+
 ### Battery-driven link policy (D-10)
 
 Every device runs on a CR2032 (budget in §5): no radio stays busy without a reason.
 
 - **Mesh links stay connected at low duty.** They use a long connection interval with peripheral
-  latency, and speed up only for a ranging burst (connection-parameter update or LE subrating),
-  then slow down again. Re-discovering a static neighbor every time would cost a scan, which is
-  much more expensive. It is not yet verified that CS works across subrating changes; P0 compares
-  that against parameter updates and against reconnect-per-survey.
+  latency, and speed up only for a ranging burst (a connection-parameter update, six intervals
+  to its instant, which anchor links can afford; LE subrating later), then slow down again.
+  Re-discovering a static neighbor every time would cost a scan, which is much more expensive.
+  A tag's links are short-lived and busy, so they are made at the fast interval and never
+  switch (stage 3 above). It is not yet verified that CS works across a parameter update or
+  subrating; S5 checks.
 - **Survey cadence is event-driven.** After commissioning, nodes re-range rarely (minutes to
   hours), plus whenever the ADXL367 reports the node was moved (FR-M5).
 - **Tags wake on motion** (§8). Devices advertise at `NodeConfig::adv_interval_ms` (default 1 s,
@@ -271,9 +301,10 @@ crates/                     no_std, shared by firmware and host
   navgrid-solver/           multilateration with height sources; tag tracker; frame + pointer;
                             mesh solver later
   navgrid-mesh/             mesh state: records, merge, classes, sync, outbox, routes (§12)
+  navgrid-link/             mesh links: neighbours, who connects, duty, bursts (§3)
 host/
-  navgrid/                  CLI: sim, track, decode [--json], monitor, calibrate, cs, mesh-sim;
-                            later replay, central solver, controller
+  navgrid/                  CLI: sim, track, decode [--json], monitor, calibrate, cs, mesh-sim,
+                            link-sim; later replay, central solver, controller
 firmware/                   separate cargo workspace, thumbv8m.main-none-eabihf
   node/                     single firmware image; role from provisioning (D-2)
     src/board.rs            board-dk / board-tag: DC/DC, crystal caps, antenna switch (D-13)
@@ -886,3 +917,4 @@ The DK sink shows host link and connected nodes on its four LEDs.
 | D-34 | The bootloader is embassy-boot: active and update slots in RRAM, swap with rollback (§13). | **Accepted** (spike 2026-11-03) |
 | D-35 | Firmware images are signed with an Ed25519 key separate from the fleet key, whose public part is provisioned; the running firmware verifies an update before the bootloader takes it (§13). | **Accepted** (built 2026-11-03) |
 | D-36 | Over-the-air updates come single hop first (before stage 3), then spread mesh-wide over a bulk channel with controller-scheduled, canary-first rollout (after stage 4) (§13). | **Accepted** (2026-11-03) |
+| D-37 | Mesh links by one policy crate (`navgrid-link`): neighbours from beacons, the lower anchor connects, admission by free links, anchor links slow with bursts by parameter update, tag links at the fast interval times their count with spaced events, one burst per node at a time, the sink an anchor with a host link (§3). | **Accepted** (spike 2026-11-04-link-scheduling; firmware to follow) |

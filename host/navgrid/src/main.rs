@@ -4,6 +4,7 @@ mod capture;
 mod fix;
 mod flash;
 mod fleet;
+mod link_sim;
 mod mesh_sim;
 mod monitor;
 mod probe;
@@ -66,6 +67,9 @@ enum Cmd {
     /// The mesh state protocol over a synthetic deployment: staleness, command latency, bytes per
     /// contact and memory per node.
     MeshSim(mesh_sim::MeshSimArgs),
+    /// The link policy over a radio timeline: links, bursts, ranges per second and empty
+    /// procedures per node kind, for the firmware's settings.
+    LinkSim(link_sim::LinkSimArgs),
     /// Enrol a device through its probe: fleet key, fleet number, role, bring-up peer and sink.
     Provision(provision::ProvisionArgs),
     /// Flash firmware through one or more probes at once, and record the build in the registry.
@@ -112,6 +116,7 @@ fn main() -> Result<()> {
         }
         Cmd::Calibrate(args) => calibration::run(&args),
         Cmd::MeshSim(args) => mesh_sim::run(&args),
+        Cmd::LinkSim(args) => link_sim::run(&args),
         Cmd::Provision(args) => provision::run(&args),
         Cmd::Flash(args) => flash::run(&args),
         Cmd::Sign(args) => sign::run_sign(&args),

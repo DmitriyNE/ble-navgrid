@@ -4,6 +4,20 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-04
 
+**Mesh links, the policy and the simulator** ([spike](spikes/2026-11-04-link-scheduling.md),
+D-37). `navgrid-link` holds the link policy the firmware and the simulator share: neighbours from
+beacons, the lower anchor connects, admission by the beacon's free links, one burst per node at a
+time, surveys every 15 min and on motion, a moving tag rotating short bursts over its links and
+settling when it stops. `navgrid link-sim` runs it over a radio timeline with the measured CS
+timing and counts empties from other links' connection events on both ends. It settled three
+things before any hardware: tags connect at the fast interval and never switch (a parameter update
+per burst left 0.26 ranges/s), a tag's links share the radio at the fast interval times their
+count with events spaced by the fast interval planned for the full count (greedy spacing left the
+third link two-thirds empty), and three 90 ms links with four paths give about two ranges a second
+over two anchors with half the procedures empty in the model; one path at 45 ms gives eight without
+diversity. The anchors' slow-link events dominate the empties; the bench measures the real figure.
+The dedicated sink link goes: telemetry rides any link to a sink.
+
 **Roles: anchor, asset, mobile; the sink is a flag.** `Role` is now Anchor / Asset / Mobile (was
 Node / Asset / Person / Sink): "node" stays the word for any mesh member, "mobile" covers whatever
 is tracked at the fast rate (a HUD wearer, a robot), and any device with a host link is a sink

@@ -84,9 +84,16 @@ Stage 1, the `navgrid-mesh` crate and `navgrid mesh-sim`, is done
 Stage 2, identity and configuration at runtime, is done too: the provisioning page and boot
 epoch in RRAM, `navgrid provision`, the FR-M4 beacon, and fleet-key link keys (log 2026-11-02).
 
-3. [ ] **Mesh links:** several links per node, with CS scheduled across them (generalising
-       DEF-26's per-connection spacing), low-duty links that burst to range (D-10), and the
-       one-path rate decision. Measure ranging rate and energy per link count.
+3. [ ] **Mesh links** (D-37): the policy crate and `link-sim` are done (log 2026-11-04). The
+       firmware next: CS state per connection handle (today one global procedure counter and
+       response set); a mesh runner in place of the role dispatch (scan, `Policy`, connect as
+       central or accept as peripheral, up to the slots, advertising while linked, DEF-35 and
+       DEF-11); bursts on anchor links by connection parameter update and tag links made at the
+       fast interval with the k-th link's spacing passed to the SDC; a `Burst` into a Link
+       record, carried as a Range message until stage 4; telemetry over any link to a sink in
+       place of the dedicated sink link; the sink's serve loop generalised. Then the desk mesh:
+       8 anchors and 2 tags from the TAGs, links, bursts and empties per link count against the
+       simulator.
 4. [ ] **Sync over the links:**
        - `navgrid_mesh::wire` sessions on SPSM `0x0082` per mesh link, a session every 60 s with
          a 2 KB budget (replaces DEF-1's dedicated uplink; health and environment records carry

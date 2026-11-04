@@ -7,9 +7,12 @@
 //! - **Who connects:** between two anchors the lower node ID is the central and connects; the
 //!   higher advertises and accepts. A tag is always the central toward anchors (D-3), and an
 //!   asset tag accepts a mobile tag for the final approach (FR-F5).
-//! - **Bursts:** the central drives ranging. A link idles at the slow connection parameters and
-//!   bursts to the fast ones for [`Settings::burst_procedures`] procedures, which become one
-//!   [`Link`] record. A node runs one burst at a time; due times carry a jitter so neighbouring
+//! - **Bursts:** the central drives ranging. An anchor link idles at the slow connection
+//!   parameters and bursts to the fast ones for [`Settings::burst_procedures`] procedures, which
+//!   become one [`Link`] record; a tag's links are made at the fast parameters and stay there
+//!   ([`Policy::connect_params`]). Several fast links on one central need their connection
+//!   events spaced so one link's subevents fit before the next link's event (the technique of
+//!   DEF-26); the firmware sets the SDC's central event spacing when it connects. A node runs one burst at a time; due times carry a jitter so neighbouring
 //!   nodes don't burst in step. Anchor links survey every [`Settings::survey_period_ms`] and when
 //!   the node is moved; a moving tag rotates bursts over its links without a pause, and takes
 //!   one settling burst per link when it stops (FR-T6).
@@ -33,6 +36,8 @@ pub const PERIPHERAL_LINKS: u8 = 8;
 pub const BURST_MAX: usize = 32;
 /// Below this a burst's spread is not believed (DEF-7).
 pub const SIGMA_FLOOR_MM: u32 = 50;
+/// A connection attempt older than this has failed.
+pub const CONNECT_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -89,6 +94,14 @@ impl Settings {
     pub fn fast_interval_ms(&self) -> u32 {
         u32::from(self.fast_interval_1250us) * 5 / 4
     }
+
+    /// A tag's connection interval: its links share the radio, each one's subevents fitting in
+    /// the fast interval, so the interval is the fast one times the links it keeps, and the
+    /// k-th link's events go k fast intervals after the first ([`Policy::connect_params`]).
+    pub fn tag_interval_1250us(&self) -> u16 {
+        self.fast_interval_1250us
+            .saturating_mul(u16::from(self.tag_links.max(1)))
+    }
 }
 
 /// A beacon heard, with where it came from.
@@ -139,6 +152,8 @@ pub struct Policy {
     links: Vec<LinkState, MAX_LINKS>,
     /// Peers not to connect to before the time given.
     retry: Vec<(NodeId, u64), 8>,
+    /// Connections under way, with when to give up on them.
+    pending: Vec<(NodeId, u64), 4>,
     /// The peer a burst runs with now.
     busy: Option<NodeId>,
     moving: bool,
@@ -156,6 +171,7 @@ impl Policy {
             heard: Vec::new(),
             links: Vec::new(),
             retry: Vec::new(),
+            pending: Vec::new(),
             busy: None,
             moving: role == Role::Anchor,
             settling: 0,
@@ -258,23 +274,37 @@ impl Policy {
         let _ = self.heard.push(entry);
     }
 
-    /// Forgets stale beacons and retry marks.
+    /// Forgets stale beacons and retry marks, and gives up on connections that took too long.
     pub fn tick(&mut self, now_ms: u64) {
         let ttl = u64::from(self.settings.heard_ttl_ms);
         self.heard.retain(|h| now_ms.saturating_sub(h.last_ms) <= ttl);
         self.retry.retain(|(_, until)| *until > now_ms);
+        let mut i = 0;
+        while i < self.pending.len() {
+            if self.pending[i].1 <= now_ms {
+                let peer = self.pending[i].0;
+                self.connect_failed(peer, now_ms);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// A link to `peer` came up.
     pub fn link_up(&mut self, peer: NodeId, central: bool, peer_role: Role, peer_sink: bool, now_ms: u64) {
         self.retry.retain(|(p, _)| *p != peer);
+        self.pending.retain(|(p, _)| *p != peer);
         if self.link(peer).is_some() {
             return;
         }
         let bursts_now = central && (self.moving || self.role == Role::Anchor);
         // An anchor's first survey is spread over 2 s so neighbours don't burst in step; a tag
         // ranges at once.
-        let jitter = if self.role == Role::Anchor { self.jitter(2_000) } else { 0 };
+        let jitter = if self.role == Role::Anchor {
+            self.jitter(2_000)
+        } else {
+            0
+        };
         let state = LinkState {
             peer,
             central,
@@ -295,12 +325,16 @@ impl Policy {
         if self.busy == Some(peer) {
             self.busy = None;
         }
-        // Not straight back: the peer may be busy or gone.
-        self.defer(peer, now_ms + u64::from(self.settings.retry_ms) / 4);
+        // An anchor's link that dropped is not retried straight away: the peer may be busy or
+        // gone. A tag drops its links on purpose and wants them back as soon as it moves.
+        if self.role == Role::Anchor {
+            self.defer(peer, now_ms + u64::from(self.settings.retry_ms) / 4);
+        }
     }
 
     /// A connection attempt to `peer` failed.
     pub fn connect_failed(&mut self, peer: NodeId, now_ms: u64) {
+        self.pending.retain(|(p, _)| *p != peer);
         let retry = u64::from(self.settings.retry_ms);
         let jitter = u64::from(self.jitter(retry as u32));
         self.defer(peer, now_ms + retry / 2 + jitter);
@@ -336,6 +370,9 @@ impl Policy {
                     for l in self.links.iter_mut().filter(|l| l.central) {
                         l.next_burst_ms = Some(now_ms);
                     }
+                    // Wherever it rested is not where it is going; what it heard there would
+                    // only send it to far anchors first.
+                    self.heard.clear();
                 }
                 self.moving = true;
                 self.settling = 0;
@@ -377,8 +414,8 @@ impl Policy {
             return Action::Nothing;
         }
         if let Some(peer) = self.wanted(now_ms) {
-            // Don't ask again while this attempt runs.
-            self.defer(peer, now_ms + u64::from(self.settings.retry_ms));
+            // One attempt at a time per peer, and it takes a slot while it runs.
+            let _ = self.pending.push((peer, now_ms + CONNECT_TIMEOUT_MS));
             return Action::Connect(peer);
         }
         Action::Nothing
@@ -386,12 +423,17 @@ impl Policy {
 
     /// The best neighbour to connect to now, if any.
     fn wanted(&self, now_ms: u64) -> Option<NodeId> {
-        if self.central_links() >= CENTRAL_LINKS || self.links.len() >= MAX_LINKS {
+        let pending = self.pending.len() as u8;
+        if self.pending.is_full()
+            || self.central_links() + pending >= CENTRAL_LINKS
+            || self.links.len() + usize::from(pending) >= MAX_LINKS
+        {
             return None;
         }
+        let taken = self.anchor_links() + pending;
         let (slots, want_role) = match self.role {
-            Role::Anchor => (self.settings.degree.saturating_sub(self.anchor_links()), Role::Anchor),
-            Role::Asset | Role::Mobile => (self.settings.tag_links.saturating_sub(self.anchor_links()), Role::Anchor),
+            Role::Anchor => (self.settings.degree.saturating_sub(taken), Role::Anchor),
+            Role::Asset | Role::Mobile => (self.settings.tag_links.saturating_sub(taken), Role::Anchor),
         };
         if slots == 0 {
             return None;
@@ -403,6 +445,7 @@ impl Policy {
             .filter(|h| h.beacon.free_links > 0)
             .filter(|h| Self::is_central(self.me, self.role, h.id, h.beacon.role))
             .filter(|h| self.link(h.id).is_none())
+            .filter(|h| !self.pending.iter().any(|(p, _)| *p == h.id))
             .filter(|h| !self.retry.iter().any(|(p, until)| *p == h.id && *until > now_ms))
             .max_by_key(|h| h.rssi_dbm)
             .map(|h| h.id)
@@ -428,6 +471,37 @@ impl Policy {
         if role != Role::Anchor && !moving && settling > 0 {
             self.settling -= 1;
         }
+    }
+
+    /// Connection parameters this node connects with, as central: `(interval in 1.25 ms units,
+    /// peripheral latency)`. Anchor links idle slow and switch to the fast interval for a burst;
+    /// a tag's links are short-lived and busy, so they are made at the fast interval and never
+    /// switch (a parameter update's instant is six intervals away, too slow for a moving tag).
+    pub fn connect_params(&self) -> (u16, u16) {
+        match self.role {
+            Role::Anchor => (self.settings.slow_interval_1250us, self.settings.slow_latency),
+            Role::Asset | Role::Mobile => (self.settings.tag_interval_1250us(), 0),
+        }
+    }
+
+    /// Where a new central link's connection events go, in 1.25 ms units after the node's first
+    /// fast link's: a tag spaces its links by the fast interval so their subevents don't meet
+    /// (DEF-26's spacing, planned for the full count). The firmware passes it to the SDC's
+    /// central event spacing; an anchor's bursts run one at a time, so it has nothing to space.
+    pub fn event_spacing_1250us(&self) -> u16 {
+        match self.role {
+            Role::Anchor => 0,
+            Role::Asset | Role::Mobile => {
+                let fast = self.settings.fast_interval_1250us;
+                let k = self.central_links() % self.settings.tag_links.max(1);
+                fast.saturating_mul(u16::from(k))
+            }
+        }
+    }
+
+    /// Whether the link to `peer` has to switch to the fast parameters for a burst.
+    pub fn switches_for_burst(&self, _peer: NodeId) -> bool {
+        self.role == Role::Anchor
     }
 
     /// Procedures the next burst on the link to `peer` should run.
@@ -581,12 +655,16 @@ mod tests {
         p.heard(NodeId(50), beacon(Role::Anchor, 3), -90, 0); // too weak
         p.heard(NodeId(60), beacon(Role::Mobile, 3), -40, 0); // a tag connects to us
         assert_eq!(p.next(1), Action::Connect(NodeId(30)));
-        // Not asked again while the attempt runs.
+        // Attempts run one after another, and a running one takes a slot.
         assert_eq!(p.next(2), Action::Connect(NodeId(20)));
         assert_eq!(p.next(3), Action::Nothing);
         p.link_up(NodeId(30), true, Role::Anchor, false, 100);
         p.connect_failed(NodeId(20), 100);
-        assert_eq!(p.next(200), Action::Burst(NodeId(30)).into_burst_or_nothing(&p), "first survey or nothing yet");
+        assert_eq!(
+            p.next(200),
+            Action::Burst(NodeId(30)).into_burst_or_nothing(&p),
+            "first survey or nothing yet"
+        );
         // After the retry time 20 is wanted again.
         p.burst_done(NodeId(30), 300);
         let later = 100 + 2 * u64::from(Settings::default().retry_ms);
@@ -626,7 +704,10 @@ mod tests {
         assert_eq!(p.next(5_001), Action::Nothing);
         assert!(!p.accepts(NodeId(7), Role::Anchor), "no room for a third anchor");
         assert!(p.accepts(NodeId(70), Role::Mobile), "tags are always welcome");
-        assert!(!p.accepts(NodeId(70), Role::Anchor), "a higher anchor should connect, not be accepted");
+        assert!(
+            !p.accepts(NodeId(70), Role::Anchor),
+            "a higher anchor should connect, not be accepted"
+        );
     }
 
     #[test]
@@ -657,9 +738,7 @@ mod tests {
         p.link_up(NodeId(30), true, Role::Anchor, false, 0);
         p.link_up(NodeId(5), false, Role::Anchor, false, 0);
         let first = p.next(3_000);
-        let Action::Burst(a) = first else {
-            panic!("{first:?}")
-        };
+        let Action::Burst(a) = first else { panic!("{first:?}") };
         assert_eq!(p.next(3_001), Action::Nothing, "busy");
         p.burst_done(a, 4_000);
         let Action::Burst(b) = p.next(4_001) else {
@@ -680,11 +759,14 @@ mod tests {
     #[test]
     fn a_moving_tag_rotates_its_links_and_settles_when_it_stops() {
         let mut t = Policy::new(NodeId(900), Role::Mobile, Settings::default());
-        t.heard(NodeId(1), beacon(Role::Anchor, 2), -50, 0);
-        t.heard(NodeId(2), beacon(Role::Anchor, 2), -55, 0);
+        t.heard(NodeId(7), beacon(Role::Anchor, 2), -40, 0);
         assert_eq!(t.next(1), Action::Nothing, "still: no links wanted");
         t.set_moving(true, 10);
+        assert!(t.heard_list().is_empty(), "what it heard while resting is forgotten");
+        t.heard(NodeId(1), beacon(Role::Anchor, 2), -50, 10);
+        t.heard(NodeId(2), beacon(Role::Anchor, 2), -55, 10);
         assert_eq!(t.next(11), Action::Connect(NodeId(1)));
+        assert_eq!(t.next(12), Action::Connect(NodeId(2)));
         t.link_up(NodeId(1), true, Role::Anchor, false, 500);
         t.link_up(NodeId(2), true, Role::Anchor, false, 600);
         let mut order = [NodeId(0); 4];
@@ -709,6 +791,46 @@ mod tests {
         assert_ne!(a, b);
         t.burst_done(b, now + 1_000);
         assert!(matches!(t.next(now + 1_001), Action::Disconnect(_)));
+    }
+
+    #[test]
+    fn a_pending_attempt_takes_a_slot_until_it_resolves_or_times_out() {
+        let mut t = Policy::new(
+            NodeId(900),
+            Role::Mobile,
+            Settings {
+                tag_links: 1,
+                ..Settings::default()
+            },
+        );
+        t.set_moving(true, 0);
+        t.heard(NodeId(1), beacon(Role::Anchor, 2), -50, 0);
+        t.heard(NodeId(2), beacon(Role::Anchor, 2), -55, 0);
+        assert_eq!(t.next(1), Action::Connect(NodeId(1)));
+        assert_eq!(t.next(2), Action::Nothing, "the one slot is taken by the attempt");
+        t.tick(CONNECT_TIMEOUT_MS + 2);
+        // Timed out: 1 is deferred, 2 is next.
+        assert_eq!(t.next(CONNECT_TIMEOUT_MS + 3), Action::Connect(NodeId(2)));
+        t.link_up(NodeId(2), true, Role::Anchor, false, CONNECT_TIMEOUT_MS + 500);
+        assert!(matches!(t.next(CONNECT_TIMEOUT_MS + 501), Action::Burst(_)));
+    }
+
+    #[test]
+    fn a_tag_links_at_the_fast_interval_times_its_links_and_spaces_them() {
+        let s = Settings::default();
+        let mut t = Policy::new(NodeId(900), Role::Mobile, s);
+        assert_eq!(t.connect_params(), (72, 0), "3 links × 30 ms = 90 ms");
+        assert_eq!(s.tag_interval_1250us(), 72);
+        assert_eq!(t.event_spacing_1250us(), 0);
+        t.link_up(NodeId(1), true, Role::Anchor, false, 0);
+        assert_eq!(t.event_spacing_1250us(), 24, "the second link 30 ms after the first");
+        t.link_up(NodeId(2), true, Role::Anchor, false, 0);
+        assert_eq!(t.event_spacing_1250us(), 48);
+        let a = anchor(1);
+        assert_eq!(a.connect_params(), (800, 4), "anchors idle slow");
+        assert_eq!(a.event_spacing_1250us(), 0);
+        assert!(a.switches_for_burst(NodeId(2)));
+        assert!(!t.switches_for_burst(NodeId(2)));
     }
 
     #[test]
@@ -741,7 +863,10 @@ mod tests {
         assert_eq!(link.peer, NodeId(2));
         assert_eq!(link.distance_mm, 3_050);
         assert_eq!(link.sigma_mm, 74, "1.4826 × MAD 50 mm");
-        assert_eq!((link.quality, link.antenna_paths, link.procedures, link.failures), (200, 4, 6, 1));
+        assert_eq!(
+            (link.quality, link.antenna_paths, link.procedures, link.failures),
+            (200, 4, 6, 1)
+        );
         assert!(Burst::new(NodeId(2), 4).finish().is_none());
         let mut tight = Burst::new(NodeId(3), 1);
         tight.add(1.0, 255);
