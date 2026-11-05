@@ -4,6 +4,16 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**Morning: the DK ran all night; three nodes still to move.** Uptime 8.7 h on the DK without a
+crash, sessions with N005 every minute, bursts to it. Its offers to the other three were
+declined all night: the two on the pre-mesh build are stuck after their transfers broke at
+128 KiB (DEF-70); N001, on the previous mesh build, declined every offer though it was linked
+and offering its own image. The one check in its path that depends on the moment is the
+image-confirmed read of the bootloader state page, through MPSL timeslots, with bursts and
+sessions on its links; it is now a flag the firmware task sets at boot and on confirming, and
+the update path no longer touches RRAM to decide. Unproven on N001 until it runs a build with
+it, which means the probe.
+
 **A mesh burst with a result, and the old links' rate.** Right after N005's first session on
 the new build the DK's burst to it ran: one path, 9 of 10 procedures in 1.4 s, 10.33 m ± 5 cm
 at quality 253, across the room at −77 dBm. The two TAGs on the pre-mesh build take their image
