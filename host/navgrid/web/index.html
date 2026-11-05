@@ -436,6 +436,8 @@ function draw2d(ctx, W, H, { placed, pairs, byName, zlo, zhi }) {
   if (fp && planLoaded) {
     ctx.save();
     ctx.globalAlpha = fp.opacity;
+    // A drawing is black on white: inverted on a dark page, so its lines stay light on dark.
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ctx.filter = 'invert(1)';
     ctx.translate(sx(0), sy(0));
     ctx.rotate(-fp.rotation_deg * Math.PI / 180);
     const k = fp.m_per_px * scale;
