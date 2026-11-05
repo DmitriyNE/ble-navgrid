@@ -14,7 +14,7 @@ use navgrid_mesh::{Body, CONTROLLER, Heap, NodeId, PointMm, Position, Record, Re
 use navgrid_proto::{MAX_DOWNLINK_FRAME, Message, UpdateMsg};
 use navgrid_solver::mesh::{LinkObs, MeshOptions, Pin, solve};
 
-use crate::fleet::{Fleet, FleetArgs};
+use crate::fleet::{Fleet, FleetArgs, Registry};
 use crate::mesh_view::{node_name, replica_from_logs};
 use crate::monitor;
 use crate::survey::{History, Observation, PairStats, now_s};
@@ -134,20 +134,29 @@ pub fn solve_replica(
     solve_pairs(replica, extra_pins, &pairs, offset_m, height_sigma_m)
 }
 
-/// Whether `id` is a tag by its node record in `replica`: a tag moves, so its links don't
-/// survey the anchors. A node without a record counts as an anchor.
-pub fn is_tag(replica: &Replica<Heap>, id: NodeId) -> bool {
-    replica.records().any(|s| {
+/// Whether `id` is a tag: a tag moves, so its links don't survey the anchors. By its node record
+/// in `replica`, else by the registry (the host may not have the record yet, e.g. right after
+/// it started); a node neither knows counts as an anchor.
+pub fn is_tag(replica: &Replica<Heap>, registry: Option<&Registry>, id: NodeId) -> bool {
+    let recorded = replica.records().find_map(|s| {
         let r = s.record();
-        r.origin == id && matches!(&r.body, Body::Node(n) if n.role != navgrid_mesh::Role::Anchor)
+        match &r.body {
+            Body::Node(n) if r.origin == id => Some(n.role != navgrid_mesh::Role::Anchor),
+            _ => None,
+        }
+    });
+    recorded.unwrap_or_else(|| {
+        registry
+            .and_then(|r| r.by_id(id))
+            .is_some_and(|d| d.role != navgrid_proto::Role::Anchor)
     })
 }
 
 /// The pairs between anchors: what the survey solves the anchors from.
-pub fn anchor_pairs(replica: &Replica<Heap>, pairs: Vec<PairStats>) -> Vec<PairStats> {
+pub fn anchor_pairs(replica: &Replica<Heap>, registry: Option<&Registry>, pairs: Vec<PairStats>) -> Vec<PairStats> {
     pairs
         .into_iter()
-        .filter(|p| !is_tag(replica, p.a) && !is_tag(replica, p.b))
+        .filter(|p| !is_tag(replica, registry, p.a) && !is_tag(replica, registry, p.b))
         .collect()
 }
 
@@ -374,7 +383,7 @@ pub fn run(args: &SolveArgs) -> Result<()> {
             } else {
                 now_s().saturating_sub(args.window_s)
             };
-            let pairs = anchor_pairs(&replica, history.aggregate(since, args.min_quality));
+            let pairs = anchor_pairs(&replica, registry.as_ref(), history.aggregate(since, args.min_quality));
             println!(
                 "survey {}: {} bursts over {} pairs, {} pairs in the window\n",
                 path.display(),
