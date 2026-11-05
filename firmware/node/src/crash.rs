@@ -93,6 +93,14 @@ impl Write for Truncating {
     }
 }
 
+/// Restarts the device on purpose, leaving a record that says why, so the next boot reports it
+/// like a crash: for a radio that stopped answering (DEF-71).
+pub fn restart(text: &str) -> ! {
+    store(CrashKind::Panic, 0, 0, text);
+    defmt::error!("restarting: {}", text);
+    cortex_m::peripheral::SCB::sys_reset();
+}
+
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     let (file, line) = info.location().map_or(("?", 0), |l| (l.file(), l.line()));

@@ -40,6 +40,15 @@ use crate::{Host, cs, fix, report, state, status, update};
 /// Beacons heard while scanning, from the event handler to the policy: who, what, how loud.
 pub static HEARD: Channel<CriticalSectionRawMutex, (NodeId, Beacon, i8), 8> = Channel::new();
 
+/// When the radio last reported anything: an advertising report or a connection event, in ms
+/// of uptime. The scan loop restarts the node when that is too long ago (DEF-71).
+static RADIO_SEEN_MS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// The radio reported something.
+pub fn radio_seen() {
+    RADIO_SEEN_MS.store(Instant::now().as_millis() as u32, core::sync::atomic::Ordering::Relaxed);
+}
+
 /// This node's ID, for the event handler's reports (no 64-bit atomics on this core).
 pub struct OwnId(BlockingMutex<CriticalSectionRawMutex, Cell<u64>>);
 
@@ -91,6 +100,10 @@ const SESSION_FAILURES: u8 = 3;
 /// How long a connection parameter update may take (six intervals at a 1 s slow interval).
 const PARAMS_WITHIN: Duration = Duration::from_secs(15);
 /// Anchors scan this long every so often; tags for 1 s every 5 s.
+/// The radio is taken for dead when the scanner has reported nothing at all, from anyone, for
+/// this long, and the node restarts (DEF-71): an office has a report within seconds. Links then
+/// have to be remade; a node that was alone that long had none.
+const RADIO_SILENT_MS: u64 = 5 * 60_000;
 const ANCHOR_SCAN_EVERY: Duration = Duration::from_secs(60);
 const ANCHOR_SCAN_FOR: Duration = Duration::from_secs(3);
 const TAG_SCAN_EVERY: Duration = Duration::from_secs(5);
@@ -243,6 +256,15 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         Instant::now().as_millis()
     }
 
+    /// Restarts the node if the radio has reported nothing for [`RADIO_SILENT_MS`].
+    fn check_radio(&self) {
+        let silent_ms =
+            Self::now_ms().saturating_sub(u64::from(RADIO_SEEN_MS.load(core::sync::atomic::Ordering::Relaxed)));
+        if silent_ms > RADIO_SILENT_MS {
+            crate::crash::restart("radio silent: no advertising report for 5 min");
+        }
+    }
+
     /// The beacon's free-link count follows the policy, and the node record's neighbours.
     fn links_changed(&self) {
         let (free, neighbours) = self.with_policy(|p| {
@@ -390,6 +412,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                     Err(e) => warn!("scan: {:?}", e),
                 }
             }
+            self.check_radio();
             Timer::after(every).await;
         }
     }
@@ -724,6 +747,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     async fn events(&self, conn: &Connection<'s, DefaultPacketPool>, slot: &Slot<'s>) {
         loop {
             let event = conn.next().await;
+            radio_seen();
             if crate::outsider(&event, conn, self.fleet) {
                 warn!("peer outside the fleet: dropping it");
                 status::foreign();

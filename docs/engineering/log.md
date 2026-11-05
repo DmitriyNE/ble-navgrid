@@ -28,6 +28,15 @@ whoever waits for it next, so one stuck exchange can no longer take a node's ses
 good. The third failure was the rollout's own catch: a node on the leaking build can't get past
 the first session to take the fix, so it needs a restart first.
 
+**DEF-71 caught live, twice.** N004 and N005 went silent the moment the sink was halted for its
+reflash at 13:45, both linked to it and its CS peers. N005's log, read from RAM in the adapter
+without a restart and then watched live: battery, stack and button lines only, the button
+reporting a link to a sink that had been gone 25 min, no disconnection, no beacon heard, none
+sent. The host ran; the controller gave nothing. A reset brought N004 back (and N005, flashed
+in the adapter). The suspect is the controller wedging when its CS peer vanishes mid-procedure,
+to be provoked on the bench with the second DK as the initiator. Meanwhile a node whose scanner
+has reported nothing from anyone for 5 min restarts itself with a record saying so.
+
 **Survey tooling, first cut.** The office's first anchor links read ±1.2 to ±5.7 m at 7 to
 13 m from the sink's one-path bursts and ±1.6 m at 7.3 m between two TAGs, so one burst can't
 survey anything. The host now keeps every burst the sinks mirror, per pair, in `survey.jsonl`,
