@@ -29,7 +29,8 @@ use crate::mesh_view::{HOST, node_name};
 use crate::monitor::{self, View};
 use crate::sign::parse_tag;
 use crate::solve::{
-    Solution, anchor_pairs, controller_writer, is_tag, latest_pairs, position_records, send_record, solve_pairs,
+    Solution, anchor_pairs, controller_writer, is_tag, latest_pairs, position_records, routes_only, send_record,
+    solve_pairs_except,
 };
 use crate::survey::{History, Observation, PairStats, now_s};
 
@@ -70,6 +71,8 @@ const SURVEY_WINDOW_S: u64 = 2 * 3600;
 struct Service {
     replica: Replica<Heap>,
     registry: Option<Registry>,
+    /// The fleet directory, to write the registry back.
+    fleet_args: FleetArgs,
     /// Pins placed on the page, by node; they override the nodes' own.
     pins: BTreeMap<NodeId, [f32; 3]>,
     pins_path: PathBuf,
@@ -210,6 +213,7 @@ impl Service {
                     "cut": fit.is_some_and(|f| f.cut),
                     "tag": is_tag(&self.replica, self.registry.as_ref(), p.a)
                         || is_tag(&self.replica, self.registry.as_ref(), p.b),
+                    "relay": routes_only(self.registry.as_ref(), p.a) || routes_only(self.registry.as_ref(), p.b),
                 })
             })
             .collect();
@@ -366,6 +370,7 @@ impl Service {
                             "name": crate::fleet::label_name(d.number), "label": d.name,
                             "role": format!("{:?}", d.role), "sink": d.sink,
                             "status": format!("{:?}", d.status).to_lowercase(),
+                            "ranging": d.ranging,
                             // A sink reporting beacons is alive though it never hears itself, and
                             // its own records may not have come round yet.
                             "heard": heard_ids.contains(&d.id)
@@ -462,6 +467,7 @@ pub fn run(args: &ServeArgs) -> Result<()> {
     let mut service = Service {
         replica,
         registry: registry.clone(),
+        fleet_args: args.fleet.clone(),
         pins: BTreeMap::new(),
         pins_path: pins_path.clone(),
         recent: VecDeque::new(),
@@ -583,7 +589,12 @@ fn solve_now(shared: &Shared, port: &Port) -> Result<Value> {
         let mut s = shared.lock().expect("service");
         let pins: Vec<(NodeId, [f32; 3])> = s.pins.iter().map(|(&id, &p)| (id, p)).collect();
         let pairs = anchor_pairs(&s.replica, s.registry.as_ref(), s.survey_pairs());
-        let solution = solve_pairs(&s.replica, &pins, &pairs, s.offset_m, s.height_sigma_m)?;
+        let relays: Vec<NodeId> = s
+            .registry
+            .as_ref()
+            .map(|r| r.devices.iter().filter(|d| !d.ranging).map(|d| d.id).collect())
+            .unwrap_or_default();
+        let solution = solve_pairs_except(&s.replica, &pins, &pairs, s.offset_m, s.height_sigma_m, &relays)?;
         // A local frame stays on the page: the mesh gets positions once pins fix the frame.
         let records = if solution.local_frame.is_some() {
             Vec::new()
@@ -686,6 +697,14 @@ fn handle(mut stream: TcpStream, shared: &Shared, port: &Port) -> Result<()> {
                 json!({"error": format!("{e:#}")}).to_string(),
             ),
         },
+        ("POST", "/api/ranging") => match ranging(shared, &body) {
+            Ok(v) => ("200 OK", "application/json", v.to_string()),
+            Err(e) => (
+                "400 Bad Request",
+                "application/json",
+                json!({"error": format!("{e:#}")}).to_string(),
+            ),
+        },
         ("POST", "/api/pin") => match pin(shared, &body) {
             Ok(v) => ("200 OK", "application/json", v.to_string()),
             Err(e) => (
@@ -746,6 +765,23 @@ fn survey_window(shared: &Shared, body: &[u8]) -> Result<Value> {
     Ok(s.survey())
 }
 
+/// Whether a node ranges, from the page: `{"node": "N003", "ranging": false}`. Into the registry,
+/// read afresh so nothing another command wrote since is lost; the survey follows at once.
+fn ranging(shared: &Shared, body: &[u8]) -> Result<Value> {
+    let v: Value = serde_json::from_slice(body).context("the request body")?;
+    let node = v.get("node").and_then(Value::as_str).context("no node")?;
+    let on = v.get("ranging").and_then(Value::as_bool).context("no ranging")?;
+    let mut s = shared.lock().expect("service");
+    let id = s.resolve(node)?;
+    let fleet = Fleet::open(&s.fleet_args).context("the fleet directory")?;
+    let mut registry = fleet.registry()?;
+    let number = registry.by_id(id).map(|d| d.number).context("not in the registry")?;
+    registry.set_ranging(number, on)?;
+    fleet.save(&registry)?;
+    s.registry = Some(registry);
+    Ok(json!({"node": node, "ranging": on}))
+}
+
 /// A pin from the page: `{"node": "N004", "x": 1.0, "y": 2.0, "z": 2.5}` or `{"node": "N004", "clear": true}`.
 fn pin(shared: &Shared, body: &[u8]) -> Result<Value> {
     let v: Value = serde_json::from_slice(body).context("the request body")?;
@@ -803,6 +839,7 @@ mod tests {
         Service {
             replica: crate::mesh_view::host_replica(),
             registry: None,
+            fleet_args: FleetArgs::default(),
             pins: BTreeMap::new(),
             pins_path: std::env::temp_dir().join(format!("navgrid-serve-test-{}.json", std::process::id())),
             recent: VecDeque::new(),

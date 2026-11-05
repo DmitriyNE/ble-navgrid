@@ -874,6 +874,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "navgrid-baro"
+version = "0.1.0"
+dependencies = [
+ "defmt",
+ "libm",
+]
+
+[[package]]
 name = "navgrid-link"
 version = "0.1.0"
 dependencies = [

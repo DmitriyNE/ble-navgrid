@@ -1,0 +1,14 @@
+[package]
+name = "navgrid-baro"
+description = "Barometry: the BME688's registers, calibration and compensation, a moving average of pressure, and heights from pressure differences"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+libm.workspace = true
+defmt = { workspace = true, optional = true }
+
+[features]
+defmt = ["dep:defmt"]

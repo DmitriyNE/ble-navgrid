@@ -19,7 +19,7 @@ use navgrid_proto::{Board, NodeId, Role};
 use serde::{Deserialize, Serialize};
 
 /// Where the fleet lives: `--fleet`, else `NAVGRID_FLEET`, else `~/.config/navgrid`.
-#[derive(clap::Args, Clone)]
+#[derive(clap::Args, Clone, Default)]
 pub struct FleetArgs {
     #[arg(long = "fleet", env = "NAVGRID_FLEET")]
     dir: Option<PathBuf>,
@@ -64,6 +64,18 @@ pub struct Device {
     pub firmware: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flashed: Option<String>,
+    /// It ranges: its links survey the anchors and fix positions. Off for a node that only routes
+    /// (the DK sink, whose one biased antenna path spoils the survey).
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub ranging: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(b: &bool) -> bool {
+    *b
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -88,6 +100,17 @@ impl Registry {
         d.name = Some(name);
         d.status = Status::Placed;
         Ok(())
+    }
+
+    /// Whether a device ranges for the survey and fixes, or only routes.
+    pub fn set_ranging(&mut self, number: u16, ranging: bool) -> Result<NodeId> {
+        let d = self
+            .devices
+            .iter_mut()
+            .find(|d| d.number == number && d.status != Status::Retired)
+            .with_context(|| format!("{} is not enrolled", label_name(number)))?;
+        d.ranging = ranging;
+        Ok(d.id)
     }
 
     /// Retires a device: its number is free again, and the mesh is told (the caller sends the
@@ -142,6 +165,7 @@ impl Registry {
                 status: Status::Enrolled,
                 firmware: None,
                 flashed: None,
+                ranging: true,
             }),
         }
         self.devices.sort_by_key(|d| d.number);
@@ -363,6 +387,9 @@ pub fn list(args: &FleetArgs) -> Result<()> {
             d.enrolled,
             d.name.as_ref().map_or(String::new(), |n| format!("  \"{n}\""))
         );
+        if !d.ranging {
+            println!("      routes only: no ranging for the survey or fixes");
+        }
     }
     Ok(())
 }
@@ -439,6 +466,35 @@ pub fn place(args: &PlaceArgs) -> Result<()> {
     registry.place(number, args.name.clone())?;
     fleet.save(&registry)?;
     println!("{} placed: \"{}\"", label_name(number), args.name);
+    Ok(())
+}
+
+#[derive(clap::Args)]
+pub struct RangingArgs {
+    /// The device's fleet number (`N003`).
+    number: String,
+    /// `on`: its links survey and fix positions; `off`: it only routes.
+    #[arg(value_parser = clap::builder::BoolishValueParser::new(), action = clap::ArgAction::Set)]
+    on: bool,
+    #[command(flatten)]
+    fleet: FleetArgs,
+}
+
+pub fn ranging(args: &RangingArgs) -> Result<()> {
+    let fleet = Fleet::open(&args.fleet)?;
+    let mut registry = fleet.registry()?;
+    let number = parse_number(&args.number)?;
+    registry.set_ranging(number, args.on)?;
+    fleet.save(&registry)?;
+    println!(
+        "{}: {}",
+        label_name(number),
+        if args.on {
+            "ranges for the survey and fixes"
+        } else {
+            "routes only; the survey and fixes leave its links out"
+        }
+    );
     Ok(())
 }
 

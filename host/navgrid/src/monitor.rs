@@ -461,6 +461,7 @@ mod tests {
                 status: Status::Enrolled,
                 firmware: Some("0.1.0+00000001".into()),
                 flashed: Some("2026-11-02".into()),
+                ranging: true,
             }],
         };
         let msg = Message::Health(Health {

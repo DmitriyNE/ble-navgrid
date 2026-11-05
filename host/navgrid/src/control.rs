@@ -52,7 +52,7 @@ pub enum ControlCmd {
     },
     /// Antenna diversity on or off.
     Diversity {
-        #[arg(value_parser = clap::builder::BoolishValueParser::new())]
+        #[arg(value_parser = clap::builder::BoolishValueParser::new(), action = clap::ArgAction::Set)]
         on: bool,
     },
     /// Advertising interval.

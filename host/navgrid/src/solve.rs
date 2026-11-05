@@ -152,11 +152,22 @@ pub fn is_tag(replica: &Replica<Heap>, registry: Option<&Registry>, id: NodeId) 
     })
 }
 
-/// The pairs between anchors: what the survey solves the anchors from.
+/// Whether `id` only routes: the registry has its ranging off, so its links neither survey nor
+/// fix positions.
+pub fn routes_only(registry: Option<&Registry>, id: NodeId) -> bool {
+    registry.and_then(|r| r.by_id(id)).is_some_and(|d| !d.ranging)
+}
+
+/// Whether the survey leaves `id`'s links out: a tag, or a node that only routes.
+pub fn left_out(replica: &Replica<Heap>, registry: Option<&Registry>, id: NodeId) -> bool {
+    is_tag(replica, registry, id) || routes_only(registry, id)
+}
+
+/// The pairs between ranging anchors: what the survey solves the anchors from.
 pub fn anchor_pairs(replica: &Replica<Heap>, registry: Option<&Registry>, pairs: Vec<PairStats>) -> Vec<PairStats> {
     pairs
         .into_iter()
-        .filter(|p| !is_tag(replica, registry, p.a) && !is_tag(replica, registry, p.b))
+        .filter(|p| !left_out(replica, registry, p.a) && !left_out(replica, registry, p.b))
         .collect()
 }
 
@@ -182,12 +193,25 @@ pub fn solve_pairs(
     offset_m: f32,
     height_sigma_m: f32,
 ) -> Result<Solution> {
+    solve_pairs_except(replica, extra_pins, pairs, offset_m, height_sigma_m, &[])
+}
+
+/// [`solve_pairs`], leaving the nodes in `except` out altogether (nodes that only route).
+pub fn solve_pairs_except(
+    replica: &Replica<Heap>,
+    extra_pins: &[(NodeId, [f32; 3])],
+    pairs: &[PairStats],
+    offset_m: f32,
+    height_sigma_m: f32,
+    except: &[NodeId],
+) -> Result<Solution> {
     let mut ids: Vec<NodeId> = Vec::new();
     let mut pins: Vec<(NodeId, [f32; 3])> = Vec::new();
     for s in replica.records() {
         let r = s.record();
         if let Body::Node(n) = &r.body
             && r.origin != crate::mesh_view::HOST
+            && !except.contains(&r.origin)
         {
             if !ids.contains(&r.origin) {
                 ids.push(r.origin);

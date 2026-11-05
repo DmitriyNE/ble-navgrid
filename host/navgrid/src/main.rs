@@ -109,6 +109,8 @@ enum FleetCmd {
     List(fleet::FleetArgs),
     /// Name a device and mark it placed.
     Place(fleet::PlaceArgs),
+    /// Whether a device ranges for the survey and position fixes, or only routes (`off`).
+    Ranging(fleet::RangingArgs),
     /// Retire a device: its number is free again, and a signed retire record goes to the mesh
     /// through a sink, so every replica drops it.
     Retire(fleet::RetireArgs),
@@ -152,6 +154,7 @@ fn main() -> Result<()> {
         Cmd::Fleet(FleetCmd::Init(args)) => fleet::Fleet::init(&args).map(|_| ()),
         Cmd::Fleet(FleetCmd::List(args)) => fleet::list(&args),
         Cmd::Fleet(FleetCmd::Place(args)) => fleet::place(&args),
+        Cmd::Fleet(FleetCmd::Ranging(args)) => fleet::ranging(&args),
         Cmd::Fleet(FleetCmd::Retire(args)) => fleet::retire(&args),
     }
 }

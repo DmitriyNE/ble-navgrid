@@ -92,7 +92,7 @@
     <h2>Commands</h2>
     <table id="commands"><thead><tr><th>target</th><th>command</th><th>version</th><th>reported</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
     <h2>Fleet</h2>
-    <table id="fleet"><thead><tr><th>node</th><th>label</th><th>role</th><th>status</th><th>heard</th></tr></thead><tbody></tbody></table>
+    <table id="fleet"><thead><tr><th>node</th><th>label</th><th>role</th><th>status</th><th>heard</th><th>ranging</th></tr></thead><tbody></tbody></table>
     <h2>Nearby (what the sinks hear)</h2>
     <table id="nearby"><thead><tr><th>node</th><th>by</th><th class="r">dBm</th><th>role</th><th class="r">hops</th><th class="r">free</th><th class="r">mV</th><th>flags</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
     <h2>Recent</h2>
@@ -148,7 +148,9 @@ function render() {
   sb.innerHTML = '';
   for (const p of sv.pairs.slice().sort((a, b) => (a.a + a.b).localeCompare(b.a + b.b))) {
     const tr = document.createElement('tr');
-    const res = p.tag ? '<span class="muted">tag link, not in the survey</span>' : (p.residual_m == null ? '' : `${p.residual_m >= 0 ? '+' : ''}${fmt(p.residual_m)}${p.cut ? ' cut' : ''}`);
+    const res = p.tag ? '<span class="muted">tag link, not in the survey</span>'
+      : p.relay ? '<span class="muted">routes only, not in the survey</span>'
+      : (p.residual_m == null ? '' : `${p.residual_m >= 0 ? '+' : ''}${fmt(p.residual_m)}${p.cut ? ' cut' : ''}`);
     tr.innerHTML = `<td>${p.a}–${p.b}</td><td class="r">${p.n} <span class="muted">${p.from_a}/${p.from_b}</span></td><td class="r">${fmt(p.median_m)}</td><td class="r">${fmt(p.spread_m)}</td><td class="r">${fmt(p.sigma_m)}</td>` +
       `<td class="r">${fmt(p.last_m)}</td><td class="r">${p.last_age_s ?? ''}</td><td class="r">${p.quality}</td><td class="r">${fmt(p.solved_m)}</td><td class="r ${fitClass(p)}">${res}</td>`;
     sb.appendChild(tr);
@@ -169,7 +171,8 @@ function render() {
   for (const d of state.fleet || []) {
     const tr = document.createElement('tr');
     const cls = d.status === 'retired' ? 'muted' : (d.heard ? 'ok' : 'warn');
-    tr.innerHTML = `<td>${d.name}</td><td>${d.label || '<span class="muted">unplaced</span>'}</td><td>${d.role}${d.sink ? ' (sink)' : ''}</td><td>${d.status}</td><td class="${cls}">${d.status === 'retired' ? '' : (d.heard ? 'yes' : 'missing')}</td>`;
+    tr.innerHTML = `<td>${d.name}</td><td>${d.label || '<span class="muted">unplaced</span>'}</td><td>${d.role}${d.sink ? ' (sink)' : ''}</td><td>${d.status}</td><td class="${cls}">${d.status === 'retired' ? '' : (d.heard ? 'yes' : 'missing')}</td>` +
+      `<td><button type="button" class="ranging" data-node="${d.name}" data-on="${d.ranging ? 'false' : 'true'}" title="${d.ranging ? 'its links survey and fix positions; click to make it route only' : 'it only routes; click to let its links survey again'}">${d.ranging ? 'on' : 'routes only'}</button></td>`;
     fb.appendChild(tr);
   }
   const nb = $('#nearby tbody');
@@ -287,11 +290,12 @@ function drawMap(nodes) {
   for (const p of pairs) {
     const a = byName[p.a], b = byName[p.b];
     if (!a || !b) continue;
-    const cls = p.tag ? 'muted' : fitClass(p);
+    const aside = p.tag || p.relay;
+    const cls = aside ? 'muted' : fitClass(p);
     ctx.strokeStyle = cls === 'warn' ? warn : fg;
-    ctx.globalAlpha = p.tag ? 0.25 : (cls === 'muted' ? 0.2 + 0.4 * (p.quality / 255) : 0.7);
-    ctx.lineWidth = p.tag ? 1 : 1 + Math.min(3, Math.log2(1 + p.n) / 2);
-    ctx.setLineDash(p.tag ? [1, 4] : (p.cut ? [5, 4] : []));
+    ctx.globalAlpha = aside ? 0.25 : (cls === 'muted' ? 0.2 + 0.4 * (p.quality / 255) : 0.7);
+    ctx.lineWidth = aside ? 1 : 1 + Math.min(3, Math.log2(1 + p.n) / 2);
+    ctx.setLineDash(aside ? [1, 4] : (p.cut ? [5, 4] : []));
     ctx.beginPath(); ctx.moveTo(sx(a.x), sy(a.y)); ctx.lineTo(sx(b.x), sy(b.y)); ctx.stroke();
   }
   ctx.setLineDash([]); ctx.globalAlpha = 1;
@@ -417,6 +421,15 @@ $('#survey').addEventListener('submit', async (e) => {
   e.preventDefault();
   const r = await post('/api/survey', { window_s: Number(new FormData(e.target).get('window_s')) });
   $('#survey-summary').textContent = r.error ? r.error : `${r.observations} bursts kept, ${r.pairs.length} pairs in the window`;
+  refresh();
+});
+
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest && e.target.closest('button.ranging');
+  if (!b) return;
+  const r = await post('/api/ranging', { node: b.dataset.node, ranging: b.dataset.on === 'true' });
+  if (r.error) alert(r.error);
+  await post('/api/solve', {});
   refresh();
 });
 
