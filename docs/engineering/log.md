@@ -4,6 +4,21 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**Afternoon: the wire round, a seventh node, and the sink's wedge found.** Everything moved
+to the office and was reflashed by probe through a second DK's adapter while the sink kept
+running on its own: N001, N002, N004, N005 and the sink on 0.1.0+f13067f8 (the backoff build),
+`navgrid flash` recording each in the registry, 3 min per device at 100 kHz; N006 enrolled as
+an anchor and flashed with the bootloader, up and ranging N005 at 7.3 m within two minutes.
+Two defects came out of the mixed builds and the sink's log. N004, freshly flashed, started
+taking the older build from N005, which still ran it: with no build wanted by the controller a
+node takes any different build, older included (DEF-72); set the wanted build before mixing
+builds. And the sink stopped syncing at 12:47, as it had at 10:50 that morning: its RAM log
+showed every first session failing with Busy, each link dropped 35 s after it came up and
+retried in 5 min. A session cut short by its link falling never freed the node's one session
+slot, so every later session waited 20 s for it and gave up (DEF-73, fixed with a drop guard,
+408c317); a reset cleared it meanwhile and the sink synced within seconds. N005 showed the
+same leak against N004, so the fix goes to every node.
+
 **Late morning: N001 by probe, a backoff for failing connects, and the J-Link off USB.** N001,
 on the previous mesh build 7e878185-dirty, was plugged into the DK's adapter and its log read
 from RAM (the logger's buffer is 1 KiB, about fifty lines): it took a page of the DK's image at
