@@ -4,6 +4,35 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**Evening: barometry, routes-only nodes and a viewer.**
+- **The BME688 runs** (`navgrid-baro`, `firmware/node/src/baro.rs`): our own driver on SERIAL21
+  (P1.12/P1.11, 0x76), forced mode with pressure at x16, temperature x2, humidity x1, the IIR
+  filter off and the heater off; the compensation is Bosch's float formulas in `f64`, checked
+  against an independent transcription of the integer ones (they differ by a few pascals of
+  truncation sawtooth, no trend). N002's first readings: 101 318.5 Pa, 23.8 °C, 42.5 %RH, variant
+  1 (BME688). The first build failed with `RAMBufferTooSmall`: the register addresses were
+  constants in flash, which the TWIM's DMA can't read, so the TWIM gets a RAM bounce buffer.
+- **Settings:** `Baro { sample_s, average, height }` (default every 10 s, mean of 6, heights
+  allowed), `Environment { period_s }` turns the Environment record on (off by default: a record
+  older builds can't decode would break their sessions mid-rollout, DEF-64), `Ranging(bool)`.
+  The beacon carries the mean pressure while heights are allowed, re-advertised when it moved
+  2 Pa, and a routes-only flag in bit 3 of its flags.
+- **Routes-only nodes:** a node with ranging off links and routes but its links don't burst,
+  tags don't pick it, and the survey and solve leave it out (`navgrid fleet ranging N003 off`, a
+  toggle on the page; the registry keeps it). The DK is the first: its one-path links read up to
+  2.7 m apart burst to burst.
+- **Barometry on the host:** readings in `baro.jsonl`, sensors calibrated side by side (three or
+  more set the reference) or against a calibrated one (`navgrid baro calibrate`, the page),
+  offsets in the registry, heights relative to a pinned barometer (or, in a local frame, one of
+  them at 0) fed to the survey solve as per-node height observations, which the mesh solver now
+  takes (`solve_with_heights`; in a test, wall anchors the prior misplaced by over 0.5 m come
+  back within 0.3 m).
+- **The viewer:** 2D (pan, zoom about the pointer) and 3D (orbit, pan, zoom; top, front, side
+  and iso views; a floor grid with drop lines), height colours with a legend, a height band,
+  a picked node's card and pairs under the map, `?mode=3d` for links.
+- **Bugs found on the way:** `control … diversity off` never parsed (a bool argument clap took
+  as a flag; ranging had it too); the page deadlocked at startup on two locks in one statement.
+
 **Afternoon: the wire round, a seventh node, and the sink's wedge found.** Everything moved
 to the office and was reflashed by probe through a second DK's adapter while the sink kept
 running on its own: N001, N002, N004, N005 and the sink on 0.1.0+f13067f8 (the backoff build),

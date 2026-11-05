@@ -198,6 +198,12 @@ The fleet move (log 2026-11-04/05), next:
       four-path pairs (log 2026-11-05); an offset per link kind, fitted in the survey solve.
 - [ ] **Liveness on the page:** when the sink last had a session with each node (beacons come
       from the controller even when a node's host is dead, so "heard" isn't alive).
+- [ ] **Barometer calibration session** with the fleet side by side, then heights in the
+      survey; the Environment record on (`control … environment --period-s 60`) once every node
+      runs a build that knows its new fields; N007 by wire before it is switched on again.
+- [ ] **Sigma model for survey pairs:** a pair's median has a bias its standard error leaves
+      out; the solve's normalized rms runs 3–5 with a 5 cm floor. A floor of 10–15 cm, or the
+      bias fitted per link kind.
 - [ ] **Truth distances:** a `truth.json` of tape-measured pair distances in the fleet directory,
       shown against the medians, and a fit of the offset (DEF-6) from them.
 - [ ] **The floor plan under the map:** an image with a scale and origin, so pins and the
