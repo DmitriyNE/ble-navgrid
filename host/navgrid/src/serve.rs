@@ -332,7 +332,8 @@ impl Service {
                     "last_m": p.last_m, "last_age_s": if p.last_at_s == 0 { Value::Null } else { now.saturating_sub(p.last_at_s).into() },
                     "quality": p.quality, "paths": p.paths,
                     "solved_m": fit.and_then(|f| f.solved_m), "residual_m": fit.and_then(|f| f.residual_m),
-                    "cut": fit.is_some_and(|f| f.cut),
+                    "cut": fit.is_some_and(|f| f.cut || f.dropped),
+                    "suspect": fit.is_some_and(|f| f.suspect), "dropped": fit.is_some_and(|f| f.dropped),
                     "tag": is_tag(&self.replica, self.registry.as_ref(), p.a)
                         || is_tag(&self.replica, self.registry.as_ref(), p.b),
                     "relay": routes_only(self.registry.as_ref(), p.a) || routes_only(self.registry.as_ref(), p.b),

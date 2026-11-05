@@ -93,6 +93,11 @@ pub struct LinkFit {
     pub residual_m: Option<f32>,
     /// Beyond the solver's robust cut, so it hardly counted.
     pub cut: bool,
+    /// Longer than the other two sides of a triangle allow: a suspected reflection, weighed
+    /// lightly from the start.
+    pub suspect: bool,
+    /// Left out by the consensus: the solution most links agree with doesn't have it.
+    pub dropped: bool,
 }
 
 /// What the solver made of the mesh.
@@ -248,8 +253,11 @@ pub fn solve_pairs_except(
         bail!("no nodes or links in the mesh state");
     }
     let height = |id: NodeId| heights.iter().find(|h| h.0 == id).map(|h| h.1);
+    let suspects = triangle_suspects(pairs, offset_m);
+    let is_suspect = |p: &PairStats| suspects.contains(&(p.a, p.b));
+    let clean: Vec<PairStats> = pairs.iter().filter(|p| !is_suspect(p)).copied().collect();
     let local_frame = if pins.len() < 2 {
-        let gauge = local_gauge(pairs, offset_m);
+        let gauge = local_gauge(if clean.len() >= 2 { &clean } else { pairs }, offset_m);
         if let Some((a, b, d)) = gauge {
             // At their barometric heights where known, the second along +x at the horizontal
             // part of their distance.
@@ -276,7 +284,11 @@ pub fn solve_pairs_except(
             a: index(p.a),
             b: index(p.b),
             distance_m: p.median_m,
-            sigma_m: p.sigma_m,
+            sigma_m: if is_suspect(p) {
+                p.sigma_m * SUSPECT_WEIGHT
+            } else {
+                p.sigma_m
+            },
         })
         .collect();
     let opts = MeshOptions {
@@ -292,7 +304,14 @@ pub fn solve_pairs_except(
                 .map(|node| HeightObs { node, z_m, sigma_m })
         })
         .collect();
-    let solved = solve_with_heights(ids.len(), &pin_list, &links, &height_obs, &opts);
+    let mut solved = solve_with_heights(ids.len(), &pin_list, &links, &height_obs, &opts);
+    let mut dropped: Vec<usize> = Vec::new();
+    if solved.normalized_rms > CONSENSUS_ABOVE_RMS
+        && let Some((better, without)) = consensus(ids.len(), &pin_list, &links, &height_obs, &opts, &solved)
+    {
+        solved = better;
+        dropped = without;
+    }
     let mut placed = Vec::new();
     let mut unsolved = Vec::new();
     for (i, &id) in ids.iter().enumerate() {
@@ -309,7 +328,8 @@ pub fn solve_pairs_except(
     let fits = pairs
         .iter()
         .zip(&links)
-        .map(|(p, l)| {
+        .enumerate()
+        .map(|(i, (p, l))| {
             let solved_m = match (solved.positions[l.a], solved.positions[l.b]) {
                 (Some(pa), Some(pb)) => {
                     Some(((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt())
@@ -327,6 +347,8 @@ pub fn solve_pairs_except(
                 solved_m,
                 residual_m,
                 cut: residual_m.is_some_and(|r| r.abs() > opts.huber_k * believed),
+                suspect: is_suspect(p),
+                dropped: dropped.contains(&i),
             }
         })
         .collect();
@@ -342,6 +364,128 @@ pub fn solve_pairs_except(
         fits,
         local_frame,
     })
+}
+
+/// A suspected reflection's sigma, times this: it still counts, a little.
+const SUSPECT_WEIGHT: f32 = 8.0;
+/// Above this normalized rms the consensus looks for links to leave out.
+const CONSENSUS_ABOVE_RMS: f32 = 2.0;
+
+/// Pairs longer than the other two sides of a triangle allow, beyond their sigmas and a margin:
+/// a reflection only reads long, so in a triangle that can't close the long side is the suspect.
+/// Keys with the lower ID first, as [`PairStats`] has them.
+pub fn triangle_suspects(pairs: &[PairStats], offset_m: f32) -> Vec<(NodeId, NodeId)> {
+    let key = |a: NodeId, b: NodeId| if a < b { (a, b) } else { (b, a) };
+    let by: BTreeMap<(NodeId, NodeId), (f32, f32)> = pairs
+        .iter()
+        .map(|p| (key(p.a, p.b), (p.median_m - offset_m, p.sigma_m)))
+        .collect();
+    let nodes: Vec<NodeId> = {
+        let mut v: Vec<NodeId> = pairs.iter().flat_map(|p| [p.a, p.b]).collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let mut out = Vec::new();
+    for (i, &a) in nodes.iter().enumerate() {
+        for (j, &b) in nodes.iter().enumerate().skip(i + 1) {
+            for &c in nodes.iter().skip(j + 1) {
+                let (Some(&ab), Some(&ac), Some(&bc)) = (by.get(&key(a, b)), by.get(&key(a, c)), by.get(&key(b, c)))
+                else {
+                    continue;
+                };
+                let margin = 3.0 * (ab.1 * ab.1 + ac.1 * ac.1 + bc.1 * bc.1).sqrt() + 0.2;
+                for (long, s1, s2, k) in [
+                    (ab, ac, bc, key(a, b)),
+                    (ac, ab, bc, key(a, c)),
+                    (bc, ab, ac, key(b, c)),
+                ] {
+                    if long.0 > s1.0 + s2.0 + margin && !out.contains(&k) {
+                        out.push(k);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Robust cost of a solution over every link: how many fit within 3σ (σ at least 25 cm), and the
+/// rms of those that do.
+fn agreement(solved: &navgrid_solver::mesh::Solved, links: &[LinkObs], opts: &MeshOptions) -> (usize, f32) {
+    let mut inliers = 0;
+    let mut sum = 0.0f32;
+    for l in links {
+        let (Some(pa), Some(pb)) = (solved.positions[l.a], solved.positions[l.b]) else {
+            continue;
+        };
+        let d = ((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt();
+        let sigma = l.sigma_m.max(0.25);
+        let r = (l.distance_m - opts.offset_m - d) / sigma;
+        if r.abs() <= 3.0 {
+            inliers += 1;
+            sum += r * r;
+        }
+    }
+    (
+        inliers,
+        if inliers > 0 {
+            (sum / inliers as f32).sqrt()
+        } else {
+            f32::INFINITY
+        },
+    )
+}
+
+/// The consensus: the solution with each link, then each two, left out; the one most links agree
+/// with, if it beats `base`. A node keeps at least two links, or that subset isn't tried.
+fn consensus(
+    nodes: usize,
+    pins: &[Pin],
+    links: &[LinkObs],
+    heights: &[HeightObs],
+    opts: &MeshOptions,
+    base: &navgrid_solver::mesh::Solved,
+) -> Option<(navgrid_solver::mesh::Solved, Vec<usize>)> {
+    let pinned = |n: usize| pins.iter().any(|p| p.node == n);
+    let keeps_two = |without: &[usize]| {
+        (0..nodes).filter(|&n| !pinned(n)).all(|n| {
+            let total = links.iter().filter(|l| l.a == n || l.b == n).count();
+            let kept = links
+                .iter()
+                .enumerate()
+                .filter(|(i, l)| !without.contains(i) && (l.a == n || l.b == n))
+                .count();
+            total < 2 || kept >= 2
+        })
+    };
+    let mut subsets: Vec<Vec<usize>> = (0..links.len()).map(|i| vec![i]).collect();
+    for i in 0..links.len() {
+        for j in i + 1..links.len() {
+            subsets.push(vec![i, j]);
+        }
+    }
+    let mut best: Option<((usize, f32), navgrid_solver::mesh::Solved, Vec<usize>)> = None;
+    let base_score = agreement(base, links, opts);
+    for without in subsets {
+        if !keeps_two(&without) {
+            continue;
+        }
+        let kept: Vec<LinkObs> = links
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !without.contains(i))
+            .map(|(_, l)| *l)
+            .collect();
+        let solved = solve_with_heights(nodes, pins, &kept, heights, opts);
+        let score = agreement(&solved, links, opts);
+        let better = |a: (usize, f32), b: (usize, f32)| a.0 > b.0 || (a.0 == b.0 && a.1 < b.1 * 0.8);
+        if best.as_ref().is_none_or(|(s, _, _)| better(score, *s)) {
+            best = Some((score, solved, without));
+        }
+    }
+    let (score, solved, without) = best?;
+    (score.0 > base_score.0 || (score.0 == base_score.0 && score.1 < base_score.1 * 0.8)).then_some((solved, without))
 }
 
 /// The two nodes a local frame hangs on, and the distance between them less the offset: the node
@@ -571,6 +715,56 @@ mod tests {
             quality: 250,
             paths: 4,
         }
+    }
+
+    #[test]
+    fn two_pairs_reading_long_through_bounces_dont_bend_the_layout() {
+        // Six anchors on two walls, every pair measured; two pairs lock onto bounces.
+        let at = [
+            [0.0f32, 0.0],
+            [5.0, 0.0],
+            [10.0, 0.0],
+            [0.0, 6.0],
+            [5.0, 6.5],
+            [10.0, 6.0],
+        ];
+        let mut pairs = Vec::new();
+        for i in 0..at.len() {
+            for j in i + 1..at.len() {
+                let d = ((at[i][0] - at[j][0]).powi(2) + (at[i][1] - at[j][1]).powi(2)).sqrt();
+                let bounce = match (i, j) {
+                    (0, 1) => 4.0,
+                    (2, 4) => 3.0,
+                    _ => 0.0,
+                };
+                pairs.push(pair(i as u64 + 1, j as u64 + 1, d + bounce));
+            }
+        }
+        let replica = crate::mesh_view::host_replica();
+        let pins = [(NodeId(1), [0.0, 0.0, 0.0]), (NodeId(3), [10.0, 0.0, 0.0])];
+        let s = solve_pairs(&replica, &pins, &pairs, 1.5, 0.3).unwrap();
+        for (i, t) in at.iter().enumerate() {
+            let p = s
+                .placed
+                .iter()
+                .find(|p| p.id == NodeId(i as u64 + 1))
+                .expect("placed")
+                .position;
+            let e = ((p[0] - t[0]).powi(2) + (p[1] - t[1]).powi(2)).sqrt();
+            assert!(e < 0.3, "N{}: {p:?} against {t:?}", i + 1);
+        }
+        let fit = |a, b| s.fit(NodeId(a), NodeId(b)).unwrap();
+        assert!(fit(1, 2).residual_m.unwrap() > 3.0, "the bounce shows as reading long");
+        assert!(fit(3, 5).residual_m.unwrap() > 2.0, "the bounce shows as reading long");
+    }
+
+    #[test]
+    fn a_side_longer_than_the_other_two_is_the_suspect() {
+        // A, B and C nearly in line: AB reads 2 m long through a bounce.
+        let pairs = [pair(1, 2, 5.0 + 2.0), pair(1, 3, 2.69), pair(2, 3, 2.69)];
+        assert_eq!(triangle_suspects(&pairs, 1.5), vec![(NodeId(1), NodeId(2))]);
+        let fine = [pair(1, 2, 5.0), pair(1, 3, 2.69), pair(2, 3, 2.69)];
+        assert!(triangle_suspects(&fine, 1.5).is_empty());
     }
 
     #[test]

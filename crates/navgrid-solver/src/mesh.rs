@@ -39,6 +39,11 @@ pub struct MeshOptions {
     pub damping: f32,
     /// Residuals beyond this many sigmas are down-weighted, as the square of the excess.
     pub huber_k: f32,
+    /// A link that reads longer than the solution beyond this many sigmas is taken for a
+    /// reflection and down-weighted harder (as the fourth power): indoors a blocked direct path
+    /// makes ranging lock onto a bounce, which only ever reads long. A link reading short keeps
+    /// [`huber_k`](Self::huber_k). `None` treats both sides alike.
+    pub nlos_k: Option<f32>,
     /// Taken off every distance before solving: the chip's delay (DEF-6).
     pub offset_m: f32,
     /// Smallest link sigma believed.
@@ -55,6 +60,7 @@ impl Default for MeshOptions {
             tolerance_m: 1e-3,
             damping: 1e-3,
             huber_k: 3.0,
+            nlos_k: Some(2.0),
             offset_m: 0.0,
             sigma_floor_m: 0.1,
             height_sigma_m: 0.3,
@@ -263,7 +269,7 @@ pub fn solve_with_heights(
                 }
                 let u: Vec3 = core::array::from_fn(|i| diff[i] / rho);
                 let r = rho - l.distance_m;
-                let huber = robust_weight(r / l.sigma_m, opts.huber_k * cut_scale(iterations));
+                let huber = link_weight(r / l.sigma_m, opts, cut_scale(iterations));
                 if huber < 1.0 {
                     outliers += 1;
                 }
@@ -333,7 +339,7 @@ pub fn solve_with_heights(
             }
             let u: Vec3 = core::array::from_fn(|i| diff[i] / rho);
             let r = rho - l.distance_m;
-            let huber = robust_weight(r / l.sigma_m, opts.huber_k);
+            let huber = link_weight(r / l.sigma_m, opts, 1.0);
             let w = f64::from(huber / (l.sigma_m * l.sigma_m));
             let rows = jacobian_rows(ia, ib, &u);
             for &(ri, ji) in &rows {
@@ -399,6 +405,18 @@ fn cut_scale(iteration: u8) -> f32 {
 fn robust_weight(t: f32, k: f32) -> f32 {
     let t = libm::fabsf(t);
     if t > k { (k / t) * (k / t) } else { 1.0 }
+}
+
+/// A link's weight at residual `t` sigmas (solved minus measured, so negative when the link reads
+/// long), the cuts widened by `scale` early on: one-sided when [`MeshOptions::nlos_k`] is set.
+fn link_weight(t: f32, opts: &MeshOptions, scale: f32) -> f32 {
+    match opts.nlos_k {
+        Some(k) if t < -k * scale => {
+            let q = (k * scale) / -t;
+            q * q * q * q
+        }
+        _ => robust_weight(t, opts.huber_k * scale),
+    }
 }
 
 /// Cholesky factor of a symmetric positive-definite `n×n` matrix (row-major), lower triangle.
@@ -523,6 +541,40 @@ mod tests {
 
     fn error(a: Vec3, b: Vec3) -> f32 {
         norm(&core::array::from_fn(|i| a[i] - b[i]))
+    }
+
+    #[test]
+    fn links_reading_long_through_reflections_are_set_aside() {
+        let truth = grid();
+        let mut rng = Lcg(5);
+        let mut links = links_of(&truth, 0.05, 0.0, &mut rng);
+        // Three links lock onto bounces: 2–4 m long, steady.
+        for (i, extra) in [(1usize, 2.0f32), (6, 3.5), (11, 4.0)] {
+            links[i].distance_m += extra;
+        }
+        let pinned = [0, 2, 6, 8];
+        let symmetric = solve(
+            truth.len(),
+            &pins(&truth, &pinned),
+            &links,
+            &MeshOptions {
+                nlos_k: None,
+                ..MeshOptions::default()
+            },
+        );
+        let one_sided = solve(truth.len(), &pins(&truth, &pinned), &links, &MeshOptions::default());
+        let worst = |s: &Solved| {
+            (0..truth.len())
+                .map(|n| error(s.positions[n].expect("placed"), truth[n]))
+                .fold(0.0f32, f32::max)
+        };
+        assert!(worst(&one_sided) < 0.3, "one-sided: {}", worst(&one_sided));
+        assert!(
+            worst(&one_sided) <= worst(&symmetric) + 0.01,
+            "{} vs {}",
+            worst(&one_sided),
+            worst(&symmetric)
+        );
     }
 
     #[test]
