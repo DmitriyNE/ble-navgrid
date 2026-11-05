@@ -339,7 +339,9 @@ impl Service {
                     "quality": p.quality, "paths": p.paths,
                     "solved_m": fit.and_then(|f| f.solved_m), "residual_m": fit.and_then(|f| f.residual_m),
                     "cut": fit.is_some_and(|f| f.cut || f.dropped),
-                    "suspect": fit.is_some_and(|f| f.suspect), "dropped": fit.is_some_and(|f| f.dropped),
+                    // A suspect that fits after all was only made to look long by another bad pair.
+                    "suspect": fit.is_some_and(|f| f.suspect && (f.dropped || f.cut || f.residual_m.is_some_and(|r| r.abs() > 0.75))),
+                    "dropped": fit.is_some_and(|f| f.dropped),
                     "tag": is_tag(&self.replica, self.registry.as_ref(), p.a)
                         || is_tag(&self.replica, self.registry.as_ref(), p.b),
                     "relay": routes_only(self.registry.as_ref(), p.a) || routes_only(self.registry.as_ref(), p.b),
@@ -480,6 +482,7 @@ impl Service {
                 "unsolved": s.unsolved.iter().map(|&id| self.name(id)).collect::<Vec<_>>(),
                 "local_frame": s.local_frame.map(|(a, b)| [self.name(a), self.name(b)]),
                 "by_approx": s.by_approx, "mirror": self.mirror, "approx_count": self.approx.len(),
+                "left_out": s.fits.iter().filter(|f| f.dropped).count(),
             })
         });
         let heard_ids: Vec<NodeId> = nodes

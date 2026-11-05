@@ -214,7 +214,7 @@ function render() {
   }
   $('#recent').textContent = state.recent.join('\n');
   $('#solve').textContent = state.solve
-    ? `solved ${state.solve.ago_s} s ago: ${state.solve.nodes} nodes, ${state.solve.pins} pins, ${state.solve.links} links, rms ${fmt(state.solve.normalized_rms)}, ${state.solve.outliers} bounces cut` + (state.solve.unsolved.length ? `, unsolved: ${state.solve.unsolved.join(' ')}` : '')
+    ? `solved ${state.solve.ago_s} s ago: ${state.solve.nodes} nodes, ${state.solve.links} links, rms ${fmt(state.solve.normalized_rms)}, ${state.solve.left_out || 0} left out by the consensus, ${state.solve.outliers} more down-weighted` + (state.solve.unsolved.length ? `, unsolved: ${state.solve.unsolved.join(' ')}` : '')
     : 'not solved yet';
   if (state.solve && state.solve.local_frame) {
     $('#solve').textContent += ` — local frame${state.solve.mirror ? ' (mirrored)' : ''}: ${state.solve.local_frame[0]} at the origin, ${state.solve.local_frame[1]} on +x; the shape only, not written to the mesh until two nodes are pinned or three placed approximately`;
