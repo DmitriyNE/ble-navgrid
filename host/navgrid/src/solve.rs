@@ -480,8 +480,9 @@ pub struct TagFix {
     pub at_s: u64,
 }
 
-/// Bursts a tag's fix is the median of: those within this of its newest.
-pub const TAG_WINDOW_S: u64 = 20;
+/// Bursts a tag's fix is the median of: those within the first of these of its newest that
+/// holds three anchors.
+pub const TAG_WINDOWS_S: [u64; 3] = [20, 120, 600];
 
 /// Each tag's position from its bursts with anchors the solution placed, the window ending at
 /// its newest burst: the medians per anchor, multilaterated, the tag's barometric height in
@@ -507,24 +508,32 @@ pub fn fix_tags(
         let Some(newest) = newest else {
             continue;
         };
-        let recent = history.aggregate(newest.saturating_sub(TAG_WINDOW_S), 100);
-        let obs: Vec<(NodeId, RangeObs)> = recent
-            .iter()
-            .filter(|p| p.a == tag || p.b == tag)
-            .filter_map(|p| {
-                let other = if p.a == tag { p.b } else { p.a };
-                anchor_at(other).map(|anchor| {
-                    (
-                        other,
-                        RangeObs {
-                            anchor,
-                            distance_m: (p.median_m - offset_m).max(0.1),
-                            sigma_m: p.sigma_m.max(0.25),
-                        },
-                    )
+        // The shortest window back from the newest burst that holds three anchors: a tag that
+        // ranges only now and then (or sits still) is still placed, from older bursts.
+        let mut obs: Vec<(NodeId, RangeObs)> = Vec::new();
+        for window in TAG_WINDOWS_S {
+            let recent = history.aggregate(newest.saturating_sub(window), 100);
+            obs = recent
+                .iter()
+                .filter(|p| p.a == tag || p.b == tag)
+                .filter_map(|p| {
+                    let other = if p.a == tag { p.b } else { p.a };
+                    anchor_at(other).map(|anchor| {
+                        (
+                            other,
+                            RangeObs {
+                                anchor,
+                                distance_m: (p.median_m - offset_m).max(0.1),
+                                sigma_m: p.sigma_m.max(0.25),
+                            },
+                        )
+                    })
                 })
-            })
-            .collect();
+                .collect();
+            if obs.len() >= 3 {
+                break;
+            }
+        }
         if obs.len() < 3 {
             continue;
         }
