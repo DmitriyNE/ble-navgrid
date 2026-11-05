@@ -104,8 +104,38 @@ pub fn solve_with_heights(
     heights: &[HeightObs],
     opts: &MeshOptions,
 ) -> Solved {
+    solve_with_priors(nodes, pins, links, heights, &[], opts)
+}
+
+/// A node's approximate position: a click on the plan, give or take `sigma_m` across. Unlike a
+/// [`Pin`] it doesn't hold the node; it pulls it, and three of them fix the frame's origin,
+/// orientation and handedness, which ranges alone leave free.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PositionObs {
+    pub node: usize,
+    /// x and y; z too where known (else the height observation or prior holds it).
+    pub position: Vec3,
+    pub has_z: bool,
+    pub sigma_m: f32,
+}
+
+/// [`solve_with_heights`], with approximate positions for some nodes: they start at those and
+/// are pulled towards them, and the rest grow from them as from pins.
+pub fn solve_with_priors(
+    nodes: usize,
+    pins: &[Pin],
+    links: &[LinkObs],
+    heights: &[HeightObs],
+    approx: &[PositionObs],
+    opts: &MeshOptions,
+) -> Solved {
     let mut pos: Vec<Option<Vec3>> = vec![None; nodes];
     let mut pinned = vec![false; nodes];
+    for a in approx {
+        if a.node < nodes {
+            pos[a.node] = Some(a.position);
+        }
+    }
     for p in pins {
         if p.node < nodes {
             pos[p.node] = Some(p.position);
@@ -294,6 +324,18 @@ pub fn solve_with_heights(
                 a[(3 * k + 2) * m + 3 * k + 2] += wz;
                 g[3 * k + 2] += wz * r;
             }
+            // Approximate positions.
+            for (k, &n) in unknowns.iter().enumerate() {
+                let Some(ap) = approx.iter().find(|a| a.node == n) else {
+                    continue;
+                };
+                let w = 1.0 / f64::from(ap.sigma_m.max(0.01) * ap.sigma_m.max(0.01));
+                let p = pos[n].expect("placed");
+                for i in 0..if ap.has_z { 3 } else { 2 } {
+                    a[(3 * k + i) * m + 3 * k + i] += w;
+                    g[3 * k + i] += w * f64::from(p[i] - ap.position[i]);
+                }
+            }
             for i in 0..m {
                 a[i * m + i] *= 1.0 + f64::from(opts.damping);
             }
@@ -351,6 +393,12 @@ pub fn solve_with_heights(
         for (k, &n) in unknowns.iter().enumerate() {
             let (_, sigma_n) = height_of(n);
             a[(3 * k + 2) * m + 3 * k + 2] += 1.0 / f64::from(sigma_n * sigma_n);
+            if let Some(ap) = approx.iter().find(|a| a.node == n) {
+                let w = 1.0 / f64::from(ap.sigma_m.max(0.01) * ap.sigma_m.max(0.01));
+                for i in 0..if ap.has_z { 3 } else { 2 } {
+                    a[(3 * k + i) * m + 3 * k + i] += w;
+                }
+            }
         }
         if let Some(inv_diag) = cholesky_inverse_diag(&a, m) {
             for (k, &n) in unknowns.iter().enumerate() {
@@ -541,6 +589,41 @@ mod tests {
 
     fn error(a: Vec3, b: Vec3) -> f32 {
         norm(&core::array::from_fn(|i| a[i] - b[i]))
+    }
+
+    #[test]
+    fn three_rough_positions_fix_the_frame_and_the_ranges_the_shape() {
+        let truth = grid();
+        let mut rng = Lcg(7);
+        let links = links_of(&truth, 0.05, 0.0, &mut rng);
+        // No pins: three corners clicked on a plan, each up to a metre off.
+        let approx: Vec<PositionObs> = [(0usize, [0.6f32, -0.5]), (2, [-0.7, 0.4]), (6, [0.5, 0.8])]
+            .iter()
+            .map(|&(n, off)| PositionObs {
+                node: n,
+                position: [truth[n][0] + off[0], truth[n][1] + off[1], 0.0],
+                has_z: false,
+                sigma_m: 1.0,
+            })
+            .collect();
+        let heights: Vec<HeightObs> = (0..truth.len())
+            .map(|n| HeightObs {
+                node: n,
+                z_m: truth[n][2],
+                sigma_m: 0.1,
+            })
+            .collect();
+        let s = solve_with_priors(truth.len(), &[], &links, &heights, &approx, &MeshOptions::default());
+        // The shape is the ranges', so every distance is right; the frame is the clicks', so
+        // positions are within the clicks' error, not mirrored.
+        for (n, t) in truth.iter().enumerate() {
+            let p = s.positions[n].expect("placed");
+            assert!(error(p, *t) < 0.9, "node {n}: {p:?} vs {t:?}");
+        }
+        let d = |a: usize, b: usize, ps: &dyn Fn(usize) -> Vec3| error(ps(a), ps(b));
+        let solved = |n: usize| s.positions[n].unwrap();
+        let real = |n: usize| truth[n];
+        assert!((d(0, 8, &solved) - d(0, 8, &real)).abs() < 0.2);
     }
 
     #[test]

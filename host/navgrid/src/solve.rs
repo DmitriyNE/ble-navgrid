@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use navgrid_mesh::{Body, CONTROLLER, Heap, NodeId, PointMm, Position, Record, Replica, Writer};
 use navgrid_proto::{MAX_DOWNLINK_FRAME, Message, UpdateMsg};
-use navgrid_solver::mesh::{HeightObs, LinkObs, MeshOptions, Pin, solve_with_heights};
+use navgrid_solver::mesh::{HeightObs, LinkObs, MeshOptions, Pin, PositionObs, solve_with_priors};
 
 use crate::fleet::{Fleet, FleetArgs, Registry};
 use crate::mesh_view::{node_name, replica_from_logs};
@@ -116,6 +116,8 @@ pub struct Solution {
     /// the second on +x at their measured distance, heights around 0. The mesh's shape, not
     /// where it is; such positions are not for writing to the mesh.
     pub local_frame: Option<(NodeId, NodeId)>,
+    /// The frame is the approximate positions' (three or more of them, no pins).
+    pub by_approx: bool,
 }
 
 impl Solution {
@@ -198,15 +200,45 @@ pub fn solve_pairs(
     offset_m: f32,
     height_sigma_m: f32,
 ) -> Result<Solution> {
-    solve_pairs_except(replica, extra_pins, pairs, offset_m, height_sigma_m, &[], &[])
+    solve_pairs_except(
+        replica,
+        extra_pins,
+        pairs,
+        offset_m,
+        height_sigma_m,
+        &[],
+        &[],
+        Frame::default(),
+    )
 }
 
 /// Heights from elsewhere than ranges, by node: `z` metres and 1-sigma, in the frame the solve
 /// ends up in (with pins, theirs; in a local frame, relative to one node at 0).
 pub type Heights = [(NodeId, f32, f32)];
 
+/// Where nodes are, roughly (a click on the plan): x, y, z if known, and 1-sigma across.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Approx {
+    pub node: NodeId,
+    pub position: [f32; 3],
+    pub has_z: bool,
+    pub sigma_m: f32,
+}
+
+/// What fixes the frame, beyond the ranges' shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Frame<'a> {
+    pub approx: &'a [Approx],
+    /// A local frame mirrored (y to -y): ranges can't tell its handedness.
+    pub mirror: bool,
+}
+
+/// Approximate positions needed to fix the frame: three not in a line.
+pub const APPROX_FOR_FRAME: usize = 3;
+
 /// [`solve_pairs`], leaving the nodes in `except` out altogether (nodes that only route), with
-/// `heights` for some nodes (barometry).
+/// `heights` for some nodes (barometry) and what else fixes the frame.
+#[allow(clippy::too_many_arguments)]
 pub fn solve_pairs_except(
     replica: &Replica<Heap>,
     extra_pins: &[(NodeId, [f32; 3])],
@@ -215,6 +247,7 @@ pub fn solve_pairs_except(
     height_sigma_m: f32,
     except: &[NodeId],
     heights: &Heights,
+    frame: Frame,
 ) -> Result<Solution> {
     let mut ids: Vec<NodeId> = Vec::new();
     let mut pins: Vec<(NodeId, [f32; 3])> = Vec::new();
@@ -256,7 +289,21 @@ pub fn solve_pairs_except(
     let suspects = triangle_suspects(pairs, offset_m);
     let is_suspect = |p: &PairStats| suspects.contains(&(p.a, p.b));
     let clean: Vec<PairStats> = pairs.iter().filter(|p| !is_suspect(p)).copied().collect();
-    let local_frame = if pins.len() < 2 {
+    // Three approximate positions or more fix the frame themselves; fewer can't, and are left
+    // for the local frame's gauge.
+    let approx: Vec<Approx> = frame
+        .approx
+        .iter()
+        .filter(|a| !except.contains(&a.node) && !pins.iter().any(|(p, _)| *p == a.node))
+        .copied()
+        .collect();
+    let by_approx = pins.len() < 2 && approx.len() >= APPROX_FOR_FRAME;
+    for a in &approx {
+        if !ids.contains(&a.node) {
+            ids.push(a.node);
+        }
+    }
+    let local_frame = if pins.len() < 2 && !by_approx {
         let gauge = local_gauge(if clean.len() >= 2 { &clean } else { pairs }, offset_m);
         if let Some((a, b, d)) = gauge {
             // At their barometric heights where known, the second along +x at the horizontal
@@ -304,13 +351,32 @@ pub fn solve_pairs_except(
                 .map(|node| HeightObs { node, z_m, sigma_m })
         })
         .collect();
-    let mut solved = solve_with_heights(ids.len(), &pin_list, &links, &height_obs, &opts);
+    let approx_obs: Vec<PositionObs> = if pins.len() >= 2 || by_approx {
+        approx
+            .iter()
+            .map(|a| PositionObs {
+                node: index(a.node),
+                position: a.position,
+                has_z: a.has_z,
+                sigma_m: a.sigma_m,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut solved = solve_with_priors(ids.len(), &pin_list, &links, &height_obs, &approx_obs, &opts);
     let mut dropped: Vec<usize> = Vec::new();
     if solved.normalized_rms > CONSENSUS_ABOVE_RMS
-        && let Some((better, without)) = consensus(ids.len(), &pin_list, &links, &height_obs, &opts, &solved)
+        && let Some((better, without)) =
+            consensus(ids.len(), &pin_list, &links, &height_obs, &approx_obs, &opts, &solved)
     {
         solved = better;
         dropped = without;
+    }
+    if frame.mirror && local_frame.is_some() {
+        for p in solved.positions.iter_mut().flatten() {
+            p[1] = -p[1];
+        }
     }
     let mut placed = Vec::new();
     let mut unsolved = Vec::new();
@@ -363,6 +429,7 @@ pub fn solve_pairs_except(
         unsolved,
         fits,
         local_frame,
+        by_approx,
     })
 }
 
@@ -439,11 +506,13 @@ fn agreement(solved: &navgrid_solver::mesh::Solved, links: &[LinkObs], opts: &Me
 
 /// The consensus: the solution with each link, then each two, left out; the one most links agree
 /// with, if it beats `base`. A node keeps at least two links, or that subset isn't tried.
+#[allow(clippy::too_many_arguments)]
 fn consensus(
     nodes: usize,
     pins: &[Pin],
     links: &[LinkObs],
     heights: &[HeightObs],
+    approx: &[PositionObs],
     opts: &MeshOptions,
     base: &navgrid_solver::mesh::Solved,
 ) -> Option<(navgrid_solver::mesh::Solved, Vec<usize>)> {
@@ -477,7 +546,7 @@ fn consensus(
             .filter(|(i, _)| !without.contains(i))
             .map(|(_, l)| *l)
             .collect();
-        let solved = solve_with_heights(nodes, pins, &kept, heights, opts);
+        let solved = solve_with_priors(nodes, pins, &kept, heights, approx, opts);
         let score = agreement(&solved, links, opts);
         let better = |a: (usize, f32), b: (usize, f32)| a.0 > b.0 || (a.0 == b.0 && a.1 < b.1 * 0.8);
         if best.as_ref().is_none_or(|(s, _, _)| better(score, *s)) {

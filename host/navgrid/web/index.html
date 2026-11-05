@@ -48,6 +48,7 @@
       <button type="button" data-mode="2d">2D</button><button type="button" data-mode="3d">3D</button>
       <span id="views3d">view <button type="button" data-view="top">top</button><button type="button" data-view="front">front</button><button type="button" data-view="side">side</button><button type="button" data-view="iso">iso</button></span>
       <button type="button" id="mapfit" title="fit the view to the nodes (or double-click the map)">fit</button>
+      <button type="button" id="mirror" title="ranges can't tell a local frame's handedness: flip it">mirror</button>
       <label>z <input type="number" id="zmin" step="0.1" placeholder="min"> to <input type="number" id="zmax" step="0.1" placeholder="max"> m</label>
     </div>
     <div class="mapwrap"><canvas id="map"></canvas><div id="maptip" class="tip"></div></div>
@@ -216,8 +217,12 @@ function render() {
     ? `solved ${state.solve.ago_s} s ago: ${state.solve.nodes} nodes, ${state.solve.pins} pins, ${state.solve.links} links, rms ${fmt(state.solve.normalized_rms)}, ${state.solve.outliers} bounces cut` + (state.solve.unsolved.length ? `, unsolved: ${state.solve.unsolved.join(' ')}` : '')
     : 'not solved yet';
   if (state.solve && state.solve.local_frame) {
-    $('#solve').textContent += ` — local frame: ${state.solve.local_frame[0]} at the origin, ${state.solve.local_frame[1]} on +x; the shape only, not written to the mesh until two nodes are pinned`;
+    $('#solve').textContent += ` — local frame${state.solve.mirror ? ' (mirrored)' : ''}: ${state.solve.local_frame[0]} at the origin, ${state.solve.local_frame[1]} on +x; the shape only, not written to the mesh until two nodes are pinned or three placed approximately`;
+  } else if (state.solve && state.solve.by_approx) {
+    $('#solve').textContent += ` — frame from ${state.solve.approx_count} approximate positions`;
   }
+  $('#mirror').style.display = state.solve && state.solve.local_frame ? '' : 'none';
+  $('#mirror').classList.toggle('on', !!(state.solve && state.solve.mirror));
   const asel = document.querySelector('#baro select[name=against]');
   if (asel && document.activeElement !== asel) {
     const cur = asel.value;
@@ -252,6 +257,7 @@ const view = {
   zoom: 1, panX: 0, panY: 0,                       // 2D: on top of the fitted box
   yaw: -0.7, pitch: 0.55, dist: null, target: null, // 3D camera
   drag: null,
+  placing: null, // a node to place approximately at the next click on the plan
 };
 const cssVar = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
 
@@ -425,6 +431,21 @@ function draw2d(ctx, W, H, { placed, pairs, byName, zlo, zhi }) {
     ctx.beginPath(); ctx.moveTo(sx(a.x), sy(a.y)); ctx.lineTo(sx(b.x), sy(b.y)); ctx.stroke();
   }
   ctx.setLineDash([]); ctx.globalAlpha = 1;
+  // Approximate positions: a cross, its σ, and a line to where the solve put the node.
+  for (const { n, p } of placed) {
+    if (!n.approx) continue;
+    const ax = sx(n.approx.x), ay = sy(n.approx.y), r = n.approx.sigma_m * scale;
+    ctx.strokeStyle = cssVar('--accent'); ctx.globalAlpha = 0.8; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(ax - 5, ay - 5); ctx.lineTo(ax + 5, ay + 5); ctx.moveTo(ax + 5, ay - 5); ctx.lineTo(ax - 5, ay + 5); ctx.stroke();
+    ctx.setLineDash([3, 3]); ctx.globalAlpha = 0.4;
+    ctx.beginPath(); ctx.arc(ax, ay, Math.max(r, 3), 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(sx(p.x), sy(p.y)); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+  }
+  if (view.placing) {
+    ctx.fillStyle = cssVar('--accent');
+    ctx.fillText(`click where ${view.placing} is (Esc to cancel)`, 50, 24);
+  }
   const span = Math.max(zhi - zlo, 1e-6);
   const items = [];
   for (const { n, p } of placed) {
@@ -548,9 +569,18 @@ function renderSelection(nodes) {
     const res = q.tag ? 'tag link' : q.relay ? 'routes only' : (q.residual_m == null ? '' : `${q.residual_m >= 0 ? '+' : ''}${fmt(q.residual_m)}${q.cut ? ' cut' : ''}`);
     return `<tr><td>${other}</td><td class="r">${q.n}</td><td class="r">${fmt(q.median_m)}</td><td class="r">${fmt(q.spread_m)}</td><td class="r">${fmt(q.solved_m)}</td><td class="r ${q.tag || q.relay ? 'muted' : fitClass(q)}">${res}</td></tr>`;
   }).join('');
+  const approxText = n.approx ? `approximately at ${fmt(n.approx.x)} ${fmt(n.approx.y)} ± ${fmt(n.approx.sigma_m)} m` : 'no approximate position';
   box.innerHTML = `<div>${p ? nodeCard(n, p) : `<b>${n.name}</b>`} <button type="button" id="unpick">clear</button></div>` +
+    `<form id="approxform" class="maptools"><span class="muted">${approxText}</span> <label>± <input type="number" name="sigma" value="${n.approx ? n.approx.sigma_m : 1}" step="0.1" min="0.1"> m</label>` +
+    `<button type="button" id="place">${view.placing === n.name ? 'click on the plan…' : 'place on the plan'}</button>${n.approx ? '<button type="button" id="unplace">forget it</button>' : ''}</form>` +
     (rows ? `<table><thead><tr><th>pair with</th><th class="r">bursts</th><th class="r">median m</th><th class="r">spread</th><th class="r">solved m</th><th class="r">residual</th></tr></thead><tbody>${rows}</tbody></table>` : '');
-  $('#unpick').onclick = () => { view.selected = null; drawMap(sortedNodes()); };
+  $('#unpick').onclick = () => { view.selected = null; view.placing = null; drawMap(sortedNodes()); };
+  $('#place').onclick = () => {
+    view.placing = view.placing === n.name ? null : n.name;
+    if (view.placing && view.mode !== '2d') { view.mode = '2d'; }
+    drawMap(sortedNodes());
+  };
+  if ($('#unplace')) $('#unplace').onclick = async () => { await post('/api/approx', { node: n.name, clear: true }); await post('/api/solve', {}); refresh(); };
 }
 
 function nodeCard(n, p) {
@@ -617,6 +647,14 @@ const hitAt = (mx, my) => {
     const [mx, my] = pos(e);
     const was = view.drag;
     view.drag = null; canvas.classList.remove('dragging');
+    if (was && !was.moved && view.placing && view.mode === '2d' && view.toWorld2d) {
+      const [x, y] = view.toWorld2d(mx, my);
+      const sigma = Number((document.querySelector('#approxform input[name=sigma]') || {}).value || 1);
+      const node = view.placing;
+      view.placing = null;
+      post('/api/approx', { node, x, y, sigma_m: sigma }).then(() => post('/api/solve', {})).then(() => refresh());
+      return;
+    }
     if (was && !was.moved) {
       const hit = hitAt(mx, my);
       view.selected = hit ? (view.selected === hit.n.name ? null : hit.n.name) : view.selected;
@@ -657,6 +695,8 @@ const hitAt = (mx, my) => {
     b.addEventListener('click', () => { [view.yaw, view.pitch] = presets[b.dataset.view]; drawMap(sortedNodes()); });
   }
   for (const id of ['#zmin', '#zmax']) $(id).addEventListener('input', () => drawMap(sortedNodes()));
+  $('#mirror').addEventListener('click', async () => { await post('/api/mirror', {}); await post('/api/solve', {}); view.box = null; refresh(); });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && view.placing) { view.placing = null; drawMap(sortedNodes()); } });
   window.addEventListener('resize', () => drawMap(sortedNodes()));
 }
 

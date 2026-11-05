@@ -30,8 +30,8 @@ use crate::mesh_view::{HOST, node_name};
 use crate::monitor::{self, View};
 use crate::sign::parse_tag;
 use crate::solve::{
-    Solution, anchor_pairs, controller_writer, is_tag, latest_pairs, position_records, routes_only, send_record,
-    solve_pairs_except,
+    Approx, Frame, Solution, anchor_pairs, controller_writer, is_tag, latest_pairs, position_records, routes_only,
+    send_record, solve_pairs_except,
 };
 use crate::survey::{History, Observation, PairStats, now_s};
 
@@ -79,6 +79,12 @@ struct Service {
     /// Pins placed on the page, by node; they override the nodes' own.
     pins: BTreeMap<NodeId, [f32; 3]>,
     pins_path: PathBuf,
+    /// Approximate positions placed on the page (a click on the plan), and whether a local
+    /// frame is shown mirrored; kept in `approx.json` and `frame.json`.
+    approx: BTreeMap<NodeId, ApproxPlace>,
+    approx_path: PathBuf,
+    mirror: bool,
+    frame_path: PathBuf,
     recent: VecDeque<String>,
     /// Beacons the sinks heard, by node: the latest, and when.
     nearby: BTreeMap<NodeId, (navgrid_proto::Heard, Instant)>,
@@ -411,6 +417,7 @@ impl Service {
                         "own_position": self.position_of(r.origin, r.origin),
                         "solved": self.solved_of(r.origin),
                         "baro": self.baro_of(r.origin),
+                        "approx": self.approx.get(&r.origin),
                     }));
                 }
                 Body::Link(l) => links.push(json!({
@@ -472,6 +479,7 @@ impl Service {
                 "iterations": s.iterations, "normalized_rms": s.normalized_rms, "outliers": s.outliers,
                 "unsolved": s.unsolved.iter().map(|&id| self.name(id)).collect::<Vec<_>>(),
                 "local_frame": s.local_frame.map(|(a, b)| [self.name(a), self.name(b)]),
+                "by_approx": s.by_approx, "mirror": self.mirror, "approx_count": self.approx.len(),
             })
         });
         let heard_ids: Vec<NodeId> = nodes
@@ -552,6 +560,29 @@ impl Service {
         }))
     }
 
+    fn save_approx(&self) {
+        let named: BTreeMap<String, ApproxPlace> = self.approx.iter().map(|(&id, a)| (self.name(id), *a)).collect();
+        if let Ok(text) = serde_json::to_string_pretty(&named) {
+            let _ = std::fs::write(&self.approx_path, text + "\n");
+        }
+    }
+
+    fn save_frame(&self) {
+        let _ = std::fs::write(&self.frame_path, json!({"mirror": self.mirror}).to_string() + "\n");
+    }
+
+    fn approx_list(&self) -> Vec<Approx> {
+        self.approx
+            .iter()
+            .map(|(&node, a)| Approx {
+                node,
+                position: [a.x, a.y, a.z.unwrap_or(0.0)],
+                has_z: a.z.is_some(),
+                sigma_m: a.sigma_m,
+            })
+            .collect()
+    }
+
     fn save_pins(&self) {
         let named: BTreeMap<String, [f32; 3]> = self.pins.iter().map(|(&id, p)| (self.name(id), *p)).collect();
         if let Ok(text) = serde_json::to_string_pretty(&named) {
@@ -592,6 +623,13 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         .and_then(|t| t.trim().parse::<u64>().ok())
         .unwrap_or(0);
     let pins_path = dir.join("pins.json");
+    let approx_path = dir.join("approx.json");
+    let frame_path = dir.join("frame.json");
+    let mirror = std::fs::read_to_string(&frame_path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("mirror").and_then(Value::as_bool))
+        .unwrap_or(false);
     let mut replica = crate::mesh_view::host_replica();
     replica.config_mut().controller_key = controller_key;
     let mut service = Service {
@@ -600,6 +638,10 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         fleet_args: args.fleet.clone(),
         pins: BTreeMap::new(),
         pins_path: pins_path.clone(),
+        approx: BTreeMap::new(),
+        approx_path: approx_path.clone(),
+        mirror,
+        frame_path,
         recent: VecDeque::new(),
         nearby: BTreeMap::new(),
         frames: 0,
@@ -628,6 +670,15 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         for (name, p) in named {
             if let Ok(id) = service.resolve(&name) {
                 service.pins.insert(id, p);
+            }
+        }
+    }
+    if let Ok(text) = std::fs::read_to_string(&approx_path)
+        && let Ok(named) = serde_json::from_str::<BTreeMap<String, ApproxPlace>>(&text)
+    {
+        for (name, a) in named {
+            if let Ok(id) = service.resolve(&name) {
+                service.approx.insert(id, a);
             }
         }
     }
@@ -734,6 +785,7 @@ fn solve_now(shared: &Shared, port: &Port) -> Result<Value> {
             .as_ref()
             .map(|r| r.devices.iter().filter(|d| !d.ranging).map(|d| d.id).collect())
             .unwrap_or_default();
+        let approx = s.approx_list();
         let (heights, reference) = s.baro_frame_heights(&pins);
         s.baro_heights = heights.clone();
         s.baro_reference = reference;
@@ -745,6 +797,10 @@ fn solve_now(shared: &Shared, port: &Port) -> Result<Value> {
             s.height_sigma_m,
             &relays,
             &heights,
+            Frame {
+                approx: &approx,
+                mirror: s.mirror,
+            },
         )?;
         // A local frame stays on the page: the mesh gets positions once pins fix the frame.
         let records = if solution.local_frame.is_some() {
@@ -864,6 +920,21 @@ fn handle(mut stream: TcpStream, shared: &Shared, port: &Port) -> Result<()> {
                 json!({"error": format!("{e:#}")}).to_string(),
             ),
         },
+        ("POST", "/api/approx") => match approx(shared, &body) {
+            Ok(v) => ("200 OK", "application/json", v.to_string()),
+            Err(e) => (
+                "400 Bad Request",
+                "application/json",
+                json!({"error": format!("{e:#}")}).to_string(),
+            ),
+        },
+        ("POST", "/api/mirror") => {
+            let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let mut s = shared.lock().expect("service");
+            s.mirror = v.get("mirror").and_then(Value::as_bool).unwrap_or(!s.mirror);
+            s.save_frame();
+            ("200 OK", "application/json", json!({"mirror": s.mirror}).to_string())
+        }
         ("POST", "/api/pin") => match pin(shared, &body) {
             Ok(v) => ("200 OK", "application/json", v.to_string()),
             Err(e) => (
@@ -978,6 +1049,39 @@ fn ranging(shared: &Shared, body: &[u8]) -> Result<Value> {
     Ok(json!({"node": node, "ranging": on}))
 }
 
+/// A node's approximate place: x and y on the plan, z if known, 1-sigma across.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+struct ApproxPlace {
+    x: f32,
+    y: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    z: Option<f32>,
+    sigma_m: f32,
+}
+
+/// An approximate position from the page: `{"node": "N004", "x": 1.0, "y": 2.0, "sigma_m": 1.0}`
+/// (`z` optional) or `{"node": "N004", "clear": true}`.
+fn approx(shared: &Shared, body: &[u8]) -> Result<Value> {
+    let v: Value = serde_json::from_slice(body).context("the request body")?;
+    let node = v.get("node").and_then(Value::as_str).context("no node")?;
+    let mut s = shared.lock().expect("service");
+    let id = s.resolve(node)?;
+    if v.get("clear").and_then(Value::as_bool) == Some(true) {
+        s.approx.remove(&id);
+    } else {
+        let num = |k: &str| v.get(k).and_then(Value::as_f64).map(|x| x as f32);
+        let place = ApproxPlace {
+            x: num("x").context("no x")?,
+            y: num("y").context("no y")?,
+            z: num("z"),
+            sigma_m: num("sigma_m").unwrap_or(1.0).max(0.05),
+        };
+        s.approx.insert(id, place);
+    }
+    s.save_approx();
+    Ok(json!({"approx": s.approx.len()}))
+}
+
 /// A pin from the page: `{"node": "N004", "x": 1.0, "y": 2.0, "z": 2.5}` or `{"node": "N004", "clear": true}`.
 fn pin(shared: &Shared, body: &[u8]) -> Result<Value> {
     let v: Value = serde_json::from_slice(body).context("the request body")?;
@@ -1037,6 +1141,10 @@ mod tests {
             registry: None,
             fleet_args: FleetArgs::default(),
             pins: BTreeMap::new(),
+            approx: BTreeMap::new(),
+            approx_path: std::env::temp_dir().join(format!("navgrid-approx-test-{}.json", std::process::id())),
+            mirror: false,
+            frame_path: std::env::temp_dir().join(format!("navgrid-frame-test-{}.json", std::process::id())),
             pins_path: std::env::temp_dir().join(format!("navgrid-serve-test-{}.json", std::process::id())),
             recent: VecDeque::new(),
             nearby: BTreeMap::new(),
