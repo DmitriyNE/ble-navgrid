@@ -12,6 +12,7 @@
 #![no_std]
 #![no_main]
 
+mod baro;
 mod battery;
 mod beacon;
 mod board;
@@ -262,6 +263,8 @@ async fn main(spawner: Spawner) {
     #[cfg(not(feature = "board-tag"))]
     let _ = corrupt;
     spawner.spawn(unwrap!(battery::run(p.SAADC)));
+    #[cfg(feature = "board-tag")]
+    spawner.spawn(unwrap!(baro::run(p.SERIAL21, p.P1_12, p.P1_11)));
     let antennas = if node_cfg.diversity { board::ANTENNAS } else { 1 };
     #[cfg(feature = "board-tag")]
     board::antenna::init(p.P1_09, p.P1_10);

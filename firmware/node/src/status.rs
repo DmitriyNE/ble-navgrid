@@ -134,6 +134,77 @@ pub fn adv_interval_ms() -> u16 {
     ADV_INTERVAL_MS.load(Ordering::Relaxed)
 }
 
+/// This node ranges (the controller's `Ranging` setting); off, it only routes.
+static RANGING: AtomicBool = AtomicBool::new(true);
+
+/// Whether this node ranges; a change goes into the beacon at once.
+pub fn set_ranging(on: bool) {
+    if RANGING.swap(on, Ordering::Relaxed) != on {
+        BEACON_CHANGED.signal(());
+    }
+}
+
+pub fn ranging() -> bool {
+    RANGING.load(Ordering::Relaxed)
+}
+
+/// Barometry (the controller's `Baro` setting): a reading every this many seconds (0 = off), the
+/// mean of this many reported, and whether that pressure may fix heights.
+static BARO_SAMPLE_S: AtomicU16 = AtomicU16::new(10);
+static BARO_AVERAGE: AtomicU8 = AtomicU8::new(6);
+static BARO_HEIGHT: AtomicBool = AtomicBool::new(true);
+/// The node has a barometer that answered.
+static BARO_PRESENT: AtomicBool = AtomicBool::new(false);
+/// The Environment record's period, seconds (the controller's `Environment`; 0 = none). None until
+/// the controller asks: a record older builds can't decode would break their sessions while a
+/// rollout runs (DEF-64), so the host turns it on once every node runs a build that knows it.
+static ENVIRONMENT_S: AtomicU16 = AtomicU16::new(0);
+/// The latest mean pressure, decipascals; `u32::MAX` while there is none.
+static PRESSURE_DPA: AtomicU32 = AtomicU32::new(u32::MAX);
+
+pub fn set_baro(sample_s: u16, average: u8, height: bool) {
+    BARO_SAMPLE_S.store(sample_s, Ordering::Relaxed);
+    BARO_AVERAGE.store(average.max(1), Ordering::Relaxed);
+    if BARO_HEIGHT.swap(height, Ordering::Relaxed) != height {
+        BEACON_CHANGED.signal(());
+    }
+}
+
+/// `(sample_s, average, height)`.
+pub fn baro() -> (u16, u8, bool) {
+    (
+        BARO_SAMPLE_S.load(Ordering::Relaxed),
+        BARO_AVERAGE.load(Ordering::Relaxed),
+        BARO_HEIGHT.load(Ordering::Relaxed),
+    )
+}
+
+pub fn set_baro_present(present: bool) {
+    BARO_PRESENT.store(present, Ordering::Relaxed);
+}
+
+pub fn baro_present() -> bool {
+    BARO_PRESENT.load(Ordering::Relaxed)
+}
+
+pub fn set_environment_s(s: u16) {
+    ENVIRONMENT_S.store(s, Ordering::Relaxed);
+}
+
+pub fn environment_s() -> u16 {
+    ENVIRONMENT_S.load(Ordering::Relaxed)
+}
+
+pub fn set_pressure_dpa(dpa: Option<u32>) {
+    PRESSURE_DPA.store(dpa.unwrap_or(u32::MAX), Ordering::Relaxed);
+}
+
+/// The pressure for the beacon: only while it may fix heights.
+pub fn pressure_dpa() -> Option<u32> {
+    let dpa = PRESSURE_DPA.load(Ordering::Relaxed);
+    (dpa != u32::MAX && BARO_HEIGHT.load(Ordering::Relaxed)).then_some(dpa)
+}
+
 /// The survey period the controller asked for, seconds; 0 = the default.
 static SURVEY_PERIOD_S: AtomicU16 = AtomicU16::new(0);
 

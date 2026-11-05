@@ -1237,6 +1237,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "navgrid-baro"
+version = "0.1.0"
+dependencies = [
+ "defmt 1.2.0",
+ "libm",
+]
+
+[[package]]
 name = "navgrid-link"
 version = "0.1.0"
 dependencies = [
@@ -1283,6 +1291,7 @@ dependencies = [
  "embassy-time",
  "embedded-storage",
  "heapless",
+ "navgrid-baro",
  "navgrid-link",
  "navgrid-mesh",
  "navgrid-proto",

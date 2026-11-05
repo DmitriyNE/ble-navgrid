@@ -298,6 +298,8 @@ mod tests {
                 humidity_cpct: u16::MAX,
                 pressure_cpa: u32::MAX,
                 gas_ohm: Some(u32::MAX),
+                samples: u8::MAX,
+                height: true,
             }))),
             Sync::Accepted(u16::MAX),
         ]

@@ -40,9 +40,8 @@ impl Beacons {
         }
     }
 
-    /// The beacon as of now. Until the mesh state runs on devices only a sink knows its hop
-    /// count, and pressure isn't measured yet. Free links are the mesh policy's count
-    /// (`mesh`).
+    /// The beacon as of now. Free links are the mesh policy's count (`mesh`); pressure is the
+    /// barometer's mean while it may fix heights.
     pub fn beacon(&self) -> Beacon {
         let dm = |mm: i32| (mm / 100).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
         Beacon {
@@ -53,7 +52,8 @@ impl Beacons {
             hops: if self.cfg.sink { 0 } else { status::hops() },
             free_links: status::free_links(),
             battery_mv: status::battery_mv(),
-            pressure_dpa: None,
+            pressure_dpa: status::pressure_dpa(),
+            ranging: status::ranging(),
             number: self.number,
             position: self
                 .cfg

@@ -68,6 +68,21 @@ pub enum ControlCmd {
         #[arg(long)]
         period_s: u16,
     },
+    /// Whether the node ranges (`off`: it only routes, and its links leave the survey and fixes).
+    Ranging {
+        #[arg(value_parser = clap::builder::BoolishValueParser::new(), action = clap::ArgAction::Set)]
+        on: bool,
+    },
+    /// Barometry: a reading every `--sample-s` seconds (0 = off), the mean of the last `--average`
+    /// reported, and whether that pressure may fix heights (`--height`).
+    Baro {
+        #[arg(long, default_value_t = 10)]
+        sample_s: u16,
+        #[arg(long, default_value_t = 6)]
+        average: u8,
+        #[arg(long, value_parser = clap::builder::BoolishValueParser::new(), action = clap::ArgAction::Set, default_value = "on")]
+        height: bool,
+    },
 }
 
 /// How long to wait for the sink to mirror the record back.
@@ -91,6 +106,16 @@ pub fn run(args: &ControlArgs) -> Result<()> {
             Command::Firmware(parse_tag(tag).with_context(|| format!("{tag}: not a build tag like 0.1.0+1950d45d"))?)
         }
         ControlCmd::Survey { period_s } => Command::Survey { period_s: *period_s },
+        ControlCmd::Ranging { on } => Command::Ranging(*on),
+        ControlCmd::Baro {
+            sample_s,
+            average,
+            height,
+        } => Command::Baro {
+            sample_s: *sample_s,
+            average: *average,
+            height: *height,
+        },
     };
     let key = auth::controller_key(&fleet.key()?);
     // The controller's epoch is the clock: every run writes newer versions than the last.

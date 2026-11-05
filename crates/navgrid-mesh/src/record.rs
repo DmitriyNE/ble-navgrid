@@ -67,6 +67,8 @@ pub enum Setting {
     Advertising,
     Firmware,
     Survey,
+    Ranging,
+    Baro,
 }
 
 /// What a record is about, among its origin's records. With the origin it forms the [`Key`].
@@ -274,9 +276,13 @@ pub struct Environment {
     pub temperature_cdeg: i16,
     /// 0.01 %RH.
     pub humidity_cpct: u16,
-    /// 0.01 Pa.
+    /// 0.01 Pa: the mean of `samples` readings.
     pub pressure_cpa: u32,
     pub gas_ohm: Option<u32>,
+    /// Readings in the pressure's mean.
+    pub samples: u8,
+    /// The node lets its pressure fix heights (the controller's `Baro` setting).
+    pub height: bool,
 }
 
 /// A mesh link, written by its initiator after each ranging burst.
@@ -335,6 +341,13 @@ pub enum Command {
     /// How often anchor links survey, in seconds; 0 = the node's default (15 min). A survey runs
     /// at a minute for an hour or so, then goes back to the default (FR-M6).
     Survey { period_s: u16 },
+    /// Whether the node ranges: off, it only routes, its links don't burst, and its beacon tells
+    /// tags and the survey to leave it out.
+    Ranging(bool),
+    /// Barometry: a pressure reading every `sample_s` seconds (0 = off), the mean of the last
+    /// `average` readings reported, and whether that pressure may fix heights (FR-T2, FR-M3).
+    /// A node without a barometer answers unsupported.
+    Baro { sample_s: u16, average: u8, height: bool },
 }
 
 impl Command {
@@ -346,6 +359,8 @@ impl Command {
             Self::Advertising { .. } => Setting::Advertising,
             Self::Firmware(_) => Setting::Firmware,
             Self::Survey { .. } => Setting::Survey,
+            Self::Ranging(_) => Setting::Ranging,
+            Self::Baro { .. } => Setting::Baro,
         }
     }
 }

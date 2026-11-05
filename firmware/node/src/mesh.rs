@@ -274,6 +274,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     /// bursts, drops links.
     async fn drive(&self) {
         let mut survey_s = 0u16;
+        let mut ranging = true;
         loop {
             Timer::after(TICK).await;
             if status::retired() {
@@ -288,6 +289,11 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 };
                 info!("survey every {=u32} s", period_ms / 1000);
                 self.with_policy(|p| p.set_survey_period_ms(period_ms, Self::now_ms()));
+            }
+            if status::ranging() != ranging {
+                ranging = status::ranging();
+                info!("ranging {}", ranging);
+                self.with_policy(|p| p.set_ranging(ranging, Self::now_ms()));
             }
             while let Ok((id, beacon, rssi)) = HEARD.try_receive() {
                 self.with_policy(|p| p.heard(id, beacon, rssi, Self::now_ms()));

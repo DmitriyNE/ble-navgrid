@@ -639,7 +639,7 @@ pub const BATTERY_CRITICAL_MV: u16 = 2400;
 /// without a directory, and the field tool can list it (FR-O6).
 ///
 /// Layout after the company identifier, little-endian: format (2), role, flags (bit 0 attention,
-/// bit 1 install mode, bit 2 sink), hops, free links, battery (20 mV steps above 2.0 V), pressure (0.1 Pa,
+/// bit 1 install mode, bit 2 sink, bit 3 routes only: no ranging with it), hops, free links, battery (20 mV steps above 2.0 V), pressure (0.1 Pa,
 /// 3 bytes), fleet number (2 bytes), position x, y, z (decimetres, 2 bytes each), position σ
 /// (decimetres), frame version (2 bytes). All-ones fields are unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -652,6 +652,9 @@ pub struct Beacon {
     pub attention: bool,
     /// It is in install mode (architecture §13).
     pub install: bool,
+    /// It ranges: its links survey and fix positions. `false` for a node that only routes;
+    /// decoders before the flag take every node as ranging.
+    pub ranging: bool,
     /// Hops to the nearest sink; 255 with no path.
     pub hops: u8,
     /// Links it can still take (admission control, NFR-4).
@@ -678,7 +681,10 @@ impl Beacon {
         let mut b = [0xffu8; BEACON_LEN];
         b[0] = BEACON_FORMAT;
         b[1] = self.role as u8;
-        b[2] = u8::from(self.attention) | (u8::from(self.install) << 1) | (u8::from(self.sink) << 2);
+        b[2] = u8::from(self.attention)
+            | (u8::from(self.install) << 1)
+            | (u8::from(self.sink) << 2)
+            | (u8::from(!self.ranging) << 3);
         b[3] = self.hops;
         b[4] = self.free_links;
         if let Some(mv) = self.battery_mv {
@@ -721,6 +727,7 @@ impl Beacon {
             sink: legacy_sink || b[2] & 4 != 0,
             attention: b[2] & 1 != 0,
             install: b[2] & 2 != 0,
+            ranging: b[2] & 8 == 0,
             hops: b[3],
             free_links: b[4],
             battery_mv: (b[5] != 0xff).then(|| 2000 + 20 * u16::from(b[5])),
@@ -1363,6 +1370,7 @@ mod tests {
             free_links: 9,
             battery_mv: Some(2980),
             pressure_dpa: Some(1_013_250),
+            ranging: false,
             position: Some(BeaconPosition {
                 point_dm: [-120, 345, 27],
                 sigma_dm: 3,
@@ -1380,6 +1388,7 @@ mod tests {
             free_links: 14,
             battery_mv: None,
             pressure_dpa: None,
+            ranging: true,
             position: None,
         };
         assert_eq!(Beacon::decode(&bare.encode()), Some(bare));

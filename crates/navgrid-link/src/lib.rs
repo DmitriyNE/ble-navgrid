@@ -172,6 +172,8 @@ pub struct Policy {
     /// The peer a burst runs with now.
     busy: Option<NodeId>,
     moving: bool,
+    /// This node ranges; off, it only routes (the controller's `Ranging` setting).
+    ranging: bool,
     /// Tags: links still to take their settling burst after the tag stopped.
     settling: u8,
     rng: u32,
@@ -195,6 +197,7 @@ impl Policy {
             pending: Vec::new(),
             busy: None,
             moving: role == Role::Anchor,
+            ranging: true,
             settling: 0,
             rng: (me.0 as u32) ^ ((me.0 >> 32) as u32) | 1,
         }
@@ -235,6 +238,44 @@ impl Policy {
             let l = &mut self.links[i];
             if let Some(next) = l.next_burst_ms.as_mut() {
                 *next = (*next).min(now_ms + u64::from(period_ms) + jitter);
+            }
+        }
+    }
+
+    /// Whether this node ranges. Off, its links don't burst and the beacon says so, so others
+    /// leave it out too; it still links and routes. On again, its anchor links survey at once.
+    pub fn set_ranging(&mut self, on: bool, now_ms: u64) {
+        if self.ranging == on {
+            return;
+        }
+        self.ranging = on;
+        self.schedule_surveys(now_ms);
+    }
+
+    pub fn ranging(&self) -> bool {
+        self.ranging
+    }
+
+    /// Whether a link with `peer` ranges: both ends do (a peer not heard counts as ranging).
+    fn ranges_with(&self, peer: NodeId) -> bool {
+        self.ranging
+            && self
+                .heard
+                .iter()
+                .find(|h| h.id == peer)
+                .is_none_or(|h| h.beacon.ranging)
+    }
+
+    /// An anchor's central links that range and have no survey due get one now, spread over 2 s.
+    fn schedule_surveys(&mut self, now_ms: u64) {
+        if self.role != Role::Anchor {
+            return;
+        }
+        for i in 0..self.links.len() {
+            let (peer, central, due) = (self.links[i].peer, self.links[i].central, self.links[i].next_burst_ms);
+            if central && due.is_none() && self.ranges_with(peer) {
+                let jitter = u64::from(self.jitter(2_000));
+                self.links[i].next_burst_ms = Some(now_ms + jitter);
             }
         }
     }
@@ -315,8 +356,12 @@ impl Policy {
         if let Some(h) = self.heard.iter_mut().find(|h| h.id == id) {
             // Smooth the level a little: beacons come with fading.
             h.rssi_dbm = ((i16::from(h.rssi_dbm) + i16::from(rssi_dbm)) / 2) as i8;
+            let resumed = !h.beacon.ranging && beacon.ranging;
             h.beacon = beacon;
             h.last_ms = now_ms;
+            if resumed {
+                self.schedule_surveys(now_ms);
+            }
             return;
         }
         if self.heard.is_full() {
@@ -356,7 +401,7 @@ impl Policy {
         if self.link(peer).is_some() {
             return;
         }
-        let bursts_now = central && (self.moving || self.role == Role::Anchor);
+        let bursts_now = central && (self.moving || self.role == Role::Anchor) && self.ranges_with(peer);
         // An anchor's first survey is spread over 2 s so neighbours don't burst in step; a tag
         // ranges at once.
         let jitter = if self.role == Role::Anchor {
@@ -494,7 +539,7 @@ impl Policy {
             && let Some(l) = self
                 .links
                 .iter()
-                .filter(|l| l.central && l.next_burst_ms.is_some_and(|t| t <= now_ms))
+                .filter(|l| l.central && l.next_burst_ms.is_some_and(|t| t <= now_ms) && self.ranges_with(l.peer))
                 .min_by_key(|l| l.next_burst_ms)
         {
             let peer = l.peer;
@@ -533,7 +578,7 @@ impl Policy {
         let best = self
             .heard
             .iter()
-            .filter(|h| h.beacon.role == Role::Anchor && h.beacon.free_links > 0)
+            .filter(|h| h.beacon.role == Role::Anchor && h.beacon.free_links > 0 && h.beacon.ranging)
             .filter(|h| h.rssi_dbm >= self.settings.min_rssi_dbm)
             .filter(|h| self.link(h.id).is_none())
             .filter(|h| !self.retry.iter().any(|(p, until)| *p == h.id && *until > now_ms))
@@ -562,6 +607,9 @@ impl Policy {
         self.heard
             .iter()
             .filter(|h| h.beacon.role == want_role)
+            // A tag links to range: an anchor that only routes is no use to it. Anchors link to
+            // it all the same, for the routes.
+            .filter(|h| self.role == Role::Anchor || h.beacon.ranging)
             .filter(|h| h.rssi_dbm >= self.settings.min_rssi_dbm)
             .filter(|h| h.beacon.free_links > 0)
             .filter(|h| Self::is_central(self.me, self.role, h.id, h.beacon.role))
@@ -580,11 +628,13 @@ impl Policy {
         let (role, moving, settling) = (self.role, self.moving, self.settling);
         let period = u64::from(self.settings.survey_period_ms);
         let jitter = u64::from(self.jitter(self.settings.survey_period_ms / 10));
+        let ranges = self.ranges_with(peer);
         let Some(l) = self.links.iter_mut().find(|l| l.peer == peer) else {
             return;
         };
         l.bursts = l.bursts.saturating_add(1);
         l.next_burst_ms = match role {
+            _ if !ranges => None,
             Role::Anchor => Some(now_ms + period + jitter),
             _ if moving => Some(now_ms),
             _ => None,
@@ -747,6 +797,7 @@ mod tests {
             free_links,
             battery_mv: None,
             pressure_dpa: None,
+            ranging: true,
             number: None,
             position: None,
         }
@@ -935,6 +986,34 @@ mod tests {
         assert_eq!(t.next(CONNECT_TIMEOUT_MS + 3), Action::Connect(NodeId(2)));
         t.link_up(NodeId(2), true, Role::Anchor, false, CONNECT_TIMEOUT_MS + 500);
         assert!(matches!(t.next(CONNECT_TIMEOUT_MS + 501), Action::Burst(_)));
+    }
+
+    #[test]
+    fn a_node_that_only_routes_links_but_doesnt_burst_and_tags_skip_it() {
+        let mut relay = beacon(Role::Anchor, 3);
+        relay.ranging = false;
+        // An anchor links to a relay for the routes, but doesn't survey it.
+        let mut a = anchor(1);
+        a.heard(NodeId(2), relay, -50, 0);
+        assert_eq!(a.next(1), Action::Connect(NodeId(2)));
+        a.link_up(NodeId(2), true, Role::Anchor, false, 10);
+        assert_eq!(a.next(5_000), Action::Nothing, "no survey with a relay");
+        // Ranging again: the survey comes within the spread.
+        a.heard(NodeId(2), beacon(Role::Anchor, 3), -50, 6_000);
+        assert_eq!(a.next(8_001), Action::Burst(NodeId(2)));
+        a.burst_done(NodeId(2), 9_000);
+        // This node stops ranging: nothing more is due.
+        a.set_ranging(false, 9_100);
+        assert_eq!(a.next(9_000 + 20 * 60_000), Action::Nothing);
+        a.set_ranging(true, 2_000_000);
+        assert_eq!(a.next(2_002_001), Action::Burst(NodeId(2)));
+        // A tag doesn't link to a relay at all.
+        let mut t = Policy::new(NodeId(900), Role::Mobile, Settings::default());
+        t.set_moving(true, 0);
+        t.heard(NodeId(2), relay, -40, 0);
+        t.heard(NodeId(3), beacon(Role::Anchor, 3), -70, 0);
+        assert_eq!(t.next(1), Action::Connect(NodeId(3)));
+        assert_eq!(t.next(2), Action::Nothing, "the relay is no use to a tag");
     }
 
     #[test]

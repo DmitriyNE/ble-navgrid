@@ -211,9 +211,43 @@ pub fn apply_commands() -> usize {
                         Status::Invalid
                     }
                 }
-                Command::Environment { .. } => {
-                    warn!("command {:?}: no BME688 driver yet", command);
-                    Status::Unsupported
+                Command::Environment { period_s, gas } => {
+                    if !status::baro_present() {
+                        warn!("command {:?}: no barometer here", command);
+                        Status::Unsupported
+                    } else if gas {
+                        warn!("command {:?}: the gas heater isn't supported", command);
+                        Status::Unsupported
+                    } else {
+                        info!("command: environment record every {=u16} s (0: none)", period_s);
+                        status::set_environment_s(period_s);
+                        Status::Applied
+                    }
+                }
+                Command::Ranging(on) => {
+                    info!("command: ranging {}", on);
+                    status::set_ranging(on);
+                    Status::Applied
+                }
+                Command::Baro {
+                    sample_s,
+                    average,
+                    height,
+                } => {
+                    if !status::baro_present() {
+                        warn!("command {:?}: no barometer here", command);
+                        Status::Unsupported
+                    } else if sample_s > 3600 || average == 0 || usize::from(average) > crate::baro::AVERAGE_MAX {
+                        warn!("command {:?}: out of range", command);
+                        Status::Invalid
+                    } else {
+                        info!(
+                            "command: barometer every {=u16} s, mean of {=u8}, heights {}",
+                            sample_s, average, height
+                        );
+                        status::set_baro(sample_s, average, height);
+                        Status::Applied
+                    }
                 }
                 Command::Survey { period_s } => {
                     if period_s == 0 || (10..=3600).contains(&period_s) {

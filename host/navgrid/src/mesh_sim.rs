@@ -434,6 +434,8 @@ impl<'a> Sim<'a> {
                         humidity_cpct: 4100,
                         pressure_cpa: 10_132_500 + (self.rng.normal() * 200.0) as u32,
                         gas_ohm: None,
+                        samples: 6,
+                        height: true,
                     });
                     self.write(i, body, now);
                     self.at(now + ENVIRONMENT_EVERY, Event::Environment(i));

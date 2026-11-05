@@ -334,6 +334,7 @@ impl<'a> Sim<'a> {
             free_links: node.policy.free_links(),
             battery_mv: None,
             pressure_dpa: None,
+            ranging: true,
             number: None,
             position: None,
         }
