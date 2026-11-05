@@ -4,6 +4,14 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**Handoff to the work desktop.** `docs/engineering/handoff.md` holds the state: the TrouBLE
+fix as a patch (`firmware/patches/`) to recreate the local fork the firmware builds against,
+the fleet directory and the floor plan to copy by hand, the fleet, the open threads and the
+working agreements. The DEF-75 snapshot build went out once more: the first image (0.1.0+fee502a8)
+was a dirty build, an uncommitted `Cargo.lock` making its id end in `-dirty`, while the wanted
+records named the clean id, so no TAG took it; rebuilt from the clean tree as 0.1.0+2fcd6cd8,
+uploaded to the sink and set as every TAG's wanted build.
+
 **The mobile on the map.** Each tag is fixed on the page from its latest bursts with the
 solved anchors: the medians per anchor over the shortest window back from its newest burst that
 holds three anchors (20 s, else 2 or 10 min), multilaterated with its barometric height where

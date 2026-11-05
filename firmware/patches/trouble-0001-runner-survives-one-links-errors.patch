@@ -1,0 +1,94 @@
+From d040a93d29c8a1a8cf2dade03fbaf3eba2256873 Mon Sep 17 00:00:00 2001
+From: Dmitriy Negrov <dmitriynegrov@gmail.com>
+Date: Thu, 5 Nov 2026 14:28:35 +0400
+Subject: [PATCH] fix(host): a security event or scan disable that fails for
+ one link no longer stops the runner
+
+An encryption event for a link the host already marked disconnected made
+handle_security_hci_event return Disconnected, which the rx runner propagated with ?,
+ending run_with_handler for good: the host then received nothing while the controller
+kept advertising. Likewise a long term key reply to a vanished link, or disabling a scan
+the controller had already ended, stopped the control runner. Log and continue instead.
+---
+ host/src/host.rs | 36 ++++++++++++++++++++++++++++++------
+ 1 file changed, 30 insertions(+), 6 deletions(-)
+
+diff --git a/host/src/host.rs b/host/src/host.rs
+index b3d5646..6be9f2e 100644
+--- a/host/src/host.rs
++++ b/host/src/host.rs
+@@ -1578,7 +1578,13 @@ impl<'d, C: Controller, P: PacketPool> RxRunner<'d, C, P> {
+                                     }
+                                 }
+                                 LeEventKind::LeLongTermKeyRequest => {
+-                                    host.state.connections.handle_security_hci_le_event(event)?;
++                                    // One link's security event must not stop the host: the link
++                                    // may be gone already, or the security events full.
++                                    if let Err(e) = host.state.connections.handle_security_hci_le_event(event) {
++                                        warn!("[host] security LE event dropped: {:?}", e);
++                                        let mut m = host.state.metrics.borrow_mut();
++                                        m.rx_errors = m.rx_errors.wrapping_add(1);
++                                    }
+                                 }
+                                 LeEventKind::LePhyUpdateComplete => {
+                                     let event = unwrap!(LePhyUpdateComplete::from_hci_bytes_complete(event.data));
+@@ -1801,7 +1807,15 @@ impl<'d, C: Controller, P: PacketPool> RxRunner<'d, C, P> {
+                             event_handler.on_vendor(&vendor);
+                         }
+                         EventKind::EncryptionChangeV1 | EventKind::EncryptionKeyRefreshComplete => {
+-                            host.state.connections.handle_security_hci_event(event)?;
++                            // An encryption event can arrive for a link the host has already
++                            // marked disconnected (the lookup then fails with `Disconnected`), or
++                            // fail in the pairing state; either concerns that one link, and
++                            // returning would stop the host for good.
++                            if let Err(e) = host.state.connections.handle_security_hci_event(event) {
++                                warn!("[host] encryption event dropped: {:?}", e);
++                                let mut m = host.state.metrics.borrow_mut();
++                                m.rx_errors = m.rx_errors.wrapping_add(1);
++                            }
+                         }
+                         // Ignore
+                         _ => {}
+@@ -2207,7 +2221,7 @@ impl<'d, C: Controller, P: PacketPool> ControlRunner<'d, C, P> {
+                     #[cfg(feature = "scan")]
+                     CancelledCommandState::Scan(ext) => {
+                         trace!("[host] disabling scanning");
+-                        if ext {
++                        let result = if ext {
+                             // TODO: A bit opinionated but not more than before
+                             host.command(LeSetExtScanEnable::new(
+                                 false,
+@@ -2215,9 +2229,15 @@ impl<'d, C: Controller, P: PacketPool> ControlRunner<'d, C, P> {
+                                 bt_hci::param::Duration::from_secs(0),
+                                 bt_hci::param::Duration::from_secs(0),
+                             ))
+-                            .await?;
++                            .await
++                            .map(drop)
+                         } else {
+-                            host.command(LeSetScanEnable::new(false, false)).await?;
++                            host.command(LeSetScanEnable::new(false, false)).await.map(drop)
++                        };
++                        // A scan the controller already ended (Command Disallowed) is stopped all
++                        // the same; failing to stop one is not a reason to stop the host.
++                        if let Err(e) = result {
++                            warn!("[host] error disabling scanning: {:?}", e);
+                         }
+                         host.state.scan_command_state.canceled();
+                     }
+@@ -2234,7 +2254,11 @@ impl<'d, C: Controller, P: PacketPool> ControlRunner<'d, C, P> {
+                     #[cfg(feature = "security")]
+                     {
+                         let event_data = request.unwrap_or(SecurityEventData::Timeout);
+-                        host.state.connections.handle_security_event(host, event_data).await?;
++                        // E.g. a key request answered after its link dropped: the controller
++                        // refuses the reply (Unknown Connection Identifier). That link's affair.
++                        if let Err(e) = host.state.connections.handle_security_event(host, event_data).await {
++                            warn!("[host] security event failed: {:?}", e);
++                        }
+                     }
+                 }
+                 Either5::Fifth(()) => {
+-- 
+2.50.1 (Apple Git-155)
+

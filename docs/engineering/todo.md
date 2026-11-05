@@ -185,6 +185,15 @@ The fleet move (log 2026-11-04/05), next:
 - [ ] **Audit the runners' remaining `?`** in the fork: the advertising disable, the resolving
       list sync and the RPA rotation still stop the control runner on an error.
 
+**Tracking the mobile** (FR-T), now that the anchors are surveyed:
+
+- [ ] **The mobile holds no links** (DEF-76): read N007's log (it sits in the dead DK's adapter).
+- [ ] **A fast mode for live tracking** (the user, 2026-11-05): a mobile asks its anchors for a
+      much faster burst rate while it is tracked, and leaves it when it stops; who asks (the
+      tag, or the host for a tag on the page), what the anchors give up, how long it lasts.
+- [ ] **The tracker on the page:** the solver's one-range-at-a-time filter
+      (`navgrid_solver::tracker`, barometer and still updates) instead of window medians.
+
 **The survey tooling** (FR-M6), for a surveyed anchor solution before any tag is tracked:
 
 - [x] **Burst history and aggregates** (2026-11-05): every Link record the sinks mirror is kept
