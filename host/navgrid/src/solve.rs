@@ -107,6 +107,10 @@ pub struct Solution {
     pub placed: Vec<Placed>,
     pub unsolved: Vec<NodeId>,
     pub fits: Vec<LinkFit>,
+    /// With fewer than two pins, the solution is in a local frame: the first node at the origin,
+    /// the second on +x at their measured distance, heights around 0. The mesh's shape, not
+    /// where it is; such positions are not for writing to the mesh.
+    pub local_frame: Option<(NodeId, NodeId)>,
 }
 
 impl Solution {
@@ -187,6 +191,15 @@ pub fn solve_pairs(
     if ids.is_empty() {
         bail!("no nodes or links in the mesh state");
     }
+    let local_frame = if pins.len() < 2 {
+        let gauge = local_gauge(pairs, offset_m);
+        if let Some((a, b, d)) = gauge {
+            pins = vec![(a, [0.0, 0.0, 0.0]), (b, [d, 0.0, 0.0])];
+        }
+        gauge.map(|(a, b, _)| (a, b))
+    } else {
+        None
+    };
     let index = |id: NodeId| ids.iter().position(|&x| x == id).expect("listed");
     let pin_list: Vec<Pin> = pins
         .iter()
@@ -257,7 +270,25 @@ pub fn solve_pairs(
         placed,
         unsolved,
         fits,
+        local_frame,
     })
+}
+
+/// The two nodes a local frame hangs on, and the distance between them less the offset: the node
+/// in the most pairs, and of its pairs the one with the most bursts and then the smallest sigma.
+fn local_gauge(pairs: &[PairStats], offset_m: f32) -> Option<(NodeId, NodeId, f32)> {
+    let mut degree: BTreeMap<NodeId, usize> = BTreeMap::new();
+    for p in pairs {
+        *degree.entry(p.a).or_default() += 1;
+        *degree.entry(p.b).or_default() += 1;
+    }
+    let (&origin, _) = degree.iter().max_by_key(|&(id, n)| (*n, core::cmp::Reverse(*id)))?;
+    let best = pairs
+        .iter()
+        .filter(|p| p.a == origin || p.b == origin)
+        .max_by(|x, y| x.n.min(10).cmp(&y.n.min(10)).then(y.sigma_m.total_cmp(&x.sigma_m)))?;
+    let other = if best.a == origin { best.b } else { best.a };
+    Some((origin, other, (best.median_m - offset_m).max(0.1)))
 }
 
 /// The controller's Position records for a solution.
@@ -342,6 +373,13 @@ pub fn run(args: &SolveArgs) -> Result<()> {
         "{} nodes, {} pins, {} links; {} iterations, normalized rms {:.2}, {} links cut as bounces\n",
         solution.nodes, solution.pins, solution.links, solution.iterations, solution.normalized_rms, solution.outliers
     );
+    if let Some((a, b)) = solution.local_frame {
+        println!(
+            "fewer than two pins: a local frame, {} at the origin and {} on +x; the shape only\n",
+            name(a),
+            name(b)
+        );
+    }
     println!(
         "{:<8} {:>8} {:>8} {:>8} {:>18} how",
         "node", "x m", "y m", "z m", "σ m (x y z)"
@@ -388,6 +426,9 @@ pub fn run(args: &SolveArgs) -> Result<()> {
     let Some(port) = &args.sink else {
         return Ok(());
     };
+    if solution.local_frame.is_some() {
+        bail!("a local frame is not written to the mesh: pin at least two nodes");
+    }
     let mut writer = controller_writer();
     let positions = position_records(&solution, &mut writer);
     let mut port = serialport::new(port, args.baud)
@@ -439,4 +480,67 @@ fn echoed(port: &mut dyn serialport::SerialPort, record: &Record) -> Result<bool
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pair(a: u64, b: u64, distance_m: f32) -> PairStats {
+        PairStats {
+            a: NodeId(a),
+            b: NodeId(b),
+            n: 20,
+            from_a: 10,
+            from_b: 10,
+            median_m: distance_m + 1.5,
+            spread_m: 0.3,
+            sigma_m: 0.07,
+            last_m: distance_m + 1.5,
+            last_at_s: 0,
+            quality: 250,
+            paths: 4,
+        }
+    }
+
+    #[test]
+    fn without_pins_the_shape_comes_out_in_a_local_frame() {
+        let at = [[0.0f32, 0.0], [5.0, 0.0], [0.0, 4.0], [5.0, 4.0]];
+        let mut pairs = Vec::new();
+        for i in 0..4 {
+            for j in i + 1..4 {
+                let d = ((at[i][0] - at[j][0]).powi(2) + (at[i][1] - at[j][1]).powi(2)).sqrt();
+                pairs.push(pair(i as u64 + 1, j as u64 + 1, d));
+            }
+        }
+        let replica = crate::mesh_view::host_replica();
+        let s = solve_pairs(&replica, &[], &pairs, 1.5, 0.3).unwrap();
+        let (origin, x_axis) = s.local_frame.expect("a local frame");
+        assert_ne!(origin, x_axis);
+        assert_eq!(s.placed.len(), 4, "unsolved: {:?}", s.unsolved);
+        let pos = |id: u64| s.placed.iter().find(|p| p.id == NodeId(id)).unwrap().position;
+        for i in 0..4 {
+            for j in i + 1..4 {
+                let (a, b) = (pos(i as u64 + 1), pos(j as u64 + 1));
+                let solved = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+                let truth = ((at[i][0] - at[j][0]).powi(2) + (at[i][1] - at[j][1]).powi(2)).sqrt();
+                assert!(
+                    (solved - truth).abs() < 0.05,
+                    "{}–{}: {solved} against {truth}",
+                    i + 1,
+                    j + 1
+                );
+            }
+        }
+        // Two pins: their frame, no local one.
+        let pinned = solve_pairs(
+            &replica,
+            &[(NodeId(1), [0.0, 0.0, 0.0]), (NodeId(2), [5.0, 0.0, 0.0])],
+            &pairs,
+            1.5,
+            0.3,
+        )
+        .unwrap();
+        assert!(pinned.local_frame.is_none());
+    }
 }

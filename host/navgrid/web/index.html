@@ -113,7 +113,9 @@ async function refresh() {
 
 function positionOf(n) {
   if (n.pinned) return { x: n.pinned.x, y: n.pinned.y, z: n.pinned.z, how: 'pin' };
+  if (n.solved && n.solved.local) return { ...n.solved, how: n.solved.gauge ? 'gauge' : 'local' };
   if (n.position) return { ...n.position, how: 'solved' };
+  if (n.solved) return { ...n.solved, how: 'solved' };
   if (n.own_position) return { ...n.own_position, how: 'own' };
   return null;
 }
@@ -178,6 +180,9 @@ function render() {
   $('#solve').textContent = state.solve
     ? `solved ${state.solve.ago_s} s ago: ${state.solve.nodes} nodes, ${state.solve.pins} pins, ${state.solve.links} links, rms ${fmt(state.solve.normalized_rms)}, ${state.solve.outliers} bounces cut` + (state.solve.unsolved.length ? `, unsolved: ${state.solve.unsolved.join(' ')}` : '')
     : 'not solved yet';
+  if (state.solve && state.solve.local_frame) {
+    $('#solve').textContent += ` — local frame: ${state.solve.local_frame[0]} at the origin, ${state.solve.local_frame[1]} on +x; the shape only, not written to the mesh until two nodes are pinned`;
+  }
   for (const sel of document.querySelectorAll('select[name=from], select[name=to], select[name=target], select[name=node]')) {
     const current = sel.value;
     sel.innerHTML = nodes.map((n) => `<option value="${n.name}">${n.name} (${n.role})</option>`).join('');
@@ -229,8 +234,9 @@ function drawMap(nodes) {
   ctx.globalAlpha = 1;
   for (const { n, p } of placed) {
     const x = sx(p.x), y = sy(p.y);
-    if (p.how === 'solved' && n.position && n.position.sigma) {
-      const r = Math.max(n.position.sigma[0], n.position.sigma[1]) * scale;
+    const sig = (n.position && n.position.sigma) || (n.solved && n.solved.sigma);
+    if ((p.how === 'solved' || p.how === 'local') && sig && sig[0] != null) {
+      const r = Math.max(sig[0], sig[1]) * scale;
       if (r > 1 && r < W) {
         ctx.strokeStyle = fg; ctx.globalAlpha = 0.25; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
@@ -242,7 +248,7 @@ function drawMap(nodes) {
     ctx.lineWidth = 2;
     if (n.role === 'Anchor') {
       ctx.beginPath(); ctx.rect(x - 6, y - 6, 12, 12);
-      if (p.how === 'pin') ctx.fill(); else ctx.stroke();
+      if (p.how === 'pin' || p.how === 'gauge') ctx.fill(); else ctx.stroke();
     } else {
       ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
       if (p.how === 'own') ctx.stroke(); else ctx.fill();

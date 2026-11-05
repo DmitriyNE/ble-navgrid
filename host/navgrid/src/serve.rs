@@ -153,6 +153,19 @@ impl Service {
         }
     }
 
+    /// Where the last solve put `id`, if it did: what the page draws when the mesh holds no
+    /// position for it yet (a local frame, or a solve not written back).
+    fn solved_of(&self, id: NodeId) -> Option<Value> {
+        let (_, s) = self.last_solve.as_ref()?;
+        let p = s.placed.iter().find(|p| p.id == id)?;
+        let sigma = |v: f32| if v.is_finite() { Value::from(v) } else { Value::Null };
+        Some(json!({
+            "x": p.position[0], "y": p.position[1], "z": p.position[2],
+            "sigma": [sigma(p.sigma_m[0]), sigma(p.sigma_m[1]), sigma(p.sigma_m[2])],
+            "gauge": p.pinned && s.local_frame.is_some(), "local": s.local_frame.is_some(),
+        }))
+    }
+
     /// Bursts before this don't count in the survey.
     fn since_s(&self) -> u64 {
         if self.window_s == 0 {
@@ -259,6 +272,7 @@ impl Service {
                         "pinned": pinned, "health": health,
                         "position": self.position_of(CONTROLLER, r.origin),
                         "own_position": self.position_of(r.origin, r.origin),
+                        "solved": self.solved_of(r.origin),
                     }));
                 }
                 Body::Link(l) => links.push(json!({
@@ -298,6 +312,7 @@ impl Service {
                 "ago_s": at.elapsed().as_secs(), "nodes": s.nodes, "pins": s.pins, "links": s.links,
                 "iterations": s.iterations, "normalized_rms": s.normalized_rms, "outliers": s.outliers,
                 "unsolved": s.unsolved.iter().map(|&id| self.name(id)).collect::<Vec<_>>(),
+                "local_frame": s.local_frame.map(|(a, b)| [self.name(a), self.name(b)]),
             })
         });
         let heard_ids: Vec<NodeId> = nodes
@@ -527,7 +542,12 @@ fn solve_now(shared: &Shared, port: &Port) -> Result<Value> {
         let pins: Vec<(NodeId, [f32; 3])> = s.pins.iter().map(|(&id, &p)| (id, p)).collect();
         let pairs = s.survey_pairs();
         let solution = solve_pairs(&s.replica, &pins, &pairs, s.offset_m, s.height_sigma_m)?;
-        let records = position_records(&solution, &mut s.writer);
+        // A local frame stays on the page: the mesh gets positions once pins fix the frame.
+        let records = if solution.local_frame.is_some() {
+            Vec::new()
+        } else {
+            position_records(&solution, &mut s.writer)
+        };
         s.last_solve = Some((Instant::now(), solution.clone()));
         // Into the host's own view at once; the sink mirrors the same versions back later.
         let now = s.now_ms();
