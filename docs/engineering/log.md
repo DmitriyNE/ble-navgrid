@@ -4,6 +4,19 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**Approximate positions, and a frame that can't hang on a bad pair.** A pair can read short
+too (N006–N002 read 2.9 m short, and the user confirmed the shape that says so), so the
+one-sided rule alone can pick the wrong explanation: in a test, a short pair with the most
+bursts became the local frame's gauge, was held exactly, and bent two good pairs into
+"reflections". Now a local frame holds only its origin and puts the second node on +x with its
+distance free (position priors take a sigma per axis), tries six gauge pairs and keeps the one
+most links agree with, and the leave-one/two-out consensus runs whenever any link was set
+aside, not only on a bad rms (up to 40 links; beyond, the robust loss alone). Approximate
+positions (pick a node on the page, press place, click; ± a sigma) are soft priors: three fix
+the frame's origin, rotation and handedness while the ranges keep the shape; a mirror switch
+flips a local frame meanwhile. The live survey solves to rms 0.04 with the same two pairs left
+out whichever gauge wins.
+
 **Reflections in the survey, and the first surveyed shape.** Fourteen minutes into the new
 survey the solve was poor (normalized rms 6) because the data contradicted itself: N004–N005
 read 16.5 m where N004–N001 and N001–N005 add to 11.4, N004–N002 10.3 m where the other two
