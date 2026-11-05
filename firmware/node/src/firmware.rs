@@ -18,6 +18,7 @@
 //! Controller asserts (DEF-38).
 
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use defmt::{info, warn};
 use embassy_boot::{FirmwareState, State};
@@ -90,12 +91,15 @@ fn header_at(at: u32) -> Option<UpdateHeader> {
     UpdateHeader::decode(page).ok()
 }
 
-/// Whether the running image is confirmed. Until it is, the update slot holds the image a revert
-/// would put back, so nothing may write it.
-pub async fn confirmed(rram: &'static Rram) -> bool {
-    let mut aligned = [0u8; 16];
-    matches!(bootloader_state(rram, &mut aligned).get_state().await, Ok(State::Boot))
+/// Whether the running image is confirmed, as [`run`] found it at boot or made it since. Until
+/// it is, the update slot holds the image a revert would put back, so nothing may write it.
+/// A flag rather than a read of the state page: that read goes through MPSL timeslots, and a
+/// node declined every offer while its links were busy (log 2026-11-05).
+pub fn confirmed() -> bool {
+    CONFIRMED.load(Ordering::Acquire)
 }
+
+static CONFIRMED: AtomicBool = AtomicBool::new(false);
 
 const FEED_EVERY: Duration = Duration::from_secs(1);
 /// How often the stack's high-water mark is logged (DEF-68).
@@ -119,6 +123,7 @@ pub async fn run(wdt: Peri<'static, WDT0>, rram: &'static Rram, mut boot: Boot) 
     let mut aligned = [0u8; 16];
     let mut state = bootloader_state(rram, &mut aligned);
     let state_now = state.get_state().await;
+    CONFIRMED.store(matches!(state_now, Ok(State::Boot)), Ordering::Release);
     boot.image = match state_now {
         Ok(State::Swap) => ImageState::Unconfirmed,
         Ok(State::Revert) => ImageState::Reverted(reverted_from()),
@@ -171,6 +176,7 @@ pub async fn run(wdt: Peri<'static, WDT0>, rram: &'static Rram, mut boot: Boot) 
                     Err(e) => warn!("firmware: confirm: {:?}", e),
                 }
                 unconfirmed = false;
+                CONFIRMED.store(true, Ordering::Release);
             } else if started.elapsed() > CONFIRM_WITHIN {
                 warn!("firmware: not back in the mesh within 5 min: restarting, so the bootloader reverts");
                 cortex_m::peripheral::SCB::sys_reset();

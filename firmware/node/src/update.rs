@@ -115,13 +115,12 @@ pub enum Offered {
 pub async fn offer(
     stack: &Stack<'_, '_>,
     conn: &Connection<'_, DefaultPacketPool>,
-    rram: &'static Rram,
     params: Option<TransferParams>,
 ) -> Offered {
     let Some((header, at)) = firmware::servable() else {
         return Offered::Nothing;
     };
-    if at == ACTIVE && !firmware::confirmed(rram).await {
+    if at == ACTIVE && !firmware::confirmed() {
         info!("update: not offering {}: not confirmed here yet", header.firmware);
         return Offered::Nothing;
     }
@@ -254,7 +253,7 @@ pub async fn take(
     if channel.spsm() != UPDATE_SPSM {
         return;
     }
-    let Some((header, from)) = answer(stack, &mut channel, rram).await else {
+    let Some((header, from)) = answer(stack, &mut channel).await else {
         return;
     };
     if widen {
@@ -301,7 +300,6 @@ async fn packet_length(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacke
 async fn answer(
     stack: &Stack<'_, '_>,
     channel: &mut L2capChannel<'_, DefaultPacketPool>,
-    rram: &'static Rram,
 ) -> Option<(UpdateHeader, usize)> {
     let mut rx = [0u8; UPDATE_HEADER_LEN + 1];
     let mut tx = [0u8; 16];
@@ -313,7 +311,7 @@ async fn answer(
         && header.firmware != crate::FIRMWARE
         && !reverted(&header)
         && by_controller(&header)
-        && takes(&header, rram).await;
+        && takes(&header).await;
     let busy = wanted && TAKING.swap(true, Ordering::Acquire);
     if busy {
         info!(
@@ -460,14 +458,14 @@ fn reverted(header: &UpdateHeader) -> bool {
 }
 
 /// Whether this node may write its update slot for `header`, saying why not.
-async fn takes(header: &UpdateHeader, rram: &'static Rram) -> bool {
+async fn takes(header: &UpdateHeader) -> bool {
     if header.len > ACTIVE_LEN {
         info!(
             "update: declining {}: {=u32} bytes is too long",
             header.firmware, header.len
         );
         false
-    } else if !firmware::confirmed(rram).await {
+    } else if !firmware::confirmed() {
         info!("update: declining {}: this image isn't confirmed yet", header.firmware);
         false
     } else {
@@ -692,7 +690,7 @@ mod sink {
                 }
                 // The slot is about to change: stop passing on what it held, and forget a
                 // transfer into it that broke off.
-                if !takes(&header, rram).await || !unstage(rram).await {
+                if !takes(&header).await || !unstage(rram).await {
                     return Some(UpdateAnswer::Decline);
                 }
                 PARTIAL.lock(|p| p.set(None));

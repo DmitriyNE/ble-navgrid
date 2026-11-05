@@ -860,7 +860,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         let _ = carrying.try_get();
         self.link_known(peer).await;
         loop {
-            let again = match update::offer(self.stack, conn, self.rram, self.transfer_params(peer)).await {
+            let again = match update::offer(self.stack, conn, self.transfer_params(peer)).await {
                 update::Offered::BrokeOff => OFFER_AGAIN_SOON,
                 _ => update::OFFER_EVERY,
             };
@@ -874,7 +874,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     async fn offers(&self, conn: &Connection<'s, DefaultPacketPool>, peer: NodeId) {
         self.link_known(peer).await;
         loop {
-            let again = match update::offer(self.stack, conn, self.rram, self.transfer_params(peer)).await {
+            let again = match update::offer(self.stack, conn, self.transfer_params(peer)).await {
                 update::Offered::BrokeOff => OFFER_AGAIN_SOON,
                 _ => update::OFFER_EVERY,
             };
