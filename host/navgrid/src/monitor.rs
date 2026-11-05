@@ -56,14 +56,14 @@ impl View {
     }
 
     /// Records in the registry that `id` runs `firmware`, if the registry thought otherwise;
-    /// returns whether it changed. An unknown `id` makes it re-read the registry first.
+    /// returns whether it changed. Re-reads the registry first: another command may have
+    /// enrolled or flashed a device since this one loaded it, and a save from a stale copy
+    /// would drop that (N007 vanished this way on 2026-11-05).
     fn learn(&mut self, id: NodeId, firmware: &Firmware) -> bool {
         let Some(fleet) = &self.fleet else {
             return false;
         };
-        if self.registry.as_ref().is_none_or(|r| r.by_id(id).is_none())
-            && let Ok(fresh) = fleet.registry()
-        {
+        if let Ok(fresh) = fleet.registry() {
             self.registry = Some(fresh);
         }
         let Some(registry) = self.registry.as_mut() else {
