@@ -19,6 +19,15 @@ slot, so every later session waited 20 s for it and gave up (DEF-73, fixed with 
 408c317); a reset cleared it meanwhile and the sink synced within seconds. N005 showed the
 same leak against N004, so the fix goes to every node.
 
+**The same leak in the update receiver.** Asked why links still fail: two of the day's three
+link failures were one shape, a flag set at the start of an exchange and cleared at its end,
+with nothing clearing it when the exchange's future is dropped because its link fell. Sessions
+had it (DEF-73); the update receiver's `TAKING` flag has it too (DEF-74), which is the mesh
+build's form of DEF-70. Both hold a guard now, and a session slot held over 2 min is freed by
+whoever waits for it next, so one stuck exchange can no longer take a node's sessions down for
+good. The third failure was the rollout's own catch: a node on the leaking build can't get past
+the first session to take the fix, so it needs a restart first.
+
 **Survey tooling, first cut.** The office's first anchor links read ±1.2 to ±5.7 m at 7 to
 13 m from the sink's one-path bursts and ±1.6 m at 7.3 m between two TAGs, so one burst can't
 survey anything. The host now keeps every burst the sinks mirror, per pair, in `survey.jsonl`,

@@ -253,7 +253,7 @@ pub async fn take(
     if channel.spsm() != UPDATE_SPSM {
         return;
     }
-    let Some((header, from)) = answer(stack, &mut channel).await else {
+    let Some((header, from, taking)) = answer(stack, &mut channel).await else {
         return;
     };
     if widen {
@@ -261,7 +261,7 @@ pub async fn take(
     }
     // Returns only if the transfer failed; otherwise the node restarts into the update.
     receive(stack, &mut channel, rram, header, from).await;
-    TAKING.store(false, Ordering::Release);
+    drop(taking);
     if widen {
         packet_length(stack, conn, SHORT_LENGTH).await;
     }
@@ -295,12 +295,25 @@ async fn packet_length(stack: &Stack<'_, '_>, conn: &Connection<'_, DefaultPacke
     }
 }
 
-/// Reads the peer's offer and answers it: the header and the byte asked for from (the end of a
-/// transfer of the same build that broke off, else 0), or `None` once declined.
+/// The node's one transfer, held from a Want to the end of the take: however the take ends, a
+/// future dropped with its link included, the flag is freed. Without it, a link that fell
+/// mid-transfer left `TAKING` set for good and the node declined every later offer (DEF-70 on
+/// the pre-mesh build, the same shape as DEF-73).
+struct Taking;
+
+impl Drop for Taking {
+    fn drop(&mut self) {
+        TAKING.store(false, Ordering::Release);
+    }
+}
+
+/// Reads the peer's offer and answers it: the header, the byte asked for from (the end of a
+/// transfer of the same build that broke off, else 0) and the hold on the node's one transfer,
+/// or `None` once declined.
 async fn answer(
     stack: &Stack<'_, '_>,
     channel: &mut L2capChannel<'_, DefaultPacketPool>,
-) -> Option<(UpdateHeader, usize)> {
+) -> Option<(UpdateHeader, usize, Taking)> {
     let mut rx = [0u8; UPDATE_HEADER_LEN + 1];
     let mut tx = [0u8; 16];
     let n = channel.receive(stack, &mut rx).await.ok()?;
@@ -323,6 +336,8 @@ async fn answer(
         let _ = channel.send(stack, UpdateMsg::Decline.encode(&mut tx)).await;
         return None;
     }
+    // The swap above took the flag; from here it's held by the guard.
+    let taking = Taking;
     let from = PARTIAL
         .lock(|p| p.get())
         .filter(|(h, _)| *h == header)
@@ -335,7 +350,7 @@ async fn answer(
         .send(stack, UpdateMsg::Want { from: from as u32 }.encode(&mut tx))
         .await
         .ok()?;
-    Some((header, from))
+    Some((header, from, taking))
 }
 
 /// Whether the controller, if it has named the build for this node, named `header`'s, saying

@@ -72,6 +72,8 @@ const SESSION_IDLE: Duration = Duration::from_secs(30);
 const FIRST_HELLO_WITHIN: Duration = Duration::from_secs(45);
 /// How long a side waits for the node's one session slot.
 const SESSION_SLOT_WAIT: Duration = Duration::from_secs(20);
+/// A session held longer than this is stuck, whatever holds it: the slot is freed.
+const SESSION_MAX_MS: u64 = 120_000;
 
 /// The frame buffers of the session under way: one pair, as one session runs at a time, in a
 /// static rather than in each link's future.
@@ -668,6 +670,14 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         let started = Instant::now();
         let mine = state::header(self.role, self.sink, peer);
         while !state::begin_session(mine, SESSION_BUDGET, peer) {
+            if let Some((held, age_ms)) = state::end_stale_session(SESSION_MAX_MS) {
+                warn!(
+                    "session with {=u64:012x}: held the slot {=u64} s, freed",
+                    held.0,
+                    age_ms / 1000
+                );
+                continue;
+            }
             if started.elapsed() > SESSION_SLOT_WAIT {
                 return Err(SessionError::Busy);
             }

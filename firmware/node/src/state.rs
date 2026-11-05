@@ -59,6 +59,9 @@ struct State {
     replica: Replica<Store>,
     /// The session under way, if any: one at a time.
     session: Option<Driver>,
+    /// Who it is with and when it began, so a slot held too long can be freed (DEF-73).
+    session_peer: NodeId,
+    session_since_ms: u64,
     /// The controller's key, to check desired state against (DEF-27).
     controller_key: Option<[u8; 16]>,
 }
@@ -107,6 +110,8 @@ pub fn init(node: NodeId, sink: bool, epoch: u32, info: NodeInfo) {
             routes,
         ));
         core::ptr::addr_of_mut!((*p).session).write(None);
+        core::ptr::addr_of_mut!((*p).session_peer).write(NodeId(0));
+        core::ptr::addr_of_mut!((*p).session_since_ms).write(0);
         core::ptr::addr_of_mut!((*p).controller_key).write(None);
         &mut *p
     };
@@ -325,7 +330,28 @@ pub fn begin_session(mine: Header, budget: u32, peer: NodeId) -> bool {
             .memory(peer)
             .map(|(sent, received)| (sent.iter().copied().collect(), received.iter().copied().collect()));
         s.session = Some(Driver::new(mine, budget, memory));
+        s.session_peer = peer;
+        s.session_since_ms = now_ms();
         true
+    })
+}
+
+/// Frees the session slot if its session began more than `max_ms` ago: the belt under the
+/// guard in `mesh` that frees it when a session's future is dropped (DEF-73). The peer it was
+/// with and its age, if it freed one.
+pub fn end_stale_session(max_ms: u64) -> Option<(NodeId, u64)> {
+    STATE.lock(|s| {
+        let mut s = s.borrow_mut();
+        let s = s.as_mut()?;
+        s.session.as_ref()?;
+        let age = now_ms().saturating_sub(s.session_since_ms);
+        if age <= max_ms {
+            return None;
+        }
+        let peer = s.session_peer;
+        s.session = None;
+        s.replica.forget(peer);
+        Some((peer, age))
     })
 }
 
