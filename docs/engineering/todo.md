@@ -180,15 +180,17 @@ The fleet move (log 2026-11-04/05), next:
 - [ ] **The ACL on 1M:** every link is moved to 2M at link-up (copied from Zephyr's sample, for
       throughput) and CS sync runs on 2M; 2M is the least sensitive PHY, about 4 dB below 1M.
       Leave the ACL on 1M, keep CS sync on 2M, measure sessions and updates. Over the air.
-- [ ] **Coded PHY for the anchor backbone** (not the links tags range on): +12 dB at S=8 for
-      room-to-room hops and marginal anchor links; beacons on a Coded advertising set beside the
-      1M one, or every node scanning both PHYs. Constraints found 2026-11-05: Nordic's controller
-      limits Coded PHY connection payloads to 27 bytes (DRGN-8476 on its limitations page), so
-      sessions fragment and an update hop runs at a few KB/s; the survey bursts on anchor links
-      need 1M/2M (whether CS may start on a Coded connection at all is unconfirmed: try it), so a
-      PHY update around each burst; and the controller's Coded support costs RAM out of the stack
-      region, so DEF-68 first. A one-hour bench spike decides: compile Coded in, measure the
-      controller's memory, one anchor link on Coded with a session, an update and a burst over it.
+- [ ] **Coded PHY for the anchor backbone, to evaluate later** (not the links tags range on),
+      only once the current build runs without kinks and the mesh's reach, not the software, is
+      what limits a deployment: +12 dB at S=8 for room-to-room hops and marginal anchor links;
+      beacons on a Coded advertising set beside the 1M one, or every node scanning both PHYs.
+      Constraints found 2026-11-05: Nordic's controller limits Coded PHY connection payloads to
+      27 bytes (DRGN-8476 on its limitations page), so sessions fragment and an update hop runs
+      at a few KB/s; the survey bursts on anchor links need 1M/2M (whether CS may start on a
+      Coded connection at all is unconfirmed), so a PHY update around each burst; and the
+      controller's Coded support costs RAM out of the stack region, so DEF-68 first. When the
+      time comes, a one-hour bench spike decides: compile Coded in, measure the controller's
+      memory, one anchor link on Coded with a session, an update and a burst over it.
 Left from them: measure the TAG and DK 32 kHz crystals against a reference and declare their
 real accuracy (DEF-2), and find what wedges the sink's uploads (DEF-46).
 
