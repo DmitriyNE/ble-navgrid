@@ -345,7 +345,11 @@ impl Service {
                             "name": crate::fleet::label_name(d.number), "label": d.name,
                             "role": format!("{:?}", d.role), "sink": d.sink,
                             "status": format!("{:?}", d.status).to_lowercase(),
-                            "heard": heard_ids.contains(&d.id) || self.nearby.contains_key(&d.id),
+                            // A sink reporting beacons is alive though it never hears itself, and
+                            // its own records may not have come round yet.
+                            "heard": heard_ids.contains(&d.id)
+                                || self.nearby.contains_key(&d.id)
+                                || self.nearby.values().any(|(h, _)| h.node == d.id),
                         })
                     })
                     .collect()
