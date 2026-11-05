@@ -80,6 +80,8 @@
     <form id="survey">
       <label>window <select name="window_s"><option value="1800">30 min</option><option value="7200">2 h</option><option value="28800">8 h</option><option value="86400">24 h</option><option value="0">all</option></select></label>
       <button type="submit">apply</button>
+      <button type="button" id="survey-start" title="count only bursts from now on, e.g. once every node sits where it stays">start afresh</button>
+      <button type="button" id="survey-all" title="count the earlier bursts again">all bursts</button>
       <span class="muted">each pair: the median over its bursts in the window, its spread, the σ the solver believes, and how the last solve fitted it</span>
     </form>
     <table id="survey-pairs"><thead><tr><th>pair</th><th class="r">bursts</th><th class="r">median m</th><th class="r">spread</th><th class="r">σ</th><th class="r">last m</th><th class="r">age s</th><th class="r">quality</th><th class="r">solved m</th><th class="r">residual</th></tr></thead><tbody></tbody></table>
@@ -149,7 +151,7 @@ function render() {
       `<td class="r">${fmt(p.last_m)}</td><td class="r">${p.last_age_s ?? ''}</td><td class="r">${p.quality}</td><td class="r">${fmt(p.solved_m)}</td><td class="r ${fitClass(p)}">${res}</td>`;
     sb.appendChild(tr);
   }
-  $('#survey-summary').textContent = `${sv.observations} bursts kept, ${sv.pairs.length} pairs in the window (${sv.window_s ? `${sv.window_s / 60} min` : 'all'})`;
+  $('#survey-summary').textContent = `${sv.observations} bursts kept, ${sv.pairs.length} pairs in the window (${sv.window_s ? `${sv.window_s / 60} min` : 'all'}${sv.start_age_s != null ? `, started afresh ${Math.round(sv.start_age_s / 60)} min ago` : ''})`;
   const wsel = document.querySelector('#survey select[name=window_s]');
   if (wsel && document.activeElement !== wsel) wsel.value = String(sv.window_s);
   const cb = $('#commands tbody');
@@ -298,6 +300,9 @@ $('#survey').addEventListener('submit', async (e) => {
   $('#survey-summary').textContent = r.error ? r.error : `${r.observations} bursts kept, ${r.pairs.length} pairs in the window`;
   refresh();
 });
+
+$('#survey-start').addEventListener('click', async () => { await post('/api/survey', { start: true }); refresh(); });
+$('#survey-all').addEventListener('click', async () => { await post('/api/survey', { start: false }); refresh(); });
 
 $('#pin').addEventListener('submit', async (e) => {
   e.preventDefault();

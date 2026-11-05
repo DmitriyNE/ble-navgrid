@@ -83,6 +83,10 @@ struct Service {
     survey_log: Option<std::fs::File>,
     /// Bursts older than this don't count; 0 = all of them.
     window_s: u64,
+    /// Bursts before this (seconds since the epoch) don't count either: the survey started
+    /// afresh, e.g. once every node sat where it stays. 0 = not set. Kept in `survey-start`.
+    start_s: u64,
+    start_path: PathBuf,
     writer: Writer,
     controller_key: Option<[u8; 16]>,
     started: Instant,
@@ -170,11 +174,12 @@ impl Service {
 
     /// Bursts before this don't count in the survey.
     fn since_s(&self) -> u64 {
-        if self.window_s == 0 {
+        let window = if self.window_s == 0 {
             0
         } else {
             now_s().saturating_sub(self.window_s)
-        }
+        };
+        window.max(self.start_s)
     }
 
     /// The pairs the solver takes: the survey's aggregates, or, with no survey yet (a replay),
@@ -210,6 +215,7 @@ impl Service {
             .collect();
         json!({
             "window_s": self.window_s, "observations": self.history.len(), "pairs": pairs,
+            "start_age_s": if self.start_s == 0 { Value::Null } else { now.saturating_sub(self.start_s).into() },
         })
     }
 
@@ -420,6 +426,11 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         History::default()
     });
     let survey_log = OpenOptions::new().append(true).create(true).open(&survey_path).ok();
+    let start_path = dir.join("survey-start");
+    let start_s = std::fs::read_to_string(&start_path)
+        .ok()
+        .and_then(|t| t.trim().parse::<u64>().ok())
+        .unwrap_or(0);
     let pins_path = dir.join("pins.json");
     let mut replica = crate::mesh_view::host_replica();
     replica.config_mut().controller_key = controller_key;
@@ -435,6 +446,8 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         history,
         survey_log,
         window_s: SURVEY_WINDOW_S,
+        start_s,
+        start_path,
         writer: controller_writer(),
         controller_key,
         started: Instant::now(),
@@ -692,12 +705,19 @@ fn control(shared: &Shared, port: &Port, body: &[u8]) -> Result<Value> {
     Ok(json!({"sent": true, "version": format!("{}.{}", record.version.epoch, record.version.counter)}))
 }
 
-/// The survey window from the page: `{"window_s": 7200}`, 0 for every burst kept.
+/// The survey from the page: `{"window_s": 7200}` (0 for every burst kept), `{"start": true}` to
+/// count only bursts from now on, `{"start": false}` to count the earlier ones again.
 fn survey_window(shared: &Shared, body: &[u8]) -> Result<Value> {
     let v: Value = serde_json::from_slice(body).context("the request body")?;
-    let window_s = v.get("window_s").and_then(Value::as_u64).context("no window_s")?;
     let mut s = shared.lock().expect("service");
-    s.window_s = window_s;
+    if let Some(window_s) = v.get("window_s").and_then(Value::as_u64) {
+        s.window_s = window_s;
+    }
+    if let Some(start) = v.get("start").and_then(Value::as_bool) {
+        s.start_s = if start { now_s() } else { 0 };
+        let text = s.start_s.to_string();
+        std::fs::write(&s.start_path, text).with_context(|| format!("writing {}", s.start_path.display()))?;
+    }
     Ok(s.survey())
 }
 
@@ -767,6 +787,8 @@ mod tests {
             history: History::default(),
             survey_log: None,
             window_s: 0,
+            start_s: 0,
+            start_path: std::env::temp_dir().join(format!("navgrid-survey-start-test-{}", std::process::id())),
             writer: controller_writer(),
             controller_key: Some([7; 16]),
             started: Instant::now(),
