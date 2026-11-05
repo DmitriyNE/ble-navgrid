@@ -499,7 +499,15 @@ impl Service {
         // Nodes the last solve placed whose own records haven't come round yet (the sink mirrors
         // its whole state only every few minutes): on the map all the same, by the registry.
         if let Some((_, solution)) = &self.last_solve {
-            for placed in &solution.placed {
+            // Tags with a fix too: a tag is never in the anchors' solve.
+            let fixed: Vec<NodeId> = self.tag_fixes.iter().map(|f| f.id).collect();
+            for id in solution.placed.iter().map(|p| p.id).chain(fixed) {
+                let placed = crate::solve::Placed {
+                    id,
+                    position: [0.0; 3],
+                    sigma_m: [0.0; 3],
+                    pinned: false,
+                };
                 let id = format!("{:012x}", placed.id.0);
                 if nodes.iter().any(|n| n["id"] == id.as_str()) {
                     continue;
@@ -514,6 +522,12 @@ impl Service {
                     "age_s": Value::Null, "pinned": self.pins.get(&placed.id).map(|p| json!({"x": p[0], "y": p[1], "z": p[2], "placed": true})),
                     "health": Value::Null, "position": Value::Null, "own_position": Value::Null,
                     "solved": self.solved_of(placed.id), "approx": self.approx.get(&placed.id),
+                    "fix": self.tag_fixes.iter().find(|f| f.id == placed.id).map(|f| json!({
+                        "x": f.position[0], "y": f.position[1], "z": f.position[2], "sigma": f.sigma_m,
+                        "rms": f.normalized_rms, "anchors": f.anchors,
+                        "left_out": f.left_out.map(|id| self.name(id)),
+                        "age_s": now_s().saturating_sub(f.at_s),
+                    })),
                 }));
             }
         }
