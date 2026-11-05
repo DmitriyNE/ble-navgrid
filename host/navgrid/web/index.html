@@ -146,6 +146,7 @@ async function refresh() {
 
 function positionOf(n) {
   if (n.pinned) return { x: n.pinned.x, y: n.pinned.y, z: n.pinned.z, how: 'pin' };
+  if (n.fix) return { ...n.fix, how: n.fix.age_s > 60 ? 'fix, stale' : 'fix' };
   if (n.solved && n.solved.local) return { ...n.solved, how: n.solved.gauge ? 'gauge' : 'local' };
   if (n.position) return { ...n.position, how: 'solved' };
   if (n.solved) return { ...n.solved, how: 'solved' };
@@ -502,7 +503,8 @@ function draw2d(ctx, W, H, { placed, pairs, byName, zlo, zhi }) {
   const items = [];
   for (const { n, p } of placed) {
     const x = sx(p.x), y = sy(p.y);
-    const sig = (p.how === 'solved' || p.how === 'local') && ((n.position && n.position.sigma) || (n.solved && n.solved.sigma));
+    const sig = (p.how === 'solved' || p.how === 'local') && ((n.position && n.position.sigma) || (n.solved && n.solved.sigma))
+      || (p.how.startsWith('fix') && n.fix && n.fix.sigma);
     if (sig && sig[0] != null && sig[1] != null) {
       const rx = sig[0] * scale, ry = sig[1] * scale;
       if (rx > 1 && ry > 1 && rx < W && ry < H) {
@@ -639,12 +641,13 @@ function renderSelection(nodes) {
 }
 
 function nodeCard(n, p) {
-  const sig = (n.position && n.position.sigma) || (n.solved && n.solved.sigma);
+  const sig = (n.fix && n.fix.sigma) || (n.position && n.position.sigma) || (n.solved && n.solved.sigma);
   const rows = [
     `<b>${n.name}</b> ${n.role}${n.sink ? ' (sink)' : ''}${n.label ? ` · ${n.label}` : ''}`,
     `x ${fmt(p.x)} y ${fmt(p.y)} z ${fmt(p.z)} m <span class="muted">${p.how}</span>`,
   ];
   if (sig && sig[0] != null) rows.push(`σ ${fmt(sig[0])} ${fmt(sig[1])} ${fmt(sig[2])} m`);
+  if (n.fix) rows.push(`fixed from ${n.fix.anchors} anchors${n.fix.left_out ? ` (${n.fix.left_out} left out)` : ''}, rms ${fmt(n.fix.rms)}, ${n.fix.age_s} s ago`);
   if (n.baro) rows.push(`${fmt(n.baro.pressure_pa / 100, 2)} hPa, ${fmt(n.baro.temperature_c, 1)} °C${n.baro.z_m != null ? `, baro z ${fmt(n.baro.z_m)} ± ${fmt(n.baro.sigma_m)} m` : ''}${n.baro.offset_pa == null ? ' (not calibrated)' : ''}`);
   if (n.health) rows.push(`${n.health.battery_mv} mV`);
   if (n.firmware) rows.push(`firmware ${n.firmware}`);

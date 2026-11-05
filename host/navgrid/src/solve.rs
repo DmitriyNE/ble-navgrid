@@ -466,6 +466,122 @@ pub fn solve_pairs_except(
     })
 }
 
+/// A tag's position from its latest bursts with the solved anchors.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TagFix {
+    pub id: NodeId,
+    pub position: [f32; 3],
+    pub sigma_m: [f32; 3],
+    pub normalized_rms: f32,
+    /// Anchors it was fixed from, and the one left out as a reflection, if any.
+    pub anchors: usize,
+    pub left_out: Option<NodeId>,
+    /// When its newest burst was, seconds since the epoch.
+    pub at_s: u64,
+}
+
+/// Bursts a tag's fix is the median of: those within this of its newest.
+pub const TAG_WINDOW_S: u64 = 20;
+
+/// Each tag's position from its bursts with anchors the solution placed, the window ending at
+/// its newest burst: the medians per anchor, multilaterated, the tag's barometric height in
+/// `heights` if it has one (else a loose prior at the anchors' mean height). With four anchors
+/// or more and a bad fit, each is left out in turn and the best fit kept.
+pub fn fix_tags(
+    history: &crate::survey::History,
+    solution: &Solution,
+    tags: &[NodeId],
+    heights: &Heights,
+    offset_m: f32,
+) -> Vec<TagFix> {
+    use navgrid_solver::{Height, Options, RangeObs, multilaterate};
+    let anchor_at = |id: NodeId| solution.placed.iter().find(|p| p.id == id).map(|p| p.position);
+    let mut out = Vec::new();
+    for &tag in tags {
+        let all = history.aggregate(0, 0);
+        let newest = all
+            .iter()
+            .filter(|p| p.a == tag || p.b == tag)
+            .map(|p| p.last_at_s)
+            .max();
+        let Some(newest) = newest else {
+            continue;
+        };
+        let recent = history.aggregate(newest.saturating_sub(TAG_WINDOW_S), 100);
+        let obs: Vec<(NodeId, RangeObs)> = recent
+            .iter()
+            .filter(|p| p.a == tag || p.b == tag)
+            .filter_map(|p| {
+                let other = if p.a == tag { p.b } else { p.a };
+                anchor_at(other).map(|anchor| {
+                    (
+                        other,
+                        RangeObs {
+                            anchor,
+                            distance_m: (p.median_m - offset_m).max(0.1),
+                            sigma_m: p.sigma_m.max(0.25),
+                        },
+                    )
+                })
+            })
+            .collect();
+        if obs.len() < 3 {
+            continue;
+        }
+        let mean_z = obs.iter().map(|o| o.1.anchor[2]).sum::<f32>() / obs.len() as f32;
+        let height = match heights.iter().find(|h| h.0 == tag) {
+            Some(&(_, z, sigma)) => Height::Observed {
+                z,
+                sigma_m: sigma.max(0.1),
+            },
+            None => Height::Observed {
+                z: mean_z,
+                sigma_m: 1.0,
+            },
+        };
+        let opts = Options {
+            height,
+            ..Options::default()
+        };
+        let solve = |use_obs: &[(NodeId, RangeObs)]| {
+            let n = use_obs.len() as f32;
+            let c: [f32; 3] = core::array::from_fn(|i| use_obs.iter().map(|o| o.1.anchor[i]).sum::<f32>() / n);
+            let o: Vec<RangeObs> = use_obs.iter().map(|o| o.1).collect();
+            multilaterate(&o, [c[0] + 0.5, c[1] + 0.3, mean_z], &opts)
+        };
+        let Some(mut fix) = solve(&obs) else {
+            continue;
+        };
+        let mut left_out = None;
+        if fix.normalized_rms > 2.0 && obs.len() >= 4 {
+            for i in 0..obs.len() {
+                let fewer: Vec<(NodeId, RangeObs)> = obs
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(_, o)| *o)
+                    .collect();
+                if let Some(f) = solve(&fewer)
+                    && f.normalized_rms < fix.normalized_rms * 0.5
+                {
+                    fix = f;
+                    left_out = Some(obs[i].0);
+                }
+            }
+        }
+        out.push(TagFix {
+            id: tag,
+            position: fix.position,
+            sigma_m: fix.sigma_m,
+            normalized_rms: fix.normalized_rms,
+            anchors: obs.len() - usize::from(left_out.is_some()),
+            left_out,
+            at_s: newest,
+        });
+    }
+    out
+}
+
 /// A suspected reflection's sigma, times this: it still counts, a little.
 const SUSPECT_WEIGHT: f32 = 8.0;
 /// Above this normalized rms the consensus looks for links to leave out.
@@ -912,6 +1028,60 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_tag_is_fixed_from_its_latest_bursts_and_a_reflected_one_left_out() {
+        use crate::survey::{History, Observation};
+        let at = [[0.0f32, 0.0, 2.5], [8.0, 0.0, 2.5], [8.0, 6.0, 2.5], [0.0, 6.0, 2.5]];
+        let mut pairs = Vec::new();
+        for i in 0..at.len() {
+            for j in i + 1..at.len() {
+                let d = ((at[i][0] - at[j][0]).powi(2) + (at[i][1] - at[j][1]).powi(2)).sqrt();
+                pairs.push(pair(i as u64 + 1, j as u64 + 1, d));
+            }
+        }
+        let replica = crate::mesh_view::host_replica();
+        let pins: Vec<(NodeId, [f32; 3])> = (0..3).map(|i| (NodeId(i as u64 + 1), at[i])).collect();
+        let solution = solve_pairs(&replica, &pins, &pairs, 1.5, 0.3).unwrap();
+        // The tag at (3, 2, 1.2); its burst to anchor 3 reads 3 m long; an old burst elsewhere.
+        let tag = NodeId(100);
+        let truth = [3.0f32, 2.0, 1.2];
+        let mut history = History::default();
+        let mut counter = 0;
+        let mut burst = |history: &mut History, anchor: usize, at_s: u64, extra: f32| {
+            counter += 1;
+            let d = ((truth[0] - at[anchor][0]).powi(2)
+                + (truth[1] - at[anchor][1]).powi(2)
+                + (truth[2] - at[anchor][2]).powi(2))
+            .sqrt();
+            history.observe(Observation {
+                at_s,
+                from: tag,
+                to: NodeId(anchor as u64 + 1),
+                version: navgrid_mesh::Version { epoch: 1, counter },
+                distance_mm: ((d + 1.5 + extra) * 1000.0) as u32,
+                sigma_mm: 80,
+                quality: 240,
+                paths: 4,
+                procedures: 4,
+                failures: 0,
+            });
+        };
+        burst(&mut history, 0, 100, 5.0); // long ago, from somewhere else
+        for t in 1000..1005 {
+            burst(&mut history, 0, t, 0.0);
+            burst(&mut history, 1, t, 0.0);
+            burst(&mut history, 2, t, 3.0);
+            burst(&mut history, 3, t, 0.0);
+        }
+        let fixes = fix_tags(&history, &solution, &[tag], &[(tag, 1.2, 0.15)], 1.5);
+        assert_eq!(fixes.len(), 1);
+        let f = fixes[0];
+        let e = ((f.position[0] - truth[0]).powi(2) + (f.position[1] - truth[1]).powi(2)).sqrt();
+        assert!(e < 0.3, "{:?} against {truth:?}", f.position);
+        assert_eq!(f.left_out, Some(NodeId(3)));
+        assert_eq!(f.at_s, 1004);
     }
 
     #[test]

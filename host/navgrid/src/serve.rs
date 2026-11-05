@@ -108,6 +108,8 @@ struct Service {
     baro_log: Option<std::fs::File>,
     baro_heights: Vec<(NodeId, f32, f32)>,
     baro_reference: Option<NodeId>,
+    /// Tags placed from their latest bursts against the last solve.
+    tag_fixes: Vec<crate::solve::TagFix>,
     survey_log: Option<std::fs::File>,
     /// Bursts older than this don't count; 0 = all of them.
     window_s: u64,
@@ -172,10 +174,16 @@ impl Service {
                     let now = self.now_ms();
                     if let Some(obs) = Observation::from_record(&record, now_s())
                         && self.history.observe(obs)
-                        && let Some(log) = self.survey_log.as_mut()
-                        && let Err(e) = History::append(log, &obs)
                     {
-                        eprintln!("survey: {e:#}");
+                        if let Some(log) = self.survey_log.as_mut()
+                            && let Err(e) = History::append(log, &obs)
+                        {
+                            eprintln!("survey: {e:#}");
+                        }
+                        let registry = self.registry.as_ref();
+                        if is_tag(&self.replica, registry, obs.from) || is_tag(&self.replica, registry, obs.to) {
+                            self.refresh_tag_fixes();
+                        }
                     }
                     if let Body::Node(n) = &record.body {
                         self.learn_firmware(record.origin, n.firmware.to_string());
@@ -238,6 +246,24 @@ impl Service {
             }
         }
         self.registry = Some(registry);
+    }
+
+    /// Places the tags from their latest bursts against the last solve.
+    fn refresh_tag_fixes(&mut self) {
+        let Some((_, solution)) = &self.last_solve else {
+            return;
+        };
+        let registry = self.registry.as_ref();
+        let mut tags: Vec<NodeId> = self
+            .history
+            .aggregate(0, 0)
+            .iter()
+            .flat_map(|p| [p.a, p.b])
+            .filter(|&id| is_tag(&self.replica, registry, id))
+            .collect();
+        tags.sort();
+        tags.dedup();
+        self.tag_fixes = crate::solve::fix_tags(&self.history, solution, &tags, &self.baro_heights, self.offset_m);
     }
 
     /// What the page shows of a node's barometer: its latest reading, its offset and its height.
@@ -429,6 +455,12 @@ impl Service {
                         "own_position": self.position_of(r.origin, r.origin),
                         "solved": self.solved_of(r.origin),
                         "baro": self.baro_of(r.origin),
+                        "fix": self.tag_fixes.iter().find(|f| f.id == r.origin).map(|f| json!({
+                            "x": f.position[0], "y": f.position[1], "z": f.position[2], "sigma": f.sigma_m,
+                            "rms": f.normalized_rms, "anchors": f.anchors,
+                            "left_out": f.left_out.map(|id| self.name(id)),
+                            "age_s": now_s().saturating_sub(f.at_s),
+                        })),
                         "approx": self.approx.get(&r.origin),
                     }));
                 }
@@ -708,6 +740,7 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         baro_log,
         baro_heights: Vec::new(),
         baro_reference: None,
+        tag_fixes: Vec::new(),
         survey_log,
         window_s: SURVEY_WINDOW_S,
         start_s,
@@ -866,6 +899,7 @@ fn solve_now(shared: &Shared, port: &Port) -> Result<Value> {
             position_records(&solution, &mut s.writer)
         };
         s.last_solve = Some((Instant::now(), solution.clone()));
+        s.refresh_tag_fixes();
         // Into the host's own view at once; the sink mirrors the same versions back later.
         let now = s.now_ms();
         for r in &records {
@@ -1290,6 +1324,7 @@ mod tests {
             baro_log: None,
             baro_heights: Vec::new(),
             baro_reference: None,
+            tag_fixes: Vec::new(),
             survey_log: None,
             window_s: 0,
             start_s: 0,
