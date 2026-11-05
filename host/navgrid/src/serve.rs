@@ -481,7 +481,7 @@ impl Service {
                     "hops": Value::Null, "neighbours": Vec::<String>::new(), "firmware": "",
                     "age_s": Value::Null, "pinned": self.pins.get(&placed.id).map(|p| json!({"x": p[0], "y": p[1], "z": p[2], "placed": true})),
                     "health": Value::Null, "position": Value::Null, "own_position": Value::Null,
-                    "solved": self.solved_of(placed.id),
+                    "solved": self.solved_of(placed.id), "approx": self.approx.get(&placed.id),
                 }));
             }
         }
