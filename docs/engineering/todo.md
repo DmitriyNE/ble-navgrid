@@ -206,6 +206,9 @@ The fleet move (log 2026-11-04/05), next:
       link it briefly when an update is wanted, or let an anchor connect to it.
 - [x] **The registry's firmware field from the page:** `serve` doesn't record what nodes report
       (the monitor does), so the registry lags after over-the-air rollouts.
+- [ ] **Approximate pins and a mirror switch:** positions known roughly (a click on the plan,
+      ±0.5–1 m) as soft priors that fix origin, orientation and handedness without forcing the
+      shape; a flip for the local frame meanwhile.
 - [ ] **Sigma model for survey pairs:** a pair's median has a bias its standard error leaves
       out; the solve's normalized rms runs 3–5 with a 5 cm floor. A floor of 10–15 cm, or the
       bias fitted per link kind.

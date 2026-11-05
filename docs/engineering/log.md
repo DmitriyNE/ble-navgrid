@@ -4,6 +4,20 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**Reflections in the survey, and the first surveyed shape.** Fourteen minutes into the new
+survey the solve was poor (normalized rms 6) because the data contradicted itself: N004–N005
+read 16.5 m where N004–N001 and N001–N005 add to 11.4, N004–N002 10.3 m where the other two
+sides add to 8.5, each steady to a few centimetres burst to burst, which is a stable reflected
+path. Raising the pairs' sigma floor to 25 cm wasn't enough: the solver's symmetric cut set
+aside the wrong link and put N005 eight metres off. Three layers now: the mesh solver weighs a
+link that reads long (a bounce only ever reads long for the direct path it replaces) one-sided
+and hard, from 2σ as the fourth power; a side longer than the other two of a triangle is a
+suspect from the start, its sigma times 8; and a fit worse than rms 2 tries leaving out each
+link and each two, keeping the solution most links agree with. The live solve then fit eight
+of ten pairs to 4 cm (rms 0.04), leaving out N004–N005 (5.4 m long) and N006–N002 (3.1 m
+short, which phase-based ranging under multipath can also do). The user judged the shape right
+but mirrored: a local frame can't tell handedness, which pins (or approximate positions) fix.
+
 **The first barometer calibration.** All six TAGs side by side on one table for about eleven
 minutes (N007 by wire first: a still tag opens no links, so it never takes an update over the
 air), offsets from the per-minute median, saved in the registry: N001 +10.4, N002 −18.5, N004
