@@ -161,6 +161,9 @@ impl Service {
                     {
                         eprintln!("survey: {e:#}");
                     }
+                    if let Body::Node(n) = &record.body {
+                        self.learn_firmware(record.origin, n.firmware.to_string());
+                    }
                     if let Some(reading) = Reading::from_record(&record, now_s())
                         && self.baro.add(reading)
                         && let Some(log) = self.baro_log.as_mut()
@@ -189,6 +192,36 @@ impl Service {
             "sigma": [sigma(p.sigma_m[0]), sigma(p.sigma_m[1]), sigma(p.sigma_m[2])],
             "gauge": p.pinned && s.local_frame.is_some(), "local": s.local_frame.is_some(),
         }))
+    }
+
+    /// Records in the registry the build a node reports, if the registry thought otherwise: read
+    /// afresh, so nothing another command wrote since is lost.
+    fn learn_firmware(&mut self, id: NodeId, firmware: String) {
+        let known = self
+            .registry
+            .as_ref()
+            .and_then(|r| r.by_id(id))
+            .and_then(|d| d.firmware.clone());
+        if known.as_deref() == Some(firmware.as_str()) || firmware.is_empty() {
+            return;
+        }
+        let Ok(fleet) = Fleet::open(&self.fleet_args) else {
+            return;
+        };
+        let Ok(mut registry) = fleet.registry() else {
+            return;
+        };
+        let Some(d) = registry.devices.iter_mut().find(|d| d.id == id) else {
+            return;
+        };
+        if d.firmware.as_deref() != Some(firmware.as_str()) {
+            d.firmware = Some(firmware);
+            d.flashed = Some(crate::fleet::today());
+            if let Err(e) = fleet.save(&registry) {
+                eprintln!("registry: {e:#}");
+            }
+        }
+        self.registry = Some(registry);
     }
 
     /// What the page shows of a node's barometer: its latest reading, its offset and its height.

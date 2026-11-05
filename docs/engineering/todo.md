@@ -204,7 +204,7 @@ The fleet move (log 2026-11-04/05), next:
       heard in one scan.
 - [ ] **Still tags never update:** a tag that isn't moving opens no links, so it takes no offer;
       link it briefly when an update is wanted, or let an anchor connect to it.
-- [ ] **The registry's firmware field from the page:** `serve` doesn't record what nodes report
+- [x] **The registry's firmware field from the page:** `serve` doesn't record what nodes report
       (the monitor does), so the registry lags after over-the-air rollouts.
 - [ ] **Sigma model for survey pairs:** a pair's median has a bias its standard error leaves
       out; the solve's normalized rms runs 3–5 with a 5 cm floor. A floor of 10–15 cm, or the
