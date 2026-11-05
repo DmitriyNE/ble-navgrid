@@ -304,6 +304,7 @@ struct Taking;
 impl Drop for Taking {
     fn drop(&mut self) {
         TAKING.store(false, Ordering::Release);
+        crate::diag::set(crate::diag::F::Taking, 0);
     }
 }
 
@@ -338,6 +339,7 @@ async fn answer(
     }
     // The swap above took the flag; from here it's held by the guard.
     let taking = Taking;
+    crate::diag::set(crate::diag::F::Taking, 1);
     let from = PARTIAL
         .lock(|p| p.get())
         .filter(|(h, _)| *h == header)

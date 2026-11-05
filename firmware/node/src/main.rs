@@ -19,6 +19,7 @@ mod board;
 mod crash;
 mod crypto;
 mod cs;
+mod diag;
 mod firmware;
 mod fix;
 mod keys;

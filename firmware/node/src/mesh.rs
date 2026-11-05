@@ -35,7 +35,7 @@ use trouble_host::prelude::*;
 use crate::beacon::Beacons;
 use crate::firmware::Rram;
 use crate::keys::Fleet;
-use crate::{Host, cs, fix, report, state, status, update};
+use crate::{Host, cs, diag, fix, report, state, status, update};
 
 /// Beacons heard while scanning, from the event handler to the policy: who, what, how loud.
 pub static HEARD: Channel<CriticalSectionRawMutex, (NodeId, Beacon, i8), 8> = Channel::new();
@@ -253,6 +253,8 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             (p.free_links(), n)
         });
         status::set_free_links(free);
+        diag::set(diag::F::FreeLinks, u32::from(free));
+        diag::set(diag::F::Links, neighbours.len() as u32);
         state::set_neighbours(neighbours.into_iter());
         status::BEACON_CHANGED.signal(());
     }
@@ -277,6 +279,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         let mut ranging = true;
         loop {
             Timer::after(TICK).await;
+            diag::stage(diag::F::DriveStage, diag::F::DriveSince, 1);
             if status::retired() {
                 continue;
             }
@@ -355,6 +358,8 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         );
         // TrouBLE forgets the key when a link drops.
         self.fleet.trust_address(self.stack, peer.address());
+        diag::stage(diag::F::DriveStage, diag::F::DriveSince, 2);
+        diag::set(diag::F::DrivePeer, peer.0 as u32);
         let connected = {
             let mut central = self.central.lock().await;
             if spacing_1250 > 0
@@ -372,6 +377,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         match connected {
             Ok(Ok(conn)) => {
                 let _ = peer_sink;
+                diag::stage(diag::F::DriveStage, diag::F::DriveSince, 3);
                 self.new_links.send(NewLink { conn, central: true }).await;
             }
             Ok(Err(e)) => {
@@ -398,6 +404,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         loop {
             {
                 let mut central = self.central.lock().await;
+                diag::stamp(diag::F::ScanAt);
                 let mut scanner = Scanner::new(&mut central);
                 match scanner.scan_ext(&ScanConfig::default()).await {
                     Ok(session) => {
@@ -417,10 +424,13 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
         let mut peripheral = self.stack.peripheral();
         loop {
             if self.with_policy(|p| p.free_links()) == 0 || status::retired() {
+                diag::stage(diag::F::AdvStage, diag::F::AdvSince, 1);
                 self.freed.wait().await;
                 continue;
             }
+            diag::stage(diag::F::AdvStage, diag::F::AdvSince, 2);
             let conn = self.beacons.advertise(&mut peripheral).await;
+            diag::stage(diag::F::AdvStage, diag::F::AdvSince, 3);
             self.new_links.send(NewLink { conn, central: false }).await;
         }
     }
@@ -429,7 +439,9 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     async fn slot_loop(&self, i: usize) {
         loop {
             let link = self.new_links.receive().await;
+            diag::add(diag::F::SlotsBusy, 1);
             self.serve_link(&self.slots[i], link).await;
+            diag::add(diag::F::SlotsBusy, -1);
         }
     }
 
@@ -741,6 +753,7 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     async fn events(&self, conn: &Connection<'s, DefaultPacketPool>, slot: &Slot<'s>) {
         loop {
             let event = conn.next().await;
+            diag::stamp(diag::F::LinkEventAt);
             if crate::outsider(&event, conn, self.fleet) {
                 warn!("peer outside the fleet: dropping it");
                 status::foreign();

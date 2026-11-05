@@ -155,9 +155,16 @@ pub async fn run(wdt: Peri<'static, WDT0>, rram: &'static Rram, mut boot: Boot) 
     };
     let started = Instant::now();
     let mut stack_logged = Instant::now();
+    // The last run's state, if a reset kept it, before this run saves its own (DEF-75).
+    crate::diag::report_last_run();
+    let mut diag_saved = Instant::now();
     loop {
         if let Some(h) = handle.as_mut() {
             h.pet();
+        }
+        if diag_saved.elapsed() >= crate::diag::SAVE_EVERY {
+            diag_saved = Instant::now();
+            crate::diag::save();
         }
         if stack_logged.elapsed() >= STACK_LOG_EVERY {
             stack_logged = Instant::now();

@@ -145,6 +145,7 @@ pub struct Events;
 
 impl EventHandler for Events {
     fn on_ext_adv_reports(&self, reports: LeExtAdvReportsIter) {
+        crate::diag::stamp(crate::diag::F::ReportAt);
         for report in reports.flatten() {
             for ad in AdStructure::decode(report.data).flatten() {
                 if let AdStructure::ManufacturerSpecificData {

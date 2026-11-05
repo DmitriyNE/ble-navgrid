@@ -376,6 +376,7 @@ pub fn begin_session(mine: Header, budget: u32, peer: NodeId) -> bool {
         s.session = Some(Driver::new(mine, budget, memory));
         s.session_peer = peer;
         s.session_since_ms = now_ms();
+        crate::diag::stamp(crate::diag::F::SessionSince);
         true
     })
 }
@@ -394,6 +395,7 @@ pub fn end_stale_session(max_ms: u64) -> Option<(NodeId, u64)> {
         }
         let peer = s.session_peer;
         s.session = None;
+        crate::diag::set(crate::diag::F::SessionSince, 0);
         s.replica.forget(peer);
         Some((peer, age))
     })
@@ -407,6 +409,7 @@ pub fn end_session(peer: NodeId) -> Option<Header> {
         let Some(s) = s.as_mut() else {
             return (u8::MAX, None);
         };
+        crate::diag::set(crate::diag::F::SessionSince, 0);
         let theirs = match s.session.take() {
             Some(d) if d.is_complete() => {
                 let (sent, received) = d.memory_to_keep();
