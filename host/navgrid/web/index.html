@@ -35,7 +35,7 @@
   <div>
     <h2>Floor plan</h2>
     <canvas id="map" width="640" height="480"></canvas>
-    <div class="muted">squares: anchors (filled: pinned); circles: tags; lines: links, darker when better; the controller's positions, own fixes hollow.</div>
+    <div class="muted">squares: anchors (filled: pinned); circles: tags; lines: the survey's pairs, thicker with more bursts, amber beyond 2σ of the solution, dashed when cut; faint rings: a solved node's σ.</div>
     <h2>Find</h2>
     <form id="find">
       <label>from <select name="from"></select></label>
@@ -75,7 +75,14 @@
   <div>
     <h2>Nodes</h2>
     <table id="nodes"><thead><tr><th>node</th><th>role</th><th class="r">hops</th><th>neighbours</th><th>position (m)</th><th class="r">mV</th><th class="r">°C</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
-    <h2>Links</h2>
+    <h2>Survey <span id="survey-summary" class="muted" style="text-transform: none; letter-spacing: 0; font-weight: 400"></span></h2>
+    <form id="survey">
+      <label>window <select name="window_s"><option value="1800">30 min</option><option value="7200">2 h</option><option value="28800">8 h</option><option value="86400">24 h</option><option value="0">all</option></select></label>
+      <button type="submit">apply</button>
+      <span class="muted">each pair: the median over its bursts in the window, its spread, the σ the solver believes, and how the last solve fitted it</span>
+    </form>
+    <table id="survey-pairs"><thead><tr><th>pair</th><th class="r">bursts</th><th class="r">median m</th><th class="r">spread</th><th class="r">σ</th><th class="r">last m</th><th class="r">age s</th><th class="r">quality</th><th class="r">solved m</th><th class="r">residual</th></tr></thead><tbody></tbody></table>
+    <h2>Links (latest burst each)</h2>
     <table id="links"><thead><tr><th>from</th><th>to</th><th class="r">m</th><th class="r">σ</th><th class="r">quality</th><th class="r">proc</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
     <h2>Commands</h2>
     <table id="commands"><thead><tr><th>target</th><th>command</th><th>version</th><th>reported</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
@@ -129,6 +136,19 @@ function render() {
     tr.innerHTML = `<td>${l.from}</td><td>${l.to}</td><td class="r">${fmt(l.distance_m)}</td><td class="r">${fmt(l.sigma_m)}</td><td class="r">${l.quality}</td><td class="r">${l.procedures}/${l.failures}</td><td class="r">${l.age_s}</td>`;
     lb.appendChild(tr);
   }
+  const sv = state.survey || { pairs: [], observations: 0, window_s: 0 };
+  const sb = $('#survey-pairs tbody');
+  sb.innerHTML = '';
+  for (const p of sv.pairs.slice().sort((a, b) => (a.a + a.b).localeCompare(b.a + b.b))) {
+    const tr = document.createElement('tr');
+    const res = p.residual_m == null ? '' : `${p.residual_m >= 0 ? '+' : ''}${fmt(p.residual_m)}${p.cut ? ' cut' : ''}`;
+    tr.innerHTML = `<td>${p.a}–${p.b}</td><td class="r">${p.n} <span class="muted">${p.from_a}/${p.from_b}</span></td><td class="r">${fmt(p.median_m)}</td><td class="r">${fmt(p.spread_m)}</td><td class="r">${fmt(p.sigma_m)}</td>` +
+      `<td class="r">${fmt(p.last_m)}</td><td class="r">${p.last_age_s ?? ''}</td><td class="r">${p.quality}</td><td class="r">${fmt(p.solved_m)}</td><td class="r ${fitClass(p)}">${res}</td>`;
+    sb.appendChild(tr);
+  }
+  $('#survey-summary').textContent = `${sv.observations} bursts kept, ${sv.pairs.length} pairs in the window (${sv.window_s ? `${sv.window_s / 60} min` : 'all'})`;
+  const wsel = document.querySelector('#survey select[name=window_s]');
+  if (wsel && document.activeElement !== wsel) wsel.value = String(sv.window_s);
   const cb = $('#commands tbody');
   cb.innerHTML = '';
   for (const c of state.commands) {
@@ -165,6 +185,14 @@ function render() {
   drawMap(nodes);
 }
 
+// How a pair's residual compares with what the solver believed: ok within 2σ, warn beyond, cut when the solver set it aside.
+function fitClass(p) {
+  if (p.residual_m == null) return 'muted';
+  if (p.cut) return 'warn';
+  const sigma = Math.max(p.sigma_m, 0.1);
+  return Math.abs(p.residual_m) > 2 * sigma ? 'warn' : 'ok';
+}
+
 function drawMap(nodes) {
   const canvas = $('#map');
   const ctx = canvas.getContext('2d');
@@ -184,17 +212,30 @@ function drawMap(nodes) {
   const fg = getComputedStyle(document.body).getPropertyValue('--fg');
   const accent = getComputedStyle(document.body).getPropertyValue('--accent');
   const byName = Object.fromEntries(placed.map((e) => [e.n.name, e.p]));
-  for (const l of state.links) {
-    const a = byName[l.from], b = byName[l.to];
+  const warn = getComputedStyle(document.body).getPropertyValue('--warn');
+  const pairs = (state.survey && state.survey.pairs.length) ? state.survey.pairs : state.links.map((l) => ({ a: l.from, b: l.to, n: 1, quality: l.quality, residual_m: null }));
+  for (const p of pairs) {
+    const a = byName[p.a], b = byName[p.b];
     if (!a || !b) continue;
-    ctx.strokeStyle = fg;
-    ctx.globalAlpha = 0.15 + 0.6 * (l.quality / 255);
-    ctx.lineWidth = 1;
+    const cls = fitClass(p);
+    ctx.strokeStyle = cls === 'warn' ? warn : fg;
+    ctx.globalAlpha = cls === 'muted' ? 0.15 + 0.5 * (p.quality / 255) : 0.8;
+    ctx.lineWidth = 1 + Math.min(3, Math.log2(1 + p.n));
+    if (p.cut) ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(sx(a.x), sy(a.y)); ctx.lineTo(sx(b.x), sy(b.y)); ctx.stroke();
+    ctx.setLineDash([]);
   }
   ctx.globalAlpha = 1;
   for (const { n, p } of placed) {
     const x = sx(p.x), y = sy(p.y);
+    if (p.how === 'solved' && n.position && n.position.sigma) {
+      const r = Math.max(n.position.sigma[0], n.position.sigma[1]) * scale;
+      if (r > 1 && r < W) {
+        ctx.strokeStyle = fg; ctx.globalAlpha = 0.25; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
     ctx.strokeStyle = n.role === 'Anchor' ? fg : accent;
     ctx.fillStyle = ctx.strokeStyle;
     ctx.lineWidth = 2;
@@ -241,6 +282,13 @@ $('#control').addEventListener('submit', async (e) => {
     : { target: f.get('target'), command };
   const r = await post('/api/control', body);
   $('#control-result').textContent = r.error ? r.error : `sent v${r.version}`;
+});
+
+$('#survey').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const r = await post('/api/survey', { window_s: Number(new FormData(e.target).get('window_s')) });
+  $('#survey-summary').textContent = r.error ? r.error : `${r.observations} bursts kept, ${r.pairs.length} pairs in the window`;
+  refresh();
 });
 
 $('#pin').addEventListener('submit', async (e) => {

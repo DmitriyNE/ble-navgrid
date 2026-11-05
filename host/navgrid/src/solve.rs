@@ -17,6 +17,7 @@ use navgrid_solver::mesh::{LinkObs, MeshOptions, Pin, solve};
 use crate::fleet::{Fleet, FleetArgs};
 use crate::mesh_view::{node_name, replica_from_logs};
 use crate::monitor;
+use crate::survey::{History, Observation, PairStats, now_s};
 
 #[derive(clap::Args)]
 pub struct SolveArgs {
@@ -35,6 +36,13 @@ pub struct SolveArgs {
     /// Only links at least this good (the burst's quality, 0–255).
     #[arg(long, default_value_t = 100)]
     min_quality: u8,
+    /// The survey history `navgrid serve` keeps (`survey.jsonl` in the fleet directory): every
+    /// pair's median over its bursts, instead of the latest burst in the logs.
+    #[arg(long)]
+    survey: Option<PathBuf>,
+    /// With `--survey`, only the bursts of the last this many seconds; 0 = all of them.
+    #[arg(long, default_value_t = 0)]
+    window_s: u64,
     /// Write the positions to the mesh through the sink on this serial port.
     #[arg(long)]
     sink: Option<String>,
@@ -70,6 +78,23 @@ pub struct Placed {
     pub pinned: bool,
 }
 
+/// How one pair's measured distance fits the solution.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LinkFit {
+    pub a: NodeId,
+    pub b: NodeId,
+    /// The pair's median over its bursts, and the sigma the solver believed, before the offset.
+    pub measured_m: f32,
+    pub sigma_m: f32,
+    pub n: usize,
+    /// Between the solved positions; none while an end is unsolved.
+    pub solved_m: Option<f32>,
+    /// Measured (less the offset) minus solved: a bounce reads long.
+    pub residual_m: Option<f32>,
+    /// Beyond the solver's robust cut, so it hardly counted.
+    pub cut: bool,
+}
+
 /// What the solver made of the mesh.
 #[derive(Clone, Debug)]
 pub struct Solution {
@@ -81,10 +106,19 @@ pub struct Solution {
     pub outliers: usize,
     pub placed: Vec<Placed>,
     pub unsolved: Vec<NodeId>,
+    pub fits: Vec<LinkFit>,
 }
 
-/// Solves the mesh in `replica` from its Link records, with the pins in its node records and
-/// `extra_pins` (which override them).
+impl Solution {
+    pub fn fit(&self, a: NodeId, b: NodeId) -> Option<&LinkFit> {
+        self.fits
+            .iter()
+            .find(|f| (f.a == a && f.b == b) || (f.a == b && f.b == a))
+    }
+}
+
+/// Solves the mesh in `replica` from its latest Link records, with the pins in its node records
+/// and `extra_pins` (which override them).
 pub fn solve_replica(
     replica: &Replica<Heap>,
     extra_pins: &[(NodeId, [f32; 3])],
@@ -92,41 +126,55 @@ pub fn solve_replica(
     height_sigma_m: f32,
     min_quality: u8,
 ) -> Result<Solution> {
-    // Nodes: every origin with a node record or a link.
+    let pairs = latest_pairs(replica, min_quality);
+    solve_pairs(replica, extra_pins, &pairs, offset_m, height_sigma_m)
+}
+
+/// Every pair's latest burst in `replica` (both directions, if it holds both), as the survey
+/// would see them.
+pub fn latest_pairs(replica: &Replica<Heap>, min_quality: u8) -> Vec<PairStats> {
+    let mut history = History::default();
+    for s in replica.records() {
+        if let Some(obs) = Observation::from_record(s.record(), 0) {
+            history.observe(obs);
+        }
+    }
+    history.aggregate(0, min_quality)
+}
+
+/// Solves the mesh from `pairs` (the survey's aggregates), with the pins in `replica`'s node
+/// records and `extra_pins` (which override them); every node with a record or a pair is placed
+/// or listed unsolved.
+pub fn solve_pairs(
+    replica: &Replica<Heap>,
+    extra_pins: &[(NodeId, [f32; 3])],
+    pairs: &[PairStats],
+    offset_m: f32,
+    height_sigma_m: f32,
+) -> Result<Solution> {
     let mut ids: Vec<NodeId> = Vec::new();
     let mut pins: Vec<(NodeId, [f32; 3])> = Vec::new();
-    let mut raw_links: BTreeMap<(NodeId, NodeId), Vec<(f32, f32)>> = BTreeMap::new();
     for s in replica.records() {
         let r = s.record();
-        match &r.body {
-            Body::Node(n) if r.origin != crate::mesh_view::HOST => {
-                if !ids.contains(&r.origin) {
-                    ids.push(r.origin);
-                }
-                if let Some(p) = n.pinned {
-                    pins.push((
-                        r.origin,
-                        [p.x as f32 / 1000.0, p.y as f32 / 1000.0, p.z as f32 / 1000.0],
-                    ));
-                }
+        if let Body::Node(n) = &r.body
+            && r.origin != crate::mesh_view::HOST
+        {
+            if !ids.contains(&r.origin) {
+                ids.push(r.origin);
             }
-            Body::Link(l) if l.quality >= min_quality => {
-                for id in [r.origin, l.peer] {
-                    if !ids.contains(&id) {
-                        ids.push(id);
-                    }
-                }
-                let key = if r.origin < l.peer {
-                    (r.origin, l.peer)
-                } else {
-                    (l.peer, r.origin)
-                };
-                raw_links
-                    .entry(key)
-                    .or_default()
-                    .push((l.distance_mm as f32 / 1000.0, l.sigma_mm as f32 / 1000.0));
+            if let Some(p) = n.pinned {
+                pins.push((
+                    r.origin,
+                    [p.x as f32 / 1000.0, p.y as f32 / 1000.0, p.z as f32 / 1000.0],
+                ));
             }
-            _ => {}
+        }
+    }
+    for p in pairs {
+        for id in [p.a, p.b] {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
         }
     }
     for &(id, xyz) in extra_pins {
@@ -147,26 +195,21 @@ pub fn solve_replica(
             position,
         })
         .collect();
-    // Both directions of a link, averaged; the sigma the smaller of the two, floored by the solver.
-    let links: Vec<LinkObs> = raw_links
+    let links: Vec<LinkObs> = pairs
         .iter()
-        .map(|(&(a, b), obs)| LinkObs {
-            a: index(a),
-            b: index(b),
-            distance_m: obs.iter().map(|o| o.0).sum::<f32>() / obs.len() as f32,
-            sigma_m: obs.iter().map(|o| o.1).fold(f32::INFINITY, f32::min),
+        .map(|p| LinkObs {
+            a: index(p.a),
+            b: index(p.b),
+            distance_m: p.median_m,
+            sigma_m: p.sigma_m,
         })
         .collect();
-    let solved = solve(
-        ids.len(),
-        &pin_list,
-        &links,
-        &MeshOptions {
-            offset_m,
-            height_sigma_m,
-            ..MeshOptions::default()
-        },
-    );
+    let opts = MeshOptions {
+        offset_m,
+        height_sigma_m,
+        ..MeshOptions::default()
+    };
+    let solved = solve(ids.len(), &pin_list, &links, &opts);
     let mut placed = Vec::new();
     let mut unsolved = Vec::new();
     for (i, &id) in ids.iter().enumerate() {
@@ -180,6 +223,30 @@ pub fn solve_replica(
             None => unsolved.push(id),
         }
     }
+    let fits = pairs
+        .iter()
+        .zip(&links)
+        .map(|(p, l)| {
+            let solved_m = match (solved.positions[l.a], solved.positions[l.b]) {
+                (Some(pa), Some(pb)) => {
+                    Some(((pa[0] - pb[0]).powi(2) + (pa[1] - pb[1]).powi(2) + (pa[2] - pb[2]).powi(2)).sqrt())
+                }
+                _ => None,
+            };
+            let residual_m = solved_m.map(|s| p.median_m - offset_m - s);
+            let believed = p.sigma_m.max(opts.sigma_floor_m);
+            LinkFit {
+                a: p.a,
+                b: p.b,
+                measured_m: p.median_m,
+                sigma_m: p.sigma_m,
+                n: p.n,
+                solved_m,
+                residual_m,
+                cut: residual_m.is_some_and(|r| r.abs() > opts.huber_k * believed),
+            }
+        })
+        .collect();
     Ok(Solution {
         nodes: ids.len(),
         pins: pin_list.len(),
@@ -189,6 +256,7 @@ pub fn solve_replica(
         outliers: solved.outliers,
         placed,
         unsolved,
+        fits,
     })
 }
 
@@ -250,7 +318,26 @@ pub fn run(args: &SolveArgs) -> Result<()> {
         };
         extra.push((id, *xyz));
     }
-    let solution = solve_replica(&replica, &extra, args.offset_m, args.height_sigma_m, args.min_quality)?;
+    let solution = match &args.survey {
+        Some(path) => {
+            let history = History::load(path)?;
+            let since = if args.window_s == 0 {
+                0
+            } else {
+                now_s().saturating_sub(args.window_s)
+            };
+            let pairs = history.aggregate(since, args.min_quality);
+            println!(
+                "survey {}: {} bursts over {} pairs, {} pairs in the window\n",
+                path.display(),
+                history.len(),
+                history.pairs(),
+                pairs.len()
+            );
+            solve_pairs(&replica, &extra, &pairs, args.offset_m, args.height_sigma_m)?
+        }
+        None => solve_replica(&replica, &extra, args.offset_m, args.height_sigma_m, args.min_quality)?,
+    };
     println!(
         "{} nodes, {} pins, {} links; {} iterations, normalized rms {:.2}, {} links cut as bounces\n",
         solution.nodes, solution.pins, solution.links, solution.iterations, solution.normalized_rms, solution.outliers
@@ -280,6 +367,22 @@ pub fn run(args: &SolveArgs) -> Result<()> {
             "-",
             "-",
             ""
+        );
+    }
+    println!(
+        "\n{:<16} {:>6} {:>9} {:>6} {:>9} {:>9}",
+        "pair", "bursts", "median m", "σ m", "solved m", "residual"
+    );
+    for f in &solution.fits {
+        println!(
+            "{:<16} {:>6} {:>9.2} {:>6.2} {:>9} {:>9}{}",
+            format!("{}–{}", name(f.a), name(f.b)),
+            f.n,
+            f.measured_m,
+            f.sigma_m,
+            f.solved_m.map_or("-".to_string(), |s| format!("{s:.2}")),
+            f.residual_m.map_or("-".to_string(), |r| format!("{r:+.2}")),
+            if f.cut { " cut" } else { "" }
         );
     }
     let Some(port) = &args.sink else {

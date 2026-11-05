@@ -177,6 +177,23 @@ The fleet move (log 2026-11-04/05), next:
       image, then `control all firmware`), and the DK by probe.
 - [ ] **A log buffer worth reading:** 1 KiB of defmt holds fifty lines; 4 KiB when the RAM budget
       (spike 2026-11-04) allows, or a ring of only the warnings.
+
+**The survey tooling** (FR-M6), for a surveyed anchor solution before any tag is tracked:
+
+- [x] **Burst history and aggregates** (2026-11-05): every Link record the sinks mirror is kept
+      per pair in `survey.jsonl`; the solver takes each pair's median over a window, with the
+      median's standard error as its sigma; per-pair residuals and cuts on the page and in
+      `navgrid solve --survey`.
+- [ ] **A survey cadence command:** anchors burst every 15 min; a `Command::Survey { period_s }`
+      (0 = the default) so an hour of survey collects sixty bursts a link, and a burst-now for
+      one pair.
+- [ ] **Truth distances:** a `truth.json` of tape-measured pair distances in the fleet directory,
+      shown against the medians, and a fit of the offset (DEF-6) from them.
+- [ ] **The floor plan under the map:** an image with a scale and origin, so pins and the
+      solution read against the walls.
+- [ ] **Range quality on anchor links:** the sink's one-path bursts read ±1–6 m at 7–13 m (log
+      2026-11-05); more procedures per survey burst, and the first-path estimator on multipath
+      (DEF-51).
 - [ ] **The ACL on 1M:** every link is moved to 2M at link-up (copied from Zephyr's sample, for
       throughput) and CS sync runs on 2M; 2M is the least sensitive PHY, about 4 dB below 1M.
       Leave the ACL on 1M, keep CS sync on 2M, measure sessions and updates. Over the air.

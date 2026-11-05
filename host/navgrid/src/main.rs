@@ -16,6 +16,7 @@ mod scenario;
 mod serve;
 mod sign;
 mod solve;
+mod survey;
 mod tones;
 mod track;
 

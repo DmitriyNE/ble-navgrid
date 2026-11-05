@@ -28,7 +28,8 @@ use crate::fleet::{Fleet, FleetArgs, Registry};
 use crate::mesh_view::{HOST, node_name};
 use crate::monitor::{self, View};
 use crate::sign::parse_tag;
-use crate::solve::{Solution, controller_writer, position_records, send_record, solve_replica};
+use crate::solve::{Solution, controller_writer, latest_pairs, position_records, send_record, solve_pairs};
+use crate::survey::{History, Observation, PairStats, now_s};
 
 #[derive(clap::Args)]
 pub struct ServeArgs {
@@ -61,6 +62,8 @@ pub struct ServeArgs {
 
 const RECENT_LINES: usize = 200;
 const PAGE: &str = include_str!("../web/index.html");
+/// The survey window to start with: an anchor link bursts every 15 min, so eight bursts.
+const SURVEY_WINDOW_S: u64 = 2 * 3600;
 
 struct Service {
     replica: Replica<Heap>,
@@ -73,6 +76,11 @@ struct Service {
     nearby: BTreeMap<NodeId, (navgrid_proto::Heard, Instant)>,
     frames: u64,
     last_solve: Option<(Instant, Solution)>,
+    /// Every burst the sinks mirrored, per pair; the solver takes each pair's median.
+    history: History,
+    survey_log: Option<std::fs::File>,
+    /// Bursts older than this don't count; 0 = all of them.
+    window_s: u64,
     writer: Writer,
     controller_key: Option<[u8; 16]>,
     started: Instant,
@@ -128,6 +136,13 @@ impl Service {
             Ok(Message::Record(r)) => {
                 if let Ok(record) = postcard::from_bytes::<Record>(&r.bytes) {
                     let now = self.now_ms();
+                    if let Some(obs) = Observation::from_record(&record, now_s())
+                        && self.history.observe(obs)
+                        && let Some(log) = self.survey_log.as_mut()
+                        && let Err(e) = History::append(log, &obs)
+                    {
+                        eprintln!("survey: {e:#}");
+                    }
                     let _ = self.replica.receive(record, now);
                 }
             }
@@ -136,6 +151,49 @@ impl Service {
             }
             _ => {}
         }
+    }
+
+    /// Bursts before this don't count in the survey.
+    fn since_s(&self) -> u64 {
+        if self.window_s == 0 {
+            0
+        } else {
+            now_s().saturating_sub(self.window_s)
+        }
+    }
+
+    /// The pairs the solver takes: the survey's aggregates, or, with no survey yet (a replay),
+    /// the latest bursts in the replica.
+    fn survey_pairs(&self) -> Vec<PairStats> {
+        if self.history.is_empty() {
+            latest_pairs(&self.replica, self.min_quality)
+        } else {
+            self.history.aggregate(self.since_s(), self.min_quality)
+        }
+    }
+
+    /// The survey for the page: every pair's aggregate, with how the last solve fitted it.
+    fn survey(&self) -> Value {
+        let now = now_s();
+        let pairs: Vec<Value> = self
+            .survey_pairs()
+            .iter()
+            .map(|p| {
+                let fit = self.last_solve.as_ref().and_then(|(_, s)| s.fit(p.a, p.b));
+                json!({
+                    "a": self.name(p.a), "b": self.name(p.b),
+                    "n": p.n, "from_a": p.from_a, "from_b": p.from_b,
+                    "median_m": p.median_m, "spread_m": p.spread_m, "sigma_m": p.sigma_m,
+                    "last_m": p.last_m, "last_age_s": if p.last_at_s == 0 { Value::Null } else { now.saturating_sub(p.last_at_s).into() },
+                    "quality": p.quality, "paths": p.paths,
+                    "solved_m": fit.and_then(|f| f.solved_m), "residual_m": fit.and_then(|f| f.residual_m),
+                    "cut": fit.is_some_and(|f| f.cut),
+                })
+            })
+            .collect();
+        json!({
+            "window_s": self.window_s, "observations": self.history.len(), "pairs": pairs,
+        })
     }
 
     fn position_of(&self, origin: NodeId, of: NodeId) -> Option<Value> {
@@ -284,7 +342,7 @@ impl Service {
             "uptime_s": self.started.elapsed().as_secs(), "frames": self.frames,
             "records": self.replica.records().len(),
             "nodes": nodes, "links": links, "commands": commands, "solve": solve,
-            "fleet": fleet, "nearby": nearby,
+            "survey": self.survey(), "fleet": fleet, "nearby": nearby,
             "recent": self.recent.iter().rev().take(50).collect::<Vec<_>>(),
         })
     }
@@ -337,6 +395,12 @@ pub fn run(args: &ServeArgs) -> Result<()> {
     }
     let log_path = dir.join("serve.jsonl");
     let log = OpenOptions::new().append(true).create(true).open(&log_path).ok();
+    let survey_path = dir.join("survey.jsonl");
+    let history = History::load(&survey_path).unwrap_or_else(|e| {
+        eprintln!("survey: {e:#}; starting one afresh");
+        History::default()
+    });
+    let survey_log = OpenOptions::new().append(true).create(true).open(&survey_path).ok();
     let pins_path = dir.join("pins.json");
     let mut replica = crate::mesh_view::host_replica();
     replica.config_mut().controller_key = controller_key;
@@ -349,6 +413,9 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         nearby: BTreeMap::new(),
         frames: 0,
         last_solve: None,
+        history,
+        survey_log,
+        window_s: SURVEY_WINDOW_S,
         writer: controller_writer(),
         controller_key,
         started: Instant::now(),
@@ -387,14 +454,16 @@ pub fn run(args: &ServeArgs) -> Result<()> {
     let writer_port: Port = Arc::new(Mutex::new(downs));
     let shared: Shared = Arc::new(Mutex::new(service));
     println!(
-        "serving {} on http://{} ; frames logged to {}",
+        "serving {} on http://{} ; frames logged to {}; survey of {} bursts in {}",
         readers
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>()
             .join(", "),
         args.http,
-        log_path.display()
+        log_path.display(),
+        shared.lock().expect("service").history.len(),
+        survey_path.display()
     );
 
     // A reader per sink: its frames into the one state.
@@ -456,7 +525,8 @@ fn solve_now(shared: &Shared, port: &Port) -> Result<Value> {
     let (solution, records) = {
         let mut s = shared.lock().expect("service");
         let pins: Vec<(NodeId, [f32; 3])> = s.pins.iter().map(|(&id, &p)| (id, p)).collect();
-        let solution = solve_replica(&s.replica, &pins, s.offset_m, s.height_sigma_m, s.min_quality)?;
+        let pairs = s.survey_pairs();
+        let solution = solve_pairs(&s.replica, &pins, &pairs, s.offset_m, s.height_sigma_m)?;
         let records = position_records(&solution, &mut s.writer);
         s.last_solve = Some((Instant::now(), solution.clone()));
         // Into the host's own view at once; the sink mirrors the same versions back later.
@@ -546,6 +616,14 @@ fn handle(mut stream: TcpStream, shared: &Shared, port: &Port) -> Result<()> {
                 json!({"error": format!("{e:#}")}).to_string(),
             ),
         },
+        ("POST", "/api/survey") => match survey_window(shared, &body) {
+            Ok(v) => ("200 OK", "application/json", v.to_string()),
+            Err(e) => (
+                "400 Bad Request",
+                "application/json",
+                json!({"error": format!("{e:#}")}).to_string(),
+            ),
+        },
         ("POST", "/api/pin") => match pin(shared, &body) {
             Ok(v) => ("200 OK", "application/json", v.to_string()),
             Err(e) => (
@@ -588,6 +666,15 @@ fn control(shared: &Shared, port: &Port, body: &[u8]) -> Result<Value> {
         send_record(&mut **port, &record)?;
     }
     Ok(json!({"sent": true, "version": format!("{}.{}", record.version.epoch, record.version.counter)}))
+}
+
+/// The survey window from the page: `{"window_s": 7200}`, 0 for every burst kept.
+fn survey_window(shared: &Shared, body: &[u8]) -> Result<Value> {
+    let v: Value = serde_json::from_slice(body).context("the request body")?;
+    let window_s = v.get("window_s").and_then(Value::as_u64).context("no window_s")?;
+    let mut s = shared.lock().expect("service");
+    s.window_s = window_s;
+    Ok(s.survey())
 }
 
 /// A pin from the page: `{"node": "N004", "x": 1.0, "y": 2.0, "z": 2.5}` or `{"node": "N004", "clear": true}`.
@@ -653,6 +740,9 @@ mod tests {
             nearby: BTreeMap::new(),
             frames: 0,
             last_solve: None,
+            history: History::default(),
+            survey_log: None,
+            window_s: 0,
             writer: controller_writer(),
             controller_key: Some([7; 16]),
             started: Instant::now(),

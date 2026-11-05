@@ -19,6 +19,17 @@ slot, so every later session waited 20 s for it and gave up (DEF-73, fixed with 
 408c317); a reset cleared it meanwhile and the sink synced within seconds. N005 showed the
 same leak against N004, so the fix goes to every node.
 
+**Survey tooling, first cut.** The office's first anchor links read ±1.2 to ±5.7 m at 7 to
+13 m from the sink's one-path bursts and ±1.6 m at 7.3 m between two TAGs, so one burst can't
+survey anything. The host now keeps every burst the sinks mirror, per pair, in `survey.jsonl`,
+and the solver takes each pair's median over a window (2 h by default on the page) with the
+median's standard error as its sigma; the page has a survey table with each pair's bursts,
+median, spread, σ and the residual against the last solve, the map draws pairs thicker with
+more bursts and amber or dashed when they don't fit, and `navgrid solve --survey` does the same
+offline. Also found: the monitor saved its stale copy of the registry over a device enrolled
+meanwhile (N007; fixed, it re-reads first), and `control all` loses records sent back to back
+on the sink's UART (DEF-43; one target at a time works).
+
 **Late morning: N001 by probe, a backoff for failing connects, and the J-Link off USB.** N001,
 on the previous mesh build 7e878185-dirty, was plugged into the DK's adapter and its log read
 from RAM (the logger's buffer is 1 KiB, about fifty lines): it took a page of the DK's image at
