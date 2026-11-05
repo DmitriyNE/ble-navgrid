@@ -303,28 +303,7 @@ pub fn solve_pairs_except(
             ids.push(a.node);
         }
     }
-    let local_frame = if pins.len() < 2 && !by_approx {
-        let gauge = local_gauge(if clean.len() >= 2 { &clean } else { pairs }, offset_m);
-        if let Some((a, b, d)) = gauge {
-            // At their barometric heights where known, the second along +x at the horizontal
-            // part of their distance.
-            let za = height(a).unwrap_or(0.0);
-            let zb = height(b).unwrap_or(za);
-            let x = (d * d - (zb - za) * (zb - za)).max(0.01).sqrt();
-            pins = vec![(a, [0.0, 0.0, za]), (b, [x, 0.0, zb])];
-        }
-        gauge.map(|(a, b, _)| (a, b))
-    } else {
-        None
-    };
     let index = |id: NodeId| ids.iter().position(|&x| x == id).expect("listed");
-    let pin_list: Vec<Pin> = pins
-        .iter()
-        .map(|&(id, position)| Pin {
-            node: index(id),
-            position,
-        })
-        .collect();
     let links: Vec<LinkObs> = pairs
         .iter()
         .map(|p| LinkObs {
@@ -357,22 +336,76 @@ pub fn solve_pairs_except(
             .map(|a| PositionObs {
                 node: index(a.node),
                 position: a.position,
-                has_z: a.has_z,
-                sigma_m: a.sigma_m,
+                sigma_m: [a.sigma_m, a.sigma_m, if a.has_z { a.sigma_m } else { f32::INFINITY }],
             })
             .collect()
     } else {
         Vec::new()
     };
-    let mut solved = solve_with_priors(ids.len(), &pin_list, &links, &height_obs, &approx_obs, &opts);
-    let mut dropped: Vec<usize> = Vec::new();
-    if solved.normalized_rms > CONSENSUS_ABOVE_RMS
-        && let Some((better, without)) =
-            consensus(ids.len(), &pin_list, &links, &height_obs, &approx_obs, &opts, &solved)
-    {
-        solved = better;
-        dropped = without;
-    }
+    // One solve from a set of pins and extra priors, with the consensus when it fits badly.
+    let solve_from = |pins: &[(NodeId, [f32; 3])], extra: &[PositionObs]| {
+        let pin_list: Vec<Pin> = pins
+            .iter()
+            .map(|&(id, position)| Pin {
+                node: index(id),
+                position,
+            })
+            .collect();
+        let priors: Vec<PositionObs> = approx_obs.iter().chain(extra).copied().collect();
+        let mut solved = solve_with_priors(ids.len(), &pin_list, &links, &height_obs, &priors, &opts);
+        let mut dropped: Vec<usize> = Vec::new();
+        // Whenever the solve set links aside (or fits badly anyway): an explanation that needs
+        // two outliers should meet one that needs one. Small meshes only: it solves once per
+        // link and per two.
+        if (solved.normalized_rms > CONSENSUS_ABOVE_RMS || solved.outliers > 0)
+            && links.len() <= CONSENSUS_MAX_LINKS
+            && let Some((better, without)) =
+                consensus(ids.len(), &pin_list, &links, &height_obs, &priors, &opts, &solved)
+        {
+            solved = better;
+            dropped = without;
+        }
+        (pin_list, solved, dropped)
+    };
+    // A local frame hangs on a pair held exactly, so a bad pair there can't be set aside: each
+    // of a few candidate pairs gets a solve, and the one most links agree with wins.
+    let (local_frame, pin_list, mut solved, dropped) = if pins.len() < 2 && !by_approx {
+        let mut best: Option<GaugeTry> = None;
+        for (a, b, d) in local_gauges(if clean.len() >= 2 { &clean } else { pairs }, offset_m) {
+            // At their barometric heights where known, the second along +x at the horizontal
+            // part of their distance.
+            let za = height(a).unwrap_or(0.0);
+            let zb = height(b).unwrap_or(za);
+            let x = (d * d - (zb - za) * (zb - za)).max(0.01).sqrt();
+            // The origin is held; the second only on the +x axis, its distance free, so the
+            // gauge pair is a link like any other and can be set aside.
+            let on_axis = PositionObs {
+                node: index(b),
+                position: [x, 0.0, zb],
+                sigma_m: [
+                    f32::INFINITY,
+                    0.001,
+                    if height(b).is_some() { 0.1 } else { f32::INFINITY },
+                ],
+            };
+            let (pin_list, solved, dropped) = solve_from(&[(a, [0.0, 0.0, za])], &[on_axis]);
+            let score = agreement(&solved, &links, &opts);
+            let better = |s: (usize, f32), than: (usize, f32)| s.0 > than.0 || (s.0 == than.0 && s.1 < than.1 * 0.8);
+            if best.as_ref().is_none_or(|(s, ..)| better(score, *s)) {
+                best = Some((score, (a, b), pin_list, solved, dropped));
+            }
+        }
+        match best {
+            Some((_, gauge, pin_list, solved, dropped)) => (Some(gauge), pin_list, solved, dropped),
+            None => {
+                let (pin_list, solved, dropped) = solve_from(&pins, &[]);
+                (None, pin_list, solved, dropped)
+            }
+        }
+    } else {
+        let (pin_list, solved, dropped) = solve_from(&pins, &[]);
+        (None, pin_list, solved, dropped)
+    };
     if frame.mirror && local_frame.is_some() {
         for p in solved.positions.iter_mut().flatten() {
             p[1] = -p[1];
@@ -437,6 +470,8 @@ pub fn solve_pairs_except(
 const SUSPECT_WEIGHT: f32 = 8.0;
 /// Above this normalized rms the consensus looks for links to leave out.
 const CONSENSUS_ABOVE_RMS: f32 = 2.0;
+/// The consensus solves once per link and per two: up to this many links.
+const CONSENSUS_MAX_LINKS: usize = 40;
 
 /// Pairs longer than the other two sides of a triangle allow, beyond their sigmas and a margin:
 /// a reflection only reads long, so in a triangle that can't close the long side is the suspect.
@@ -557,22 +592,36 @@ fn consensus(
     (score.0 > base_score.0 || (score.0 == base_score.0 && score.1 < base_score.1 * 0.8)).then_some((solved, without))
 }
 
-/// The two nodes a local frame hangs on, and the distance between them less the offset: the node
-/// in the most pairs, and of its pairs the one with the most bursts and then the smallest sigma.
-fn local_gauge(pairs: &[PairStats], offset_m: f32) -> Option<(NodeId, NodeId, f32)> {
-    let mut degree: BTreeMap<NodeId, usize> = BTreeMap::new();
-    for p in pairs {
-        *degree.entry(p.a).or_default() += 1;
-        *degree.entry(p.b).or_default() += 1;
-    }
-    let (&origin, _) = degree.iter().max_by_key(|&(id, n)| (*n, core::cmp::Reverse(*id)))?;
-    let best = pairs
-        .iter()
-        .filter(|p| p.a == origin || p.b == origin)
-        .max_by(|x, y| x.n.min(10).cmp(&y.n.min(10)).then(y.sigma_m.total_cmp(&x.sigma_m)))?;
-    let other = if best.a == origin { best.b } else { best.a };
-    Some((origin, other, (best.median_m - offset_m).max(0.1)))
+/// The pairs a local frame may hang on, best first: the most bursts, then the smallest sigma,
+/// then the lowest IDs (so the same data picks the same frame); at most a handful. Each is the
+/// origin, the node on +x, and their distance less the offset.
+fn local_gauges(pairs: &[PairStats], offset_m: f32) -> Vec<(NodeId, NodeId, f32)> {
+    let mut sorted: Vec<&PairStats> = pairs.iter().collect();
+    sorted.sort_by(|x, y| {
+        y.n.min(20)
+            .cmp(&x.n.min(20))
+            .then(x.sigma_m.total_cmp(&y.sigma_m))
+            .then((x.a, x.b).cmp(&(y.a, y.b)))
+    });
+    sorted
+        .into_iter()
+        .take(GAUGE_CANDIDATES)
+        .map(|p| (p.a, p.b, (p.median_m - offset_m).max(0.1)))
+        .collect()
 }
+
+/// A local frame's try: its agreement, its gauge pair, its pins, the solve and the links it
+/// left out.
+type GaugeTry = (
+    (usize, f32),
+    (NodeId, NodeId),
+    Vec<Pin>,
+    navgrid_solver::mesh::Solved,
+    Vec<usize>,
+);
+
+/// Gauge pairs tried for a local frame.
+const GAUGE_CANDIDATES: usize = 6;
 
 /// The controller's Position records for a solution.
 pub fn position_records(solution: &Solution, writer: &mut Writer) -> Vec<Record> {
@@ -825,6 +874,44 @@ mod tests {
         let fit = |a, b| s.fit(NodeId(a), NodeId(b)).unwrap();
         assert!(fit(1, 2).residual_m.unwrap() > 3.0, "the bounce shows as reading long");
         assert!(fit(3, 5).residual_m.unwrap() > 2.0, "the bounce shows as reading long");
+    }
+
+    #[test]
+    fn a_bad_pair_with_the_most_bursts_doesnt_become_the_frame() {
+        // Five anchors, every pair measured; the pair with the most bursts reads 2.5 m short.
+        let at = [[0.0f32, 0.0], [6.0, 0.0], [6.0, 5.0], [0.0, 5.0], [3.0, 8.0]];
+        let mut pairs = Vec::new();
+        for i in 0..at.len() {
+            for j in i + 1..at.len() {
+                let d = ((at[i][0] - at[j][0]).powi(2) + (at[i][1] - at[j][1]).powi(2)).sqrt();
+                let mut p = pair(i as u64 + 1, j as u64 + 1, d);
+                if (i, j) == (0, 2) {
+                    p.median_m -= 2.5;
+                    p.n = 40;
+                }
+                pairs.push(p);
+            }
+        }
+        let replica = crate::mesh_view::host_replica();
+        let s = solve_pairs(&replica, &[], &pairs, 1.5, 0.3).unwrap();
+        assert!(s.local_frame.is_some());
+        let pos = |id: u64| s.placed.iter().find(|p| p.id == NodeId(id)).unwrap().position;
+        for i in 0..at.len() {
+            for j in i + 1..at.len() {
+                if (i, j) == (0, 2) {
+                    continue;
+                }
+                let (a, b) = (pos(i as u64 + 1), pos(j as u64 + 1));
+                let solved = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+                let truth = ((at[i][0] - at[j][0]).powi(2) + (at[i][1] - at[j][1]).powi(2)).sqrt();
+                assert!(
+                    (solved - truth).abs() < 0.2,
+                    "{}–{}: {solved} against {truth}",
+                    i + 1,
+                    j + 1
+                );
+            }
+        }
     }
 
     #[test]

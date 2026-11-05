@@ -113,10 +113,10 @@ pub fn solve_with_heights(
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PositionObs {
     pub node: usize,
-    /// x and y; z too where known (else the height observation or prior holds it).
     pub position: Vec3,
-    pub has_z: bool,
-    pub sigma_m: f32,
+    /// 1-sigma per axis; `f32::INFINITY` leaves that axis free (to the height observation or
+    /// prior for z).
+    pub sigma_m: Vec3,
 }
 
 /// [`solve_with_heights`], with approximate positions for some nodes: they start at those and
@@ -329,9 +329,9 @@ pub fn solve_with_priors(
                 let Some(ap) = approx.iter().find(|a| a.node == n) else {
                     continue;
                 };
-                let w = 1.0 / f64::from(ap.sigma_m.max(0.01) * ap.sigma_m.max(0.01));
                 let p = pos[n].expect("placed");
-                for i in 0..if ap.has_z { 3 } else { 2 } {
+                for i in 0..3 {
+                    let w = prior_weight(ap.sigma_m[i]);
                     a[(3 * k + i) * m + 3 * k + i] += w;
                     g[3 * k + i] += w * f64::from(p[i] - ap.position[i]);
                 }
@@ -394,9 +394,8 @@ pub fn solve_with_priors(
             let (_, sigma_n) = height_of(n);
             a[(3 * k + 2) * m + 3 * k + 2] += 1.0 / f64::from(sigma_n * sigma_n);
             if let Some(ap) = approx.iter().find(|a| a.node == n) {
-                let w = 1.0 / f64::from(ap.sigma_m.max(0.01) * ap.sigma_m.max(0.01));
-                for i in 0..if ap.has_z { 3 } else { 2 } {
-                    a[(3 * k + i) * m + 3 * k + i] += w;
+                for i in 0..3 {
+                    a[(3 * k + i) * m + 3 * k + i] += prior_weight(ap.sigma_m[i]);
                 }
             }
         }
@@ -453,6 +452,16 @@ fn cut_scale(iteration: u8) -> f32 {
 fn robust_weight(t: f32, k: f32) -> f32 {
     let t = libm::fabsf(t);
     if t > k { (k / t) * (k / t) } else { 1.0 }
+}
+
+/// The weight of a position prior on one axis: none for an infinite sigma, else its inverse
+/// square, a millimetre at the tightest.
+fn prior_weight(sigma_m: f32) -> f64 {
+    if sigma_m.is_finite() {
+        1.0 / f64::from(sigma_m.max(0.001) * sigma_m.max(0.001))
+    } else {
+        0.0
+    }
 }
 
 /// A link's weight at residual `t` sigmas (solved minus measured, so negative when the link reads
@@ -602,8 +611,7 @@ mod tests {
             .map(|&(n, off)| PositionObs {
                 node: n,
                 position: [truth[n][0] + off[0], truth[n][1] + off[1], 0.0],
-                has_z: false,
-                sigma_m: 1.0,
+                sigma_m: [1.0, 1.0, f32::INFINITY],
             })
             .collect();
         let heights: Vec<HeightObs> = (0..truth.len())
