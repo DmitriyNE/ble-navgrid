@@ -23,6 +23,7 @@ use navgrid_proto::Message;
 use navgrid_solver::frame::{compass_to_heading, pointer};
 use serde_json::{Value, json};
 
+use crate::baro::{self, Reading, Readings};
 use crate::control::{command_text, parse_target};
 use crate::fleet::{Fleet, FleetArgs, Registry};
 use crate::mesh_view::{HOST, node_name};
@@ -65,6 +66,8 @@ pub struct ServeArgs {
 
 const RECENT_LINES: usize = 200;
 const PAGE: &str = include_str!("../web/index.html");
+/// The minutes of barometry a height is the median of.
+const BARO_WINDOW_S: u64 = 30 * 60;
 /// The survey window to start with: an anchor link bursts every 15 min, so eight bursts.
 const SURVEY_WINDOW_S: u64 = 2 * 3600;
 
@@ -83,6 +86,12 @@ struct Service {
     last_solve: Option<(Instant, Solution)>,
     /// Every burst the sinks mirrored, per pair; the solver takes each pair's median.
     history: History,
+    /// The pressures the nodes report, and the heights last worked out from them: relative to
+    /// the reference node, and in the frame of the last solve.
+    baro: Readings,
+    baro_log: Option<std::fs::File>,
+    baro_heights: Vec<(NodeId, f32, f32)>,
+    baro_reference: Option<NodeId>,
     survey_log: Option<std::fs::File>,
     /// Bursts older than this don't count; 0 = all of them.
     window_s: u64,
@@ -152,6 +161,13 @@ impl Service {
                     {
                         eprintln!("survey: {e:#}");
                     }
+                    if let Some(reading) = Reading::from_record(&record, now_s())
+                        && self.baro.add(reading)
+                        && let Some(log) = self.baro_log.as_mut()
+                        && let Err(e) = Readings::append(log, &reading)
+                    {
+                        eprintln!("barometry: {e:#}");
+                    }
                     let _ = self.replica.receive(record, now);
                 }
             }
@@ -173,6 +189,78 @@ impl Service {
             "sigma": [sigma(p.sigma_m[0]), sigma(p.sigma_m[1]), sigma(p.sigma_m[2])],
             "gauge": p.pinned && s.local_frame.is_some(), "local": s.local_frame.is_some(),
         }))
+    }
+
+    /// What the page shows of a node's barometer: its latest reading, its offset and its height.
+    fn baro_of(&self, id: NodeId) -> Value {
+        let Some(r) = self.baro.latest().find(|r| r.node == id) else {
+            return Value::Null;
+        };
+        let offset = self
+            .registry
+            .as_ref()
+            .and_then(|reg| reg.by_id(id))
+            .and_then(|d| d.baro_offset_cpa);
+        let h = self.baro_heights.iter().find(|h| h.0 == id);
+        json!({
+            "pressure_pa": r.pressure_pa(), "temperature_c": r.temperature_c(), "samples": r.samples,
+            "height_allowed": r.height, "age_s": now_s().saturating_sub(r.at_s),
+            "offset_pa": offset.map(|o| f64::from(o) / 100.0),
+            "z_m": h.map(|h| h.1), "sigma_m": h.map(|h| h.2),
+            "reference": self.baro_reference == Some(id),
+        })
+    }
+
+    /// Heights from the calibrated barometers, in the frame the solve will be in: with two pins
+    /// or more, from a pinned node with a barometer at its pin's height (none such, none at
+    /// all); without, relative to the calibrated node with the most readings, at 0.
+    fn baro_frame_heights(&self, pins: &[(NodeId, [f32; 3])]) -> (Vec<(NodeId, f32, f32)>, Option<NodeId>) {
+        let Some(registry) = self.registry.as_ref() else {
+            return (Vec::new(), None);
+        };
+        let offsets = baro::offsets(registry);
+        let since = now_s().saturating_sub(BARO_WINDOW_S);
+        let usable: Vec<NodeId> = self
+            .baro
+            .latest()
+            .filter(|r| r.height && offsets.contains_key(&r.node) && now_s().saturating_sub(r.at_s) < BARO_WINDOW_S)
+            .map(|r| r.node)
+            .collect();
+        let mut record_pins: Vec<(NodeId, [f32; 3])> = self
+            .replica
+            .records()
+            .filter_map(|s| match &s.record().body {
+                Body::Node(n) => n.pinned.map(|p| {
+                    (
+                        s.record().origin,
+                        [p.x as f32 / 1000.0, p.y as f32 / 1000.0, p.z as f32 / 1000.0],
+                    )
+                }),
+                _ => None,
+            })
+            .collect();
+        record_pins.retain(|(id, _)| !pins.iter().any(|(p, _)| p == id));
+        let all_pins: Vec<(NodeId, [f32; 3])> = pins.iter().copied().chain(record_pins).collect();
+        let (reference, z_ref) = if all_pins.len() >= 2 {
+            match all_pins.iter().find(|(id, _)| usable.contains(id)) {
+                Some(&(id, p)) => (id, p[2]),
+                None => return (Vec::new(), None),
+            }
+        } else {
+            match usable
+                .iter()
+                .max_by_key(|id| self.baro.latest().filter(|r| r.node == **id).count())
+            {
+                Some(&id) => (id, 0.0),
+                None => return (Vec::new(), None),
+            }
+        };
+        let heights = baro::heights(&self.baro, &offsets, reference, since)
+            .into_iter()
+            .filter(|h| usable.contains(&h.node))
+            .map(|h| (h.node, z_ref + h.above_reference_m as f32, h.sigma_m as f32))
+            .collect();
+        (heights, Some(reference))
     }
 
     /// Bursts before this don't count in the survey.
@@ -287,6 +375,7 @@ impl Service {
                         "position": self.position_of(CONTROLLER, r.origin),
                         "own_position": self.position_of(r.origin, r.origin),
                         "solved": self.solved_of(r.origin),
+                        "baro": self.baro_of(r.origin),
                     }));
                 }
                 Body::Link(l) => links.push(json!({
@@ -456,6 +545,12 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         History::default()
     });
     let survey_log = OpenOptions::new().append(true).create(true).open(&survey_path).ok();
+    let baro_path = baro::readings_path(&dir);
+    let baro_readings = Readings::load(&baro_path).unwrap_or_else(|e| {
+        eprintln!("barometry: {e:#}; starting afresh");
+        Readings::default()
+    });
+    let baro_log = OpenOptions::new().append(true).create(true).open(&baro_path).ok();
     let start_path = dir.join("survey-start");
     let start_s = std::fs::read_to_string(&start_path)
         .ok()
@@ -475,6 +570,10 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         frames: 0,
         last_solve: None,
         history,
+        baro: baro_readings,
+        baro_log,
+        baro_heights: Vec::new(),
+        baro_reference: None,
         survey_log,
         window_s: SURVEY_WINDOW_S,
         start_s,
@@ -517,7 +616,7 @@ pub fn run(args: &ServeArgs) -> Result<()> {
     let writer_port: Port = Arc::new(Mutex::new(downs));
     let shared: Shared = Arc::new(Mutex::new(service));
     println!(
-        "serving {} on http://{} ; frames logged to {}; survey of {} bursts in {}",
+        "serving {} on http://{} ; frames logged to {}; survey of {} bursts in {}; {} barometer readings",
         readers
             .iter()
             .map(|(name, _)| name.as_str())
@@ -526,7 +625,8 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         args.http,
         log_path.display(),
         shared.lock().expect("service").history.len(),
-        survey_path.display()
+        survey_path.display(),
+        shared.lock().expect("service").baro.len()
     );
 
     // A reader per sink: its frames into the one state.
@@ -594,7 +694,18 @@ fn solve_now(shared: &Shared, port: &Port) -> Result<Value> {
             .as_ref()
             .map(|r| r.devices.iter().filter(|d| !d.ranging).map(|d| d.id).collect())
             .unwrap_or_default();
-        let solution = solve_pairs_except(&s.replica, &pins, &pairs, s.offset_m, s.height_sigma_m, &relays)?;
+        let (heights, reference) = s.baro_frame_heights(&pins);
+        s.baro_heights = heights.clone();
+        s.baro_reference = reference;
+        let solution = solve_pairs_except(
+            &s.replica,
+            &pins,
+            &pairs,
+            s.offset_m,
+            s.height_sigma_m,
+            &relays,
+            &heights,
+        )?;
         // A local frame stays on the page: the mesh gets positions once pins fix the frame.
         let records = if solution.local_frame.is_some() {
             Vec::new()
@@ -697,6 +808,14 @@ fn handle(mut stream: TcpStream, shared: &Shared, port: &Port) -> Result<()> {
                 json!({"error": format!("{e:#}")}).to_string(),
             ),
         },
+        ("POST", "/api/baro/calibrate") => match baro_calibrate(shared, &body) {
+            Ok(v) => ("200 OK", "application/json", v.to_string()),
+            Err(e) => (
+                "400 Bad Request",
+                "application/json",
+                json!({"error": format!("{e:#}")}).to_string(),
+            ),
+        },
         ("POST", "/api/ranging") => match ranging(shared, &body) {
             Ok(v) => ("200 OK", "application/json", v.to_string()),
             Err(e) => (
@@ -763,6 +882,43 @@ fn survey_window(shared: &Shared, body: &[u8]) -> Result<Value> {
         std::fs::write(&s.start_path, text).with_context(|| format!("writing {}", s.start_path.display()))?;
     }
     Ok(s.survey())
+}
+
+/// Barometers calibrated from the page: `{"nodes": ["N001", "N002", "N004"], "minutes": 10}` for
+/// nodes sitting side by side (three or more set the reference), or with `"against": "N002"` to
+/// join a calibrated one. Into the registry, read afresh.
+fn baro_calibrate(shared: &Shared, body: &[u8]) -> Result<Value> {
+    let v: Value = serde_json::from_slice(body).context("the request body")?;
+    let names: Vec<String> = v
+        .get("nodes")
+        .and_then(Value::as_array)
+        .context("no nodes")?
+        .iter()
+        .filter_map(|n| n.as_str().map(str::to_string))
+        .collect();
+    let minutes = v.get("minutes").and_then(Value::as_u64).unwrap_or(10);
+    let mut s = shared.lock().expect("service");
+    let ids: Vec<NodeId> = names.iter().map(|n| s.resolve(n)).collect::<Result<_>>()?;
+    let fleet = Fleet::open(&s.fleet_args).context("the fleet directory")?;
+    let against = match v.get("against").and_then(Value::as_str).filter(|a| !a.is_empty()) {
+        Some(a) => {
+            let id = s.resolve(a)?;
+            let off = baro::offsets(&fleet.registry()?)
+                .get(&id)
+                .copied()
+                .with_context(|| format!("{a} has no calibration yet"))?;
+            Some((id, off))
+        }
+        None => None,
+    };
+    let found = baro::calibrate(&s.baro, &ids, against, now_s().saturating_sub(minutes * 60))?;
+    let registry = baro::save_offsets(&fleet, &found)?;
+    s.registry = Some(registry);
+    Ok(json!({
+        "calibrated": found.iter().map(|o| json!({
+            "node": s.name(o.node), "offset_pa": o.offset_pa, "minutes": o.minutes, "spread_pa": o.spread_pa,
+        })).collect::<Vec<_>>(),
+    }))
 }
 
 /// Whether a node ranges, from the page: `{"node": "N003", "ranging": false}`. Into the registry,
@@ -847,6 +1003,10 @@ mod tests {
             frames: 0,
             last_solve: None,
             history: History::default(),
+            baro: Readings::default(),
+            baro_log: None,
+            baro_heights: Vec::new(),
+            baro_reference: None,
             survey_log: None,
             window_s: 0,
             start_s: 0,

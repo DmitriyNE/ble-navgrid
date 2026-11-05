@@ -1,3 +1,4 @@
+mod baro;
 mod builds;
 mod calibration;
 mod capture;
@@ -96,6 +97,8 @@ enum Cmd {
     Update(sign::UpdateArgs),
     /// Command a node through a sink: a desired-state record, signed with the controller key.
     Control(control::ControlArgs),
+    /// Barometers: calibrate them side by side, show pressures, offsets and heights.
+    Baro(baro::BaroArgs),
     /// The fleet directory: key, device registry, labels.
     #[command(subcommand)]
     Fleet(FleetCmd),
@@ -151,6 +154,7 @@ fn main() -> Result<()> {
         Cmd::Sign(args) => sign::run_sign(&args),
         Cmd::Update(args) => sign::run_update(&args),
         Cmd::Control(args) => control::run(&args),
+        Cmd::Baro(args) => baro::run(&args),
         Cmd::Fleet(FleetCmd::Init(args)) => fleet::Fleet::init(&args).map(|_| ()),
         Cmd::Fleet(FleetCmd::List(args)) => fleet::list(&args),
         Cmd::Fleet(FleetCmd::Place(args)) => fleet::place(&args),

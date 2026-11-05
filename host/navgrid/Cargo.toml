@@ -10,6 +10,7 @@ publish.workspace = true
 navgrid-proto.workspace = true
 navgrid-mesh = { workspace = true, features = ["alloc"] }
 navgrid-link.workspace = true
+navgrid-baro.workspace = true
 postcard.workspace = true
 heapless.workspace = true
 navgrid-ranging.workspace = true

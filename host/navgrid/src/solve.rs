@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use navgrid_mesh::{Body, CONTROLLER, Heap, NodeId, PointMm, Position, Record, Replica, Writer};
 use navgrid_proto::{MAX_DOWNLINK_FRAME, Message, UpdateMsg};
-use navgrid_solver::mesh::{LinkObs, MeshOptions, Pin, solve};
+use navgrid_solver::mesh::{HeightObs, LinkObs, MeshOptions, Pin, solve_with_heights};
 
 use crate::fleet::{Fleet, FleetArgs, Registry};
 use crate::mesh_view::{node_name, replica_from_logs};
@@ -193,10 +193,15 @@ pub fn solve_pairs(
     offset_m: f32,
     height_sigma_m: f32,
 ) -> Result<Solution> {
-    solve_pairs_except(replica, extra_pins, pairs, offset_m, height_sigma_m, &[])
+    solve_pairs_except(replica, extra_pins, pairs, offset_m, height_sigma_m, &[], &[])
 }
 
-/// [`solve_pairs`], leaving the nodes in `except` out altogether (nodes that only route).
+/// Heights from elsewhere than ranges, by node: `z` metres and 1-sigma, in the frame the solve
+/// ends up in (with pins, theirs; in a local frame, relative to one node at 0).
+pub type Heights = [(NodeId, f32, f32)];
+
+/// [`solve_pairs`], leaving the nodes in `except` out altogether (nodes that only route), with
+/// `heights` for some nodes (barometry).
 pub fn solve_pairs_except(
     replica: &Replica<Heap>,
     extra_pins: &[(NodeId, [f32; 3])],
@@ -204,6 +209,7 @@ pub fn solve_pairs_except(
     offset_m: f32,
     height_sigma_m: f32,
     except: &[NodeId],
+    heights: &Heights,
 ) -> Result<Solution> {
     let mut ids: Vec<NodeId> = Vec::new();
     let mut pins: Vec<(NodeId, [f32; 3])> = Vec::new();
@@ -241,10 +247,16 @@ pub fn solve_pairs_except(
     if ids.is_empty() {
         bail!("no nodes or links in the mesh state");
     }
+    let height = |id: NodeId| heights.iter().find(|h| h.0 == id).map(|h| h.1);
     let local_frame = if pins.len() < 2 {
         let gauge = local_gauge(pairs, offset_m);
         if let Some((a, b, d)) = gauge {
-            pins = vec![(a, [0.0, 0.0, 0.0]), (b, [d, 0.0, 0.0])];
+            // At their barometric heights where known, the second along +x at the horizontal
+            // part of their distance.
+            let za = height(a).unwrap_or(0.0);
+            let zb = height(b).unwrap_or(za);
+            let x = (d * d - (zb - za) * (zb - za)).max(0.01).sqrt();
+            pins = vec![(a, [0.0, 0.0, za]), (b, [x, 0.0, zb])];
         }
         gauge.map(|(a, b, _)| (a, b))
     } else {
@@ -272,7 +284,15 @@ pub fn solve_pairs_except(
         height_sigma_m,
         ..MeshOptions::default()
     };
-    let solved = solve(ids.len(), &pin_list, &links, &opts);
+    let height_obs: Vec<HeightObs> = heights
+        .iter()
+        .filter_map(|&(id, z_m, sigma_m)| {
+            ids.iter()
+                .position(|&x| x == id)
+                .map(|node| HeightObs { node, z_m, sigma_m })
+        })
+        .collect();
+    let solved = solve_with_heights(ids.len(), &pin_list, &links, &height_obs, &opts);
     let mut placed = Vec::new();
     let mut unsolved = Vec::new();
     for (i, &id) in ids.iter().enumerate() {

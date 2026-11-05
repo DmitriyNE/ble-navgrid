@@ -79,7 +79,16 @@
   </div>
   <div>
     <h2>Nodes</h2>
-    <table id="nodes"><thead><tr><th>node</th><th>role</th><th class="r">hops</th><th>neighbours</th><th>position (m)</th><th class="r">mV</th><th class="r">°C</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
+    <table id="nodes"><thead><tr><th>node</th><th>role</th><th class="r">hops</th><th>neighbours</th><th>position (m)</th><th class="r">mV</th><th class="r">°C</th><th class="r">hPa</th><th class="r">baro z</th><th class="r">age s</th></tr></thead><tbody></tbody></table>
+    <h2>Barometers</h2>
+    <form id="baro">
+      <input type="text" name="nodes" placeholder="N001 N002 N004 … sitting together" size="28">
+      <label>against <select name="against"><option value="">(their median)</option></select></label>
+      <label>over <input type="number" name="minutes" value="10" min="3" step="1"> min</label>
+      <button type="submit">calibrate</button>
+      <span id="baro-result" class="muted"></span>
+    </form>
+    <div class="muted">Calibrate nodes sitting side by side: three or more together set the reference; one beside a calibrated node joins it. Heights come from calibrated barometers only, relative to a pinned one (or, without pins, to one of them at 0).</div>
     <h2>Survey <span id="survey-summary" class="muted" style="text-transform: none; letter-spacing: 0; font-weight: 400"></span></h2>
     <form id="survey">
       <label>window <select name="window_s"><option value="1800">30 min</option><option value="7200">2 h</option><option value="28800">8 h</option><option value="86400">24 h</option><option value="0">all</option></select></label>
@@ -135,7 +144,9 @@ function render() {
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${n.name}${n.label ? ` <span class="muted">${n.label}</span>` : ''}</td><td>${n.role}${n.sink ? ' (sink)' : ''}</td><td class="r">${n.hops ?? '-'}</td>` +
       `<td>${n.neighbours.join(' ')}</td><td>${p ? `${fmt(p.x)} ${fmt(p.y)} ${fmt(p.z)} <span class="muted">${p.how}</span>` : ''}</td>` +
-      `<td class="r">${n.health ? n.health.battery_mv : ''}</td><td class="r">${n.health ? fmt(n.health.temperature_c, 1) : ''}</td><td class="r">${n.age_s}</td>`;
+      `<td class="r">${n.health ? n.health.battery_mv : ''}</td><td class="r">${n.health ? fmt(n.health.temperature_c, 1) : ''}</td>` +
+      `<td class="r">${n.baro ? fmt(n.baro.pressure_pa / 100, 2) : ''}${n.baro && n.baro.offset_pa == null ? ' <span class="warn" title="not calibrated">?</span>' : ''}</td>` +
+      `<td class="r">${n.baro && n.baro.z_m != null ? fmt(n.baro.z_m) + (n.baro.reference ? ' <span class="muted">ref</span>' : '') : ''}</td><td class="r">${n.age_s ?? ''}</td>`;
     tb.appendChild(tr);
   }
   const lb = $('#links tbody');
@@ -191,6 +202,12 @@ function render() {
     : 'not solved yet';
   if (state.solve && state.solve.local_frame) {
     $('#solve').textContent += ` — local frame: ${state.solve.local_frame[0]} at the origin, ${state.solve.local_frame[1]} on +x; the shape only, not written to the mesh until two nodes are pinned`;
+  }
+  const asel = document.querySelector('#baro select[name=against]');
+  if (asel && document.activeElement !== asel) {
+    const cur = asel.value;
+    asel.innerHTML = '<option value="">(their median)</option>' + nodes.filter((n) => n.baro && n.baro.offset_pa != null).map((n) => `<option value="${n.name}">${n.name}</option>`).join('');
+    asel.value = cur;
   }
   for (const sel of document.querySelectorAll('select[name=from], select[name=to], select[name=target], select[name=node]')) {
     const current = sel.value;
@@ -434,6 +451,15 @@ document.addEventListener('click', async (e) => {
   const r = await post('/api/ranging', { node: b.dataset.node, ranging: b.dataset.on === 'true' });
   if (r.error) alert(r.error);
   await post('/api/solve', {});
+  refresh();
+});
+
+$('#baro').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const nodes = String(f.get('nodes')).split(/[\s,]+/).filter(Boolean);
+  const r = await post('/api/baro/calibrate', { nodes, against: f.get('against'), minutes: Number(f.get('minutes')) });
+  $('#baro-result').textContent = r.error ? r.error : r.calibrated.map((c) => `${c.node} ${c.offset_pa >= 0 ? '+' : ''}${fmt(c.offset_pa)} Pa (±${fmt(c.spread_pa)}, ${c.minutes} min)`).join(', ');
   refresh();
 });
 

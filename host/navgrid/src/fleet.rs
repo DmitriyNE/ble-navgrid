@@ -68,6 +68,12 @@ pub struct Device {
     /// (the DK sink, whose one biased antenna path spoils the survey).
     #[serde(default = "yes", skip_serializing_if = "is_yes")]
     pub ranging: bool,
+    /// What its barometer reads above the fleet's reference at the same height, 0.01 Pa, and
+    /// when that was calibrated (`navgrid baro calibrate`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baro_offset_cpa: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baro_calibrated: Option<String>,
 }
 
 fn yes() -> bool {
@@ -166,6 +172,8 @@ impl Registry {
                 firmware: None,
                 flashed: None,
                 ranging: true,
+                baro_offset_cpa: None,
+                baro_calibrated: None,
             }),
         }
         self.devices.sort_by_key(|d| d.number);

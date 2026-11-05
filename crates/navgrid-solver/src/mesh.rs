@@ -77,6 +77,27 @@ pub struct Solved {
 
 /// Solves `nodes` positions from `pins` and `links`.
 pub fn solve(nodes: usize, pins: &[Pin], links: &[LinkObs], opts: &MeshOptions) -> Solved {
+    solve_with_heights(nodes, pins, links, &[], opts)
+}
+
+/// A node's height from elsewhere than ranges: barometry against a reference (FR-M3), metres and
+/// 1-sigma. It replaces the loose prior for that node.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeightObs {
+    pub node: usize,
+    pub z_m: f32,
+    pub sigma_m: f32,
+}
+
+/// [`solve`], with height observations for some nodes; the others keep the prior around the pins'
+/// mean height.
+pub fn solve_with_heights(
+    nodes: usize,
+    pins: &[Pin],
+    links: &[LinkObs],
+    heights: &[HeightObs],
+    opts: &MeshOptions,
+) -> Solved {
     let mut pos: Vec<Option<Vec3>> = vec![None; nodes];
     let mut pinned = vec![false; nodes];
     for p in pins {
@@ -99,9 +120,12 @@ pub fn solve(nodes: usize, pins: &[Pin], links: &[LinkObs], opts: &MeshOptions) 
     } else {
         pins.iter().map(|p| p.position[2]).sum::<f32>() / pins.len() as f32
     };
-    let prior = Height::Observed {
-        z: height,
-        sigma_m: opts.height_sigma_m,
+    // Each node's height and its weight: the observation where there is one, else the prior.
+    let height_of = |n: usize| -> (f32, f32) {
+        heights
+            .iter()
+            .find(|h| h.node == n)
+            .map_or((height, opts.height_sigma_m), |h| (h.z_m, h.sigma_m.max(0.01)))
     };
 
     // Seed outward from the pins: nodes with three placed neighbours first; when none is left,
@@ -153,13 +177,17 @@ pub fn solve(nodes: usize, pins: &[Pin], links: &[LinkObs], opts: &MeshOptions) 
                 *ci += ai / obs.len() as f32;
             }
         }
+        let (z_n, sigma_n) = height_of(n);
         let opts_seed = Options {
-            height: prior,
+            height: Height::Observed {
+                z: z_n,
+                sigma_m: sigma_n,
+            },
             ..Options::default()
         };
         let starts: Vec<Vec3> = if obs.len() >= 3 {
             // Off the anchors' centroid, so a degenerate start doesn't stall the solver.
-            vec![[centroid[0] + 0.5, centroid[1] + 0.3, height]]
+            vec![[centroid[0] + 0.5, centroid[1] + 0.3, z_n]]
         } else {
             // Two anchors: the two points at the right distances, either side of the baseline.
             let (a, b) = (obs[0], obs[1]);
@@ -171,8 +199,8 @@ pub fn solve(nodes: usize, pins: &[Pin], links: &[LinkObs], opts: &MeshOptions) 
             let h = libm::sqrtf((a.distance_m * a.distance_m - along * along).max(0.25));
             let foot = [a.anchor[0] + base[0] / len * along, a.anchor[1] + base[1] / len * along];
             vec![
-                [foot[0] + perp[0] * h, foot[1] + perp[1] * h, height],
-                [foot[0] - perp[0] * h, foot[1] - perp[1] * h, height],
+                [foot[0] + perp[0] * h, foot[1] + perp[1] * h, z_n],
+                [foot[0] - perp[0] * h, foot[1] - perp[1] * h, z_n],
             ]
         };
         let mut fix: Option<Vec3> = None;
@@ -251,11 +279,12 @@ pub fn solve(nodes: usize, pins: &[Pin], links: &[LinkObs], opts: &MeshOptions) 
                     }
                 }
             }
-            // Height priors.
-            let wz = 1.0 / f64::from(opts.height_sigma_m * opts.height_sigma_m);
+            // Heights: observed, else the prior.
             for (k, &n) in unknowns.iter().enumerate() {
+                let (z_n, sigma_n) = height_of(n);
+                let wz = 1.0 / f64::from(sigma_n * sigma_n);
                 let z = pos[n].expect("placed")[2];
-                let r = f64::from(z - height);
+                let r = f64::from(z - z_n);
                 a[(3 * k + 2) * m + 3 * k + 2] += wz;
                 g[3 * k + 2] += wz * r;
             }
@@ -313,9 +342,9 @@ pub fn solve(nodes: usize, pins: &[Pin], links: &[LinkObs], opts: &MeshOptions) 
                 }
             }
         }
-        let wz = 1.0 / f64::from(opts.height_sigma_m * opts.height_sigma_m);
-        for k in 0..unknowns.len() {
-            a[(3 * k + 2) * m + 3 * k + 2] += wz;
+        for (k, &n) in unknowns.iter().enumerate() {
+            let (_, sigma_n) = height_of(n);
+            a[(3 * k + 2) * m + 3 * k + 2] += 1.0 / f64::from(sigma_n * sigma_n);
         }
         if let Some(inv_diag) = cholesky_inverse_diag(&a, m) {
             for (k, &n) in unknowns.iter().enumerate() {
@@ -494,6 +523,39 @@ mod tests {
 
     fn error(a: Vec3, b: Vec3) -> f32 {
         norm(&core::array::from_fn(|i| a[i] - b[i]))
+    }
+
+    #[test]
+    fn barometric_heights_put_wall_anchors_at_their_heights() {
+        // Anchors on walls at very different heights: the prior drags them to the pins' mean.
+        let mut truth = grid();
+        let heights = [2.4, 0.6, 2.5, 1.2, 0.4, 2.0, 2.6, 0.9, 2.5];
+        for (t, z) in truth.iter_mut().zip(heights) {
+            t[2] = z;
+        }
+        let mut rng = Lcg(3);
+        let links = links_of(&truth, 0.05, 0.0, &mut rng);
+        let pinned = [0, 2, 6, 8];
+        let opts = MeshOptions::default();
+        let prior_only = solve(truth.len(), &pins(&truth, &pinned), &links, &opts);
+        let worst_prior = (0..truth.len())
+            .map(|n| (prior_only.positions[n].expect("placed")[2] - truth[n][2]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(worst_prior > 0.5, "the prior alone gets heights wrong: {worst_prior}");
+        let obs: Vec<HeightObs> = (0..truth.len())
+            .filter(|n| !pinned.contains(n))
+            .map(|n| HeightObs {
+                node: n,
+                z_m: truth[n][2] + 0.1 * rng.gauss(),
+                sigma_m: 0.15,
+            })
+            .collect();
+        let with_baro = solve_with_heights(truth.len(), &pins(&truth, &pinned), &links, &obs, &opts);
+        for (n, t) in truth.iter().enumerate() {
+            let p = with_baro.positions[n].expect("placed");
+            assert!((p[2] - t[2]).abs() < 0.3, "node {n}: z {} vs {}", p[2], t[2]);
+            assert!(error(p, *t) < 0.35, "node {n}: {p:?} vs {t:?}");
+        }
     }
 
     #[test]
