@@ -4,6 +4,13 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**The mobile on the map.** Each tag is fixed on the page from its latest bursts with the
+solved anchors: the medians per anchor over the shortest window back from its newest burst that
+holds three anchors (20 s, else 2 or 10 min), multilaterated with its barometric height where
+its sensor is calibrated, the worst anchor left out when one doesn't fit; refreshed with every
+tag burst. N007 showed up in the open-plan area at (20.7, 21.6) m, 0.64 m below N006, ±1 m,
+from a fix 79 s old: it had no links at the time (DEF-76).
+
 **The office's plan under the map.** `serve --floorplan PNG` draws a plan under the 2D view;
 its scale, origin, rotation and opacity live in `floorplan.json` in the fleet directory and are
 set on the page (a two-point scale tool: click the ends of a known length, type it). The
