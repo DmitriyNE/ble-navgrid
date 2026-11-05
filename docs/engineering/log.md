@@ -28,6 +28,22 @@ whoever waits for it next, so one stuck exchange can no longer take a node's ses
 good. The third failure was the rollout's own catch: a node on the leaking build can't get past
 the first session to take the fix, so it needs a restart first.
 
+**DEF-71 found: the host runner stopped on one link's encryption event.** Asked to fix the
+cause rather than restart on silence. The sink's serial had N005's own report from 13:20,
+353 s after its boot: "host stopped: BleHost(Disconnected)", twenty-four minutes before it was
+missed, the same error class as the night's "InvalidState" stops on N002 and N004. TrouBLE's
+receive runner hands encryption events to its security manager with `?`; when the event is for
+a link the host has already marked disconnected, the lookup fails with `Disconnected` and the
+whole runner returns. Our firmware logged that and carried on without a host: no reports, no
+disconnections, sessions waiting for links that were gone, the button still showing them, and
+the controller advertising until a peer's connection used the set up, which is why the sink
+heard beacons for twenty minutes after. The fix is in a local fork of TrouBLE (`navgrid` branch
+beside the repository, pending publication): security events, key replies and scan disables
+that fail for one link are logged and the runner goes on. A runner that returns anyway is now a
+panic with a crash record; the silence restart from an hour earlier is gone. The theory that
+the controller wedged when its CS peer vanished was wrong: the halted sink only made the race
+more likely, by dropping links mid-encryption.
+
 **DEF-71 caught live, twice.** N004 and N005 went silent the moment the sink was halted for its
 reflash at 13:45, both linked to it and its CS peers. N005's log, read from RAM in the adapter
 without a restart and then watched live: battery, stack and button lines only, the button

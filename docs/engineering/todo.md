@@ -178,6 +178,13 @@ The fleet move (log 2026-11-04/05), next:
 - [ ] **A log buffer worth reading:** 1 KiB of defmt holds fifty lines; 4 KiB when the RAM budget
       (spike 2026-11-04) allows, or a ring of only the warnings.
 
+- [ ] **Publish the TrouBLE fork** (DEF-71): the fix lives in a local clone beside this
+      repository (`navgrid` branch on GreatKet's fa9886d) with a path patch in
+      `firmware/Cargo.toml`; push it as a fork, point the patch at the git revision, and offer
+      the fix upstream (a security event for one link must not stop the runner).
+- [ ] **Audit the runners' remaining `?`** in the fork: the advertising disable, the resolving
+      list sync and the RPA rotation still stop the control runner on an error.
+
 **The survey tooling** (FR-M6), for a surveyed anchor solution before any tag is tracked:
 
 - [x] **Burst history and aggregates** (2026-11-05): every Link record the sinks mirror is kept
