@@ -15,6 +15,14 @@
   @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
   canvas { display: block; width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
   .mapwrap { position: relative; }
+  .maptools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 6px; }
+  .maptools button { padding: 2px 8px; }
+  .maptools button.on { background: var(--accent); color: var(--bg); }
+  .maptools input[type=number] { width: 64px; }
+  #map { cursor: grab; touch-action: none; }
+  #map.dragging { cursor: grabbing; }
+  #mapsel { margin-top: 6px; }
+  #mapsel table td, #mapsel table th { padding: 2px 8px 2px 0; }
   .tip { position: absolute; pointer-events: none; display: none; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font-size: 12px; line-height: 1.35; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,.15); z-index: 2; }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -36,8 +44,15 @@
 <div class="grid">
   <div>
     <h2>Floor plan</h2>
+    <div class="maptools">
+      <button type="button" data-mode="2d">2D</button><button type="button" data-mode="3d">3D</button>
+      <span id="views3d">view <button type="button" data-view="top">top</button><button type="button" data-view="front">front</button><button type="button" data-view="side">side</button><button type="button" data-view="iso">iso</button></span>
+      <button type="button" id="mapfit" title="fit the view to the nodes (or double-click the map)">fit</button>
+      <label>z <input type="number" id="zmin" step="0.1" placeholder="min"> to <input type="number" id="zmax" step="0.1" placeholder="max"> m</label>
+    </div>
     <div class="mapwrap"><canvas id="map"></canvas><div id="maptip" class="tip"></div></div>
-    <div class="muted">squares: anchors (filled: pinned, or the local frame's two); circles: tags; lines: the survey's pairs, thicker with more bursts, amber beyond 2σ of the solution, dashed when cut, dotted for tag links; shaded: a solved node's 1σ. Hover a node for its details.</div>
+    <div id="mapsel"></div>
+    <div class="muted">Squares: anchors (filled: pinned, or the local frame's two); circles: tags; colour: height. Lines: the survey's pairs, thicker with more bursts, amber beyond 2σ of the solution, dashed when cut, dotted when left out (tags, routes-only nodes); shaded: 1σ. 2D: drag to pan, wheel to zoom. 3D: drag to orbit, shift-drag to pan, wheel to zoom. Click a node to pick it; double-click to fit.</div>
     <h2>Find</h2>
     <form id="find">
       <label>from <select name="from"></select></label>
@@ -225,30 +240,124 @@ function fitClass(p) {
   return Math.abs(p.residual_m) > 2 * sigma ? 'warn' : 'ok';
 }
 
-// The metres the map shows: kept across refreshes, refitted only when a node leaves it or it
-// is far too big, so the picture doesn't jump with every solve.
-const mapView = { box: null, hits: [] };
+// The map: a plan (2D) or a perspective view (3D) of the nodes, their pairs and heights. The view
+// survives refreshes: it changes only when the user moves it or a node leaves it.
+const view = {
+  mode: (() => {
+    const asked = new URLSearchParams(location.search).get('mode');
+    if (asked === '2d' || asked === '3d') return asked;
+    try { return localStorage.getItem('navgrid.mode') || '2d'; } catch (e) { return '2d'; }
+  })(),
+  box: null, hits: [], selected: null,
+  zoom: 1, panX: 0, panY: 0,                       // 2D: on top of the fitted box
+  yaw: -0.7, pitch: 0.55, dist: null, target: null, // 3D camera
+  drag: null,
+};
 const cssVar = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
 
-function fitBox(placed) {
-  const xs = placed.map((e) => e.p.x), ys = placed.map((e) => e.p.y);
-  const need = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
-  const b = mapView.box;
-  const inside = b && need.minX >= b.minX + 0.5 && need.maxX <= b.maxX - 0.5 && need.minY >= b.minY + 0.5 && need.maxY <= b.maxY - 0.5;
-  const span = Math.max(need.maxX - need.minX, need.maxY - need.minY, 4);
-  const tooBig = b && Math.max(b.maxX - b.minX, b.maxY - b.minY) > 2.5 * (span + 3);
-  if (inside && !tooBig) return b;
-  mapView.box = {
-    minX: Math.floor(need.minX - 1.5), maxX: Math.ceil(need.maxX + 1.5),
-    minY: Math.floor(need.minY - 1.5), maxY: Math.ceil(need.maxY + 1.5),
-  };
-  return mapView.box;
+// Height colours: blue (low) through green to amber (high).
+function heightColour(t) {
+  const stops = [[66, 120, 230], [60, 190, 140], [235, 180, 50]];
+  const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(x)), f = x - i;
+  const c = stops[i].map((v, k) => Math.round(v + (stops[i + 1][k] - v) * f));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
 }
 
-// A grid step in metres at least `px` pixels apart.
+function zFilter() {
+  const lo = parseFloat($('#zmin').value), hi = parseFloat($('#zmax').value);
+  return (z) => (Number.isNaN(lo) || z >= lo) && (Number.isNaN(hi) || z <= hi);
+}
+
 function gridStep(scale, px) {
   for (const s of [0.25, 0.5, 1, 2, 5, 10, 20, 50]) if (s * scale >= px) return s;
   return 100;
+}
+
+function fitBox(placed, force) {
+  const xs = placed.map((e) => e.p.x), ys = placed.map((e) => e.p.y);
+  const need = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+  const b = view.box;
+  const inside = b && need.minX >= b.minX + 0.5 && need.maxX <= b.maxX - 0.5 && need.minY >= b.minY + 0.5 && need.maxY <= b.maxY - 0.5;
+  const span = Math.max(need.maxX - need.minX, need.maxY - need.minY, 4);
+  const tooBig = b && Math.max(b.maxX - b.minX, b.maxY - b.minY) > 2.5 * (span + 3);
+  if (!force && inside && !tooBig) return b;
+  view.box = { minX: Math.floor(need.minX - 1.5), maxX: Math.ceil(need.maxX + 1.5), minY: Math.floor(need.minY - 1.5), maxY: Math.ceil(need.maxY + 1.5) };
+  return view.box;
+}
+
+// What the map draws: placed nodes inside the height band, and the pairs between them.
+function mapScene(nodes) {
+  const keep = zFilter();
+  const placed = nodes.map((n) => ({ n, p: positionOf(n) })).filter((e) => e.p && keep(e.p.z ?? 0));
+  const zs = placed.map((e) => e.p.z ?? 0);
+  const zlo = zs.length ? Math.min(...zs) : 0, zhi = zs.length ? Math.max(...zs) : 1;
+  const byName = Object.fromEntries(placed.map((e) => [e.n.name, e.p]));
+  const pairs = ((state.survey && state.survey.pairs.length) ? state.survey.pairs
+    : state.links.map((l) => ({ a: l.from, b: l.to, n: 1, quality: l.quality, residual_m: null })))
+    .filter((p) => byName[p.a] && byName[p.b]);
+  return { placed, pairs, byName, zlo, zhi };
+}
+
+function pairStyle(ctx, p, fg, warn) {
+  const aside = p.tag || p.relay;
+  const cls = aside ? 'muted' : fitClass(p);
+  const picked = view.selected && (p.a === view.selected || p.b === view.selected);
+  ctx.strokeStyle = cls === 'warn' ? warn : fg;
+  ctx.globalAlpha = view.selected && !picked ? 0.08 : (aside ? 0.25 : (cls === 'muted' ? 0.2 + 0.4 * (p.quality / 255) : 0.7));
+  ctx.lineWidth = (aside ? 1 : 1 + Math.min(3, Math.log2(1 + p.n) / 2)) + (picked ? 1 : 0);
+  ctx.setLineDash(aside ? [1, 4] : (p.cut ? [5, 4] : []));
+}
+
+function drawNode(ctx, n, p, x, y, colour, fg) {
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = colour;
+  ctx.fillStyle = colour;
+  const r = view.selected === n.name ? 8 : 6;
+  if (n.role === 'Anchor') {
+    ctx.beginPath(); ctx.rect(x - r, y - r, 2 * r, 2 * r);
+    if (p.how === 'pin' || p.how === 'gauge') ctx.fill(); else { ctx.fillStyle = cssVar('--bg'); ctx.fill(); ctx.stroke(); }
+  } else {
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+    if (p.how === 'own') { ctx.fillStyle = cssVar('--bg'); ctx.fill(); ctx.stroke(); } else ctx.fill();
+  }
+  if (view.selected === n.name) {
+    ctx.strokeStyle = fg; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(x, y, r + 5, 0, Math.PI * 2); ctx.stroke();
+  }
+}
+
+// Labels placed clear of each other and of the nodes.
+function drawLabels(ctx, items, W, H, fg, muted) {
+  const taken = items.map(({ x, y }) => ({ x0: x - 9, y0: y - 9, x1: x + 9, y1: y + 9 }));
+  const overlaps = (r) => taken.some((t) => r.x0 < t.x1 && r.x1 > t.x0 && r.y0 < t.y1 && r.y1 > t.y0);
+  for (const { n, p, x, y } of items) {
+    const z = (p.z != null && Number.isFinite(p.z)) ? `z ${fmt(p.z, 2)}` : '';
+    const w = Math.max(ctx.measureText(n.name).width, ctx.measureText(z).width) + 4, h = z ? 26 : 14;
+    const spots = [[11, -10], [-11 - w, -10], [-w / 2, -14 - h], [-w / 2, 12], [11, 4 - h], [-11 - w, 4 - h]];
+    let at = spots[0];
+    for (const s of spots) {
+      const r = { x0: x + s[0], y0: y + s[1], x1: x + s[0] + w, y1: y + s[1] + h };
+      if (!overlaps(r) && r.x0 >= 0 && r.x1 <= W && r.y0 >= 0 && r.y1 <= H) { at = s; break; }
+    }
+    taken.push({ x0: x + at[0], y0: y + at[1], x1: x + at[0] + w, y1: y + at[1] + h });
+    ctx.globalAlpha = 0.75; ctx.fillStyle = cssVar('--bg');
+    ctx.fillRect(x + at[0] - 1, y + at[1], w, h);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = fg; ctx.fillText(n.name, x + at[0] + 1, y + at[1] + 11);
+    if (z) { ctx.fillStyle = muted; ctx.fillText(z, x + at[0] + 1, y + at[1] + 24); }
+  }
+}
+
+function drawLegend(ctx, W, H, zlo, zhi, muted) {
+  if (!(zhi > zlo)) return;
+  const w = 90, h = 8, x = 14, y = H - 46;
+  const g = ctx.createLinearGradient(x, 0, x + w, 0);
+  for (let i = 0; i <= 4; i++) g.addColorStop(i / 4, heightColour(i / 4));
+  ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = muted; ctx.textAlign = 'left';
+  ctx.fillText(`${fmt(zlo, 1)}`, x, y + h + 12);
+  ctx.textAlign = 'right'; ctx.fillText(`${fmt(zhi, 1)} m`, x + w, y + h + 12); ctx.textAlign = 'left';
 }
 
 function drawMap(nodes) {
@@ -263,115 +372,187 @@ function drawMap(nodes) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
   ctx.font = '12px system-ui, sans-serif';
-  const fg = cssVar('--fg'), muted = cssVar('--muted'), line = cssVar('--line'), accent = cssVar('--accent'), warn = cssVar('--warn');
-  mapView.hits = [];
-  const placed = nodes.map((n) => ({ n, p: positionOf(n) })).filter((e) => e.p);
-  if (placed.length === 0) {
-    ctx.fillStyle = muted;
+  for (const b of document.querySelectorAll('.maptools [data-mode]')) b.classList.toggle('on', b.dataset.mode === view.mode);
+  $('#views3d').style.display = view.mode === '3d' ? '' : 'none';
+  view.hits = [];
+  const scene = mapScene(nodes);
+  if (scene.placed.length === 0) {
+    ctx.fillStyle = cssVar('--muted');
     ctx.fillText('no positions yet: pin nodes, or let the survey solve', 16, 24);
+    renderSelection(nodes);
     return;
   }
-  const box = fitBox(placed);
-  const L = 40, R = 12, T = 12, B = 28;
-  const scale = Math.min((W - L - R) / (box.maxX - box.minX), (H - T - B) / (box.maxY - box.minY));
-  const ox = L + ((W - L - R) - (box.maxX - box.minX) * scale) / 2;
-  const oy = T + ((H - T - B) - (box.maxY - box.minY) * scale) / 2;
-  const sx = (x) => ox + (x - box.minX) * scale;
-  const sy = (y) => oy + (box.maxY - y) * scale;
+  if (view.mode === '3d') draw3d(ctx, W, H, scene); else draw2d(ctx, W, H, scene);
+  drawLegend(ctx, W, H, scene.zlo, scene.zhi, cssVar('--muted'));
+  renderSelection(nodes);
+}
 
-  // Grid, axes in metres, the origin.
+function draw2d(ctx, W, H, { placed, pairs, byName, zlo, zhi }) {
+  const fg = cssVar('--fg'), muted = cssVar('--muted'), line = cssVar('--line'), warn = cssVar('--warn');
+  const box = fitBox(placed, false);
+  const L = 40, R = 12, T = 12, B = 28;
+  const base = Math.min((W - L - R) / (box.maxX - box.minX), (H - T - B) / (box.maxY - box.minY));
+  const scale = base * view.zoom;
+  const cx = (box.minX + box.maxX) / 2, cy = (box.minY + box.maxY) / 2;
+  const ox = L + (W - L - R) / 2 + view.panX, oy = T + (H - T - B) / 2 + view.panY;
+  const sx = (x) => ox + (x - cx) * scale;
+  const sy = (y) => oy - (y - cy) * scale;
+  view.toWorld2d = (px, py) => [cx + (px - ox) / scale, cy - (py - oy) / scale];
+  // The world rectangle on screen.
+  const wx0 = cx + (0 - ox) / scale, wx1 = cx + (W - ox) / scale, wy1 = cy + (oy - 0) / scale, wy0 = cy + (oy - H) / scale;
   const minor = gridStep(scale, 18), major = gridStep(scale, 64);
   ctx.lineWidth = 1;
-  for (let x = Math.ceil(box.minX / minor) * minor; x <= box.maxX + 1e-6; x += minor) {
+  for (let x = Math.ceil(wx0 / minor) * minor; x <= wx1; x += minor) {
     const isMajor = Math.abs(x / major - Math.round(x / major)) < 1e-6;
-    ctx.strokeStyle = line; ctx.globalAlpha = isMajor ? 0.9 : 0.4;
-    ctx.beginPath(); ctx.moveTo(sx(x), sy(box.minY)); ctx.lineTo(sx(x), sy(box.maxY)); ctx.stroke();
-    if (isMajor) { ctx.globalAlpha = 1; ctx.fillStyle = muted; ctx.textAlign = 'center'; ctx.fillText(`${+x.toFixed(2)}`, sx(x), sy(box.minY) + 16); }
+    ctx.strokeStyle = line; ctx.globalAlpha = isMajor ? 0.9 : 0.35;
+    ctx.beginPath(); ctx.moveTo(sx(x), 0); ctx.lineTo(sx(x), H - B + 6); ctx.stroke();
+    if (isMajor) { ctx.globalAlpha = 1; ctx.fillStyle = muted; ctx.textAlign = 'center'; ctx.fillText(`${+x.toFixed(2)}`, sx(x), H - 10); }
   }
-  for (let y = Math.ceil(box.minY / minor) * minor; y <= box.maxY + 1e-6; y += minor) {
+  for (let y = Math.ceil(wy0 / minor) * minor; y <= wy1; y += minor) {
     const isMajor = Math.abs(y / major - Math.round(y / major)) < 1e-6;
-    ctx.strokeStyle = line; ctx.globalAlpha = isMajor ? 0.9 : 0.4;
-    ctx.beginPath(); ctx.moveTo(sx(box.minX), sy(y)); ctx.lineTo(sx(box.maxX), sy(y)); ctx.stroke();
-    if (isMajor) { ctx.globalAlpha = 1; ctx.fillStyle = muted; ctx.textAlign = 'right'; ctx.fillText(`${+y.toFixed(2)}`, sx(box.minX) - 6, sy(y) + 4); }
+    ctx.strokeStyle = line; ctx.globalAlpha = isMajor ? 0.9 : 0.35;
+    ctx.beginPath(); ctx.moveTo(L - 6, sy(y)); ctx.lineTo(W, sy(y)); ctx.stroke();
+    if (isMajor) { ctx.globalAlpha = 1; ctx.fillStyle = muted; ctx.textAlign = 'right'; ctx.fillText(`${+y.toFixed(2)}`, L - 8, sy(y) + 4); }
   }
   ctx.globalAlpha = 1; ctx.textAlign = 'left';
-  ctx.fillStyle = muted;
-  ctx.fillText('x m →', W - R - 44, H - 6);
+  ctx.fillStyle = muted; ctx.fillText('x m →', W - R - 44, H - B + 2);
   ctx.save(); ctx.translate(12, T + 40); ctx.rotate(-Math.PI / 2); ctx.fillText('y m →', 0, 0); ctx.restore();
-  if (0 >= box.minX && 0 <= box.maxX && 0 >= box.minY && 0 <= box.maxY) {
-    ctx.strokeStyle = muted; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(sx(0) - 8, sy(0)); ctx.lineTo(sx(0) + 8, sy(0)); ctx.moveTo(sx(0), sy(0) - 8); ctx.lineTo(sx(0), sy(0) + 8); ctx.stroke();
-  }
-
-  // The survey's pairs: thicker with more bursts, amber beyond 2σ, dashed when cut; tag links dotted.
-  const byName = Object.fromEntries(placed.map((e) => [e.n.name, e.p]));
-  const pairs = (state.survey && state.survey.pairs.length) ? state.survey.pairs : state.links.map((l) => ({ a: l.from, b: l.to, n: 1, quality: l.quality, residual_m: null }));
+  ctx.strokeStyle = muted; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(sx(0) - 8, sy(0)); ctx.lineTo(sx(0) + 8, sy(0)); ctx.moveTo(sx(0), sy(0) - 8); ctx.lineTo(sx(0), sy(0) + 8); ctx.stroke();
   for (const p of pairs) {
     const a = byName[p.a], b = byName[p.b];
-    if (!a || !b) continue;
-    const aside = p.tag || p.relay;
-    const cls = aside ? 'muted' : fitClass(p);
-    ctx.strokeStyle = cls === 'warn' ? warn : fg;
-    ctx.globalAlpha = aside ? 0.25 : (cls === 'muted' ? 0.2 + 0.4 * (p.quality / 255) : 0.7);
-    ctx.lineWidth = aside ? 1 : 1 + Math.min(3, Math.log2(1 + p.n) / 2);
-    ctx.setLineDash(aside ? [1, 4] : (p.cut ? [5, 4] : []));
+    pairStyle(ctx, p, fg, warn);
     ctx.beginPath(); ctx.moveTo(sx(a.x), sy(a.y)); ctx.lineTo(sx(b.x), sy(b.y)); ctx.stroke();
   }
   ctx.setLineDash([]); ctx.globalAlpha = 1;
-
-  // σ ellipses, then the nodes, then labels placed clear of each other and of the nodes.
+  const span = Math.max(zhi - zlo, 1e-6);
+  const items = [];
   for (const { n, p } of placed) {
+    const x = sx(p.x), y = sy(p.y);
     const sig = (p.how === 'solved' || p.how === 'local') && ((n.position && n.position.sigma) || (n.solved && n.solved.sigma));
     if (sig && sig[0] != null && sig[1] != null) {
       const rx = sig[0] * scale, ry = sig[1] * scale;
       if (rx > 1 && ry > 1 && rx < W && ry < H) {
-        ctx.fillStyle = n.role === 'Anchor' ? fg : accent; ctx.globalAlpha = 0.07;
-        ctx.beginPath(); ctx.ellipse(sx(p.x), sy(p.y), rx, ry, 0, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = ctx.fillStyle; ctx.globalAlpha = 0.3; ctx.lineWidth = 1; ctx.stroke();
+        ctx.fillStyle = fg; ctx.globalAlpha = 0.06;
+        ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = fg; ctx.globalAlpha = 0.25; ctx.lineWidth = 1; ctx.stroke();
         ctx.globalAlpha = 1;
       }
     }
+    items.push({ n, p, x, y, colour: heightColour(((p.z ?? 0) - zlo) / span) });
   }
-  const taken = [];
-  for (const { n, p } of placed) {
-    const x = sx(p.x), y = sy(p.y);
-    ctx.strokeStyle = n.role === 'Anchor' ? fg : accent;
-    ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = 2;
-    if (n.role === 'Anchor') {
-      ctx.beginPath(); ctx.rect(x - 6, y - 6, 12, 12);
-      if (p.how === 'pin' || p.how === 'gauge') ctx.fill(); else { ctx.fillStyle = cssVar('--bg'); ctx.fill(); ctx.stroke(); }
-    } else {
-      ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
-      if (p.how === 'own') { ctx.fillStyle = cssVar('--bg'); ctx.fill(); ctx.stroke(); } else ctx.fill();
-    }
-    taken.push({ x0: x - 8, y0: y - 8, x1: x + 8, y1: y + 8 });
-    mapView.hits.push({ x, y, n, p });
-  }
-  const overlaps = (r) => taken.some((t) => r.x0 < t.x1 && r.x1 > t.x0 && r.y0 < t.y1 && r.y1 > t.y0);
-  for (const { n, p } of placed) {
-    const x = sx(p.x), y = sy(p.y);
-    const z = (p.z != null && Number.isFinite(p.z)) ? `z ${fmt(p.z, 1)}` : '';
-    const w = Math.max(ctx.measureText(n.name).width, ctx.measureText(z).width) + 2, h = z ? 26 : 14;
-    const spots = [[10, -10], [-10 - w, -10], [-w / 2, -12 - h], [-w / 2, 10], [10, 4 - h], [-10 - w, 4 - h]];
-    let at = spots[0];
-    for (const s of spots) {
-      const r = { x0: x + s[0], y0: y + s[1], x1: x + s[0] + w, y1: y + s[1] + h };
-      if (!overlaps(r) && r.x0 >= 0 && r.x1 <= W && r.y0 >= 0 && r.y1 <= H) { at = s; break; }
-    }
-    taken.push({ x0: x + at[0], y0: y + at[1], x1: x + at[0] + w, y1: y + at[1] + h });
-    ctx.fillStyle = fg; ctx.fillText(n.name, x + at[0], y + at[1] + 11);
-    if (z) { ctx.fillStyle = muted; ctx.fillText(z, x + at[0], y + at[1] + 24); }
-  }
-
-  // A scale bar.
-  const bar = gridStep(scale, 80);
+  for (const it of items) { drawNode(ctx, it.n, it.p, it.x, it.y, it.colour, fg); view.hits.push(it); }
+  drawLabels(ctx, items, W, H, fg, muted);
+  const bar = gridStep(scale, 80), bx = W - R - bar * scale - 4, by = T + 10;
   ctx.strokeStyle = fg; ctx.lineWidth = 2;
-  const bx = W - R - bar * scale - 4, by = T + 10;
   ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + bar * scale, by); ctx.moveTo(bx, by - 4); ctx.lineTo(bx, by + 4); ctx.moveTo(bx + bar * scale, by - 4); ctx.lineTo(bx + bar * scale, by + 4); ctx.stroke();
   ctx.fillStyle = fg; ctx.textAlign = 'center'; ctx.fillText(`${bar} m`, bx + bar * scale / 2, by + 16); ctx.textAlign = 'left';
 }
 
-// The hover card: what the page knows about the node under the pointer.
+// 3D: a camera orbiting a target. yaw turns about z, pitch is the elevation (π/2 looks straight
+// down, 0 from the side).
+function camera3d(W, H, scene) {
+  if (!view.target || !view.dist) fit3d(scene);
+  const [tx, ty, tz] = view.target;
+  const cy = Math.cos(view.yaw), syaw = Math.sin(view.yaw), cp = Math.cos(view.pitch), sp = Math.sin(view.pitch);
+  const f = (H / 2) / Math.tan(Math.PI / 8);
+  return (x, y, z) => {
+    const px = x - tx, py = y - ty, pz = z - tz;
+    const x1 = px * cy + py * syaw, y1 = -px * syaw + py * cy;
+    const right = x1, up = y1 * sp + pz * cp, depth = view.dist + y1 * cp - pz * sp;
+    const d = Math.max(depth, 0.1);
+    return { x: W / 2 + f * right / d, y: H / 2 - f * up / d, depth };
+  };
+}
+
+function fit3d(scene) {
+  const ps = scene.placed.map((e) => e.p);
+  if (!ps.length) return;
+  const lo = [0, 1, 2].map((i) => Math.min(...ps.map((p) => [p.x, p.y, p.z ?? 0][i])));
+  const hi = [0, 1, 2].map((i) => Math.max(...ps.map((p) => [p.x, p.y, p.z ?? 0][i])));
+  view.target = [0, 1, 2].map((i) => (lo[i] + hi[i]) / 2);
+  const span = Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], 4);
+  view.dist = span * 1.9;
+}
+
+function draw3d(ctx, W, H, scene) {
+  const { placed, pairs, byName, zlo, zhi } = scene;
+  const fg = cssVar('--fg'), muted = cssVar('--muted'), line = cssVar('--line'), warn = cssVar('--warn');
+  const P = camera3d(W, H, scene);
+  // The floor: a grid at the lowest height (or 0), over the nodes' extent.
+  const floorZ = Math.min(0, zlo);
+  const xs = placed.map((e) => e.p.x), ys = placed.map((e) => e.p.y);
+  const step = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) > 30 ? 5 : 1;
+  const gx0 = Math.floor(Math.min(...xs) - 2), gx1 = Math.ceil(Math.max(...xs) + 2), gy0 = Math.floor(Math.min(...ys) - 2), gy1 = Math.ceil(Math.max(...ys) + 2);
+  ctx.lineWidth = 1; ctx.strokeStyle = line;
+  for (let x = Math.ceil(gx0 / step) * step; x <= gx1; x += step) {
+    const a = P(x, gy0, floorZ), b = P(x, gy1, floorZ);
+    ctx.globalAlpha = x % (5 * step) === 0 ? 0.9 : 0.4;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  for (let y = Math.ceil(gy0 / step) * step; y <= gy1; y += step) {
+    const a = P(gx0, y, floorZ), b = P(gx1, y, floorZ);
+    ctx.globalAlpha = y % (5 * step) === 0 ? 0.9 : 0.4;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  // Axes from the origin: x, y, z, a metre each.
+  const o = P(0, 0, floorZ);
+  for (const [dx, dy, dz, label] of [[1, 0, 0, 'x'], [0, 1, 0, 'y'], [0, 0, 1, 'z']]) {
+    const e = P(dx, dy, floorZ + dz);
+    ctx.strokeStyle = muted; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(o.x, o.y); ctx.lineTo(e.x, e.y); ctx.stroke();
+    ctx.fillStyle = muted; ctx.fillText(label, e.x + 3, e.y - 3);
+  }
+  // Pairs, then drop lines and σ, then nodes nearest last.
+  for (const p of pairs) {
+    const a = byName[p.a], b = byName[p.b];
+    const pa = P(a.x, a.y, a.z ?? 0), pb = P(b.x, b.y, b.z ?? 0);
+    pairStyle(ctx, p, fg, warn);
+    ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+  }
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+  const span = Math.max(zhi - zlo, 1e-6);
+  const items = placed.map(({ n, p }) => {
+    const s = P(p.x, p.y, p.z ?? 0);
+    return { n, p, x: s.x, y: s.y, depth: s.depth, colour: heightColour(((p.z ?? 0) - zlo) / span) };
+  }).sort((a, b) => b.depth - a.depth);
+  for (const it of items) {
+    const f = P(it.p.x, it.p.y, floorZ);
+    ctx.strokeStyle = it.colour; ctx.globalAlpha = 0.6; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(it.x, it.y); ctx.lineTo(f.x, f.y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 0.6; ctx.fillStyle = it.colour;
+    ctx.beginPath(); ctx.arc(f.x, f.y, 2, 0, Math.PI * 2); ctx.fill();
+    const sig = (it.n.position && it.n.position.sigma) || (it.n.solved && it.n.solved.sigma);
+    if (sig && sig[2] != null && sig[2] > 0.01) {
+      const up = P(it.p.x, it.p.y, (it.p.z ?? 0) + sig[2]), down = P(it.p.x, it.p.y, (it.p.z ?? 0) - sig[2]);
+      ctx.strokeStyle = fg; ctx.globalAlpha = 0.35; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(up.x, up.y); ctx.lineTo(down.x, down.y); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  for (const it of items) { drawNode(ctx, it.n, it.p, it.x, it.y, it.colour, fg); view.hits.push(it); }
+  drawLabels(ctx, items.slice().reverse(), W, H, fg, muted);
+}
+
+// The picked node's card and pairs, under the map.
+function renderSelection(nodes) {
+  const box = $('#mapsel');
+  const n = view.selected && nodes.find((x) => x.name === view.selected);
+  if (!n) { box.innerHTML = ''; return; }
+  const p = positionOf(n);
+  const pairs = ((state.survey && state.survey.pairs) || []).filter((q) => q.a === n.name || q.b === n.name);
+  const rows = pairs.map((q) => {
+    const other = q.a === n.name ? q.b : q.a;
+    const res = q.tag ? 'tag link' : q.relay ? 'routes only' : (q.residual_m == null ? '' : `${q.residual_m >= 0 ? '+' : ''}${fmt(q.residual_m)}${q.cut ? ' cut' : ''}`);
+    return `<tr><td>${other}</td><td class="r">${q.n}</td><td class="r">${fmt(q.median_m)}</td><td class="r">${fmt(q.spread_m)}</td><td class="r">${fmt(q.solved_m)}</td><td class="r ${q.tag || q.relay ? 'muted' : fitClass(q)}">${res}</td></tr>`;
+  }).join('');
+  box.innerHTML = `<div>${p ? nodeCard(n, p) : `<b>${n.name}</b>`} <button type="button" id="unpick">clear</button></div>` +
+    (rows ? `<table><thead><tr><th>pair with</th><th class="r">bursts</th><th class="r">median m</th><th class="r">spread</th><th class="r">solved m</th><th class="r">residual</th></tr></thead><tbody>${rows}</tbody></table>` : '');
+  $('#unpick').onclick = () => { view.selected = null; drawMap(sortedNodes()); };
+}
+
 function nodeCard(n, p) {
   const sig = (n.position && n.position.sigma) || (n.solved && n.solved.sigma);
   const rows = [
@@ -379,30 +560,105 @@ function nodeCard(n, p) {
     `x ${fmt(p.x)} y ${fmt(p.y)} z ${fmt(p.z)} m <span class="muted">${p.how}</span>`,
   ];
   if (sig && sig[0] != null) rows.push(`σ ${fmt(sig[0])} ${fmt(sig[1])} ${fmt(sig[2])} m`);
-  if (n.health) rows.push(`${n.health.battery_mv} mV, ${fmt(n.health.temperature_c, 1)} °C`);
-  rows.push(`firmware ${n.firmware}`);
+  if (n.baro) rows.push(`${fmt(n.baro.pressure_pa / 100, 2)} hPa, ${fmt(n.baro.temperature_c, 1)} °C${n.baro.z_m != null ? `, baro z ${fmt(n.baro.z_m)} ± ${fmt(n.baro.sigma_m)} m` : ''}${n.baro.offset_pa == null ? ' (not calibrated)' : ''}`);
+  if (n.health) rows.push(`${n.health.battery_mv} mV`);
+  if (n.firmware) rows.push(`firmware ${n.firmware}`);
   if (n.neighbours && n.neighbours.length) rows.push(`links ${n.neighbours.join(' ')}`);
   return rows.join('<br>');
 }
 
-$('#map').addEventListener('mousemove', (e) => {
-  const tip = $('#maptip');
-  const r = e.target.getBoundingClientRect();
-  const mx = e.clientX - r.left, my = e.clientY - r.top;
+const sortedNodes = () => (state ? state.nodes.slice().sort((a, b) => a.name.localeCompare(b.name)) : []);
+const hitAt = (mx, my) => {
   let best = null, bestD = 14;
-  for (const h of mapView.hits) {
-    const d = Math.hypot(h.x - mx, h.y - my);
-    if (d < bestD) { best = h; bestD = d; }
+  for (const h of view.hits) { const d = Math.hypot(h.x - mx, h.y - my); if (d < bestD) { best = h; bestD = d; } }
+  return best;
+};
+
+{
+  const canvas = $('#map');
+  const pos = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  canvas.addEventListener('pointerdown', (e) => {
+    const [mx, my] = pos(e);
+    view.drag = { x: mx, y: my, moved: false, pan: e.shiftKey || e.button === 2 };
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    const [mx, my] = pos(e);
+    const tip = $('#maptip');
+    if (view.drag) {
+      const dx = mx - view.drag.x, dy = my - view.drag.y;
+      if (Math.abs(dx) + Math.abs(dy) > 2) view.drag.moved = true;
+      if (!view.drag.moved) return;
+      canvas.classList.add('dragging'); tip.style.display = 'none';
+      if (view.mode === '2d') { view.panX += dx; view.panY += dy; }
+      else if (view.drag.pan) {
+        // Along the screen: the camera's right and up, in world terms.
+        const k = view.dist / 600;
+        const right = [Math.cos(view.yaw), Math.sin(view.yaw), 0];
+        const up = [-Math.sin(view.yaw) * Math.sin(view.pitch), Math.cos(view.yaw) * Math.sin(view.pitch), Math.cos(view.pitch)];
+        for (let i = 0; i < 3; i++) view.target[i] += k * (-dx * right[i] + dy * up[i]);
+      } else {
+        view.yaw -= dx * 0.01;
+        view.pitch = Math.min(Math.PI / 2, Math.max(0.02, view.pitch + dy * 0.01));
+      }
+      view.drag.x = mx; view.drag.y = my;
+      drawMap(sortedNodes());
+      return;
+    }
+    const best = hitAt(mx, my);
+    if (!best) { tip.style.display = 'none'; return; }
+    tip.innerHTML = nodeCard(best.n, best.p);
+    tip.style.display = 'block';
+    const r = canvas.getBoundingClientRect();
+    tip.style.left = `${Math.max(4, Math.min(best.x + 14, r.width - tip.offsetWidth - 4))}px`;
+    tip.style.top = `${Math.max(4, best.y - tip.offsetHeight - 10)}px`;
+  });
+  canvas.addEventListener('pointerup', (e) => {
+    const [mx, my] = pos(e);
+    const was = view.drag;
+    view.drag = null; canvas.classList.remove('dragging');
+    if (was && !was.moved) {
+      const hit = hitAt(mx, my);
+      view.selected = hit ? (view.selected === hit.n.name ? null : hit.n.name) : view.selected;
+      drawMap(sortedNodes());
+    }
+  });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('mouseleave', () => { $('#maptip').style.display = 'none'; });
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const k = Math.exp(-e.deltaY * 0.0015);
+    if (view.mode === '2d') {
+      // About the pointer: the point under it stays put.
+      const [mx, my] = pos(e);
+      const r = canvas.getBoundingClientRect();
+      const L = 40, R = 12, T = 12, B = 28;
+      const cxp = L + (r.width - L - R) / 2 + view.panX, cyp = T + (r.height - T - B) / 2 + view.panY;
+      view.panX = mx - (mx - cxp) * k - (L + (r.width - L - R) / 2);
+      view.panY = my - (my - cyp) * k - (T + (r.height - T - B) / 2);
+      view.zoom = Math.min(50, Math.max(0.1, view.zoom * k));
+    } else {
+      view.dist = Math.min(500, Math.max(1, view.dist / k));
+    }
+    drawMap(sortedNodes());
+  }, { passive: false });
+  const fit = () => { view.zoom = 1; view.panX = 0; view.panY = 0; view.box = null; view.target = null; view.dist = null; drawMap(sortedNodes()); };
+  canvas.addEventListener('dblclick', fit);
+  $('#mapfit').addEventListener('click', fit);
+  for (const b of document.querySelectorAll('.maptools [data-mode]')) {
+    b.addEventListener('click', () => {
+      view.mode = b.dataset.mode;
+      try { localStorage.setItem('navgrid.mode', view.mode); } catch (e) { /* a private window */ }
+      drawMap(sortedNodes());
+    });
   }
-  if (!best) { tip.style.display = 'none'; return; }
-  tip.innerHTML = nodeCard(best.n, best.p);
-  tip.style.display = 'block';
-  const left = Math.min(best.x + 14, r.width - tip.offsetWidth - 4);
-  tip.style.left = `${Math.max(4, left)}px`;
-  tip.style.top = `${Math.max(4, best.y - tip.offsetHeight - 10)}px`;
-});
-$('#map').addEventListener('mouseleave', () => { $('#maptip').style.display = 'none'; });
-window.addEventListener('resize', () => { if (state) drawMap(state.nodes.slice().sort((a, b) => a.name.localeCompare(b.name))); });
+  const presets = { top: [-Math.PI / 2, Math.PI / 2], front: [0, 0.02], side: [-Math.PI / 2, 0.02], iso: [-0.7, 0.55] };
+  for (const b of document.querySelectorAll('#views3d [data-view]')) {
+    b.addEventListener('click', () => { [view.yaw, view.pitch] = presets[b.dataset.view]; drawMap(sortedNodes()); });
+  }
+  for (const id of ['#zmin', '#zmax']) $(id).addEventListener('input', () => drawMap(sortedNodes()));
+  window.addEventListener('resize', () => drawMap(sortedNodes()));
+}
 
 async function post(url, body) {
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

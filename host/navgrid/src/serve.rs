@@ -615,6 +615,11 @@ pub fn run(args: &ServeArgs) -> Result<()> {
     }
     let writer_port: Port = Arc::new(Mutex::new(downs));
     let shared: Shared = Arc::new(Mutex::new(service));
+    // One lock at a time: two in one statement deadlock.
+    let (bursts, readings) = {
+        let s = shared.lock().expect("service");
+        (s.history.len(), s.baro.len())
+    };
     println!(
         "serving {} on http://{} ; frames logged to {}; survey of {} bursts in {}; {} barometer readings",
         readers
@@ -624,9 +629,9 @@ pub fn run(args: &ServeArgs) -> Result<()> {
             .join(", "),
         args.http,
         log_path.display(),
-        shared.lock().expect("service").history.len(),
+        bursts,
         survey_path.display(),
-        shared.lock().expect("service").baro.len()
+        readings
     );
 
     // A reader per sink: its frames into the one state.
