@@ -664,6 +664,12 @@ pub fn run(args: &ServeArgs) -> Result<()> {
                     rotation_deg: 0.0,
                     opacity: 0.5,
                 });
+            // Kept from the start, so a restart without the scale argument keeps it.
+            if !plan_path.exists()
+                && let Ok(text) = serde_json::to_string_pretty(&place)
+            {
+                let _ = std::fs::write(&plan_path, text + "\n");
+            }
             Some(Plan {
                 png,
                 width,
