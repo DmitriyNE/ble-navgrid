@@ -191,9 +191,9 @@ The fleet move (log 2026-11-04/05), next:
       per pair in `survey.jsonl`; the solver takes each pair's median over a window, with the
       median's standard error as its sigma; per-pair residuals and cuts on the page and in
       `navgrid solve --survey`.
-- [ ] **A survey cadence command:** anchors burst every 15 min; a `Command::Survey { period_s }`
-      (0 = the default) so an hour of survey collects sixty bursts a link, and a burst-now for
-      one pair.
+- [x] **A survey cadence command** (2026-11-05): `navgrid control all survey --period-s 60` (and
+      on the page) makes anchor links survey every minute, bringing the next surveys forward;
+      `--period-s 0` goes back to the 15 min default. A burst-now for one pair is still to do.
 - [ ] **Truth distances:** a `truth.json` of tape-measured pair distances in the fleet directory,
       shown against the medians, and a fit of the offset (DEF-6) from them.
 - [ ] **The floor plan under the map:** an image with a scale and origin, so pins and the

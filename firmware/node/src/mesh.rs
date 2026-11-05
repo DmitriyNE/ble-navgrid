@@ -273,10 +273,21 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
     /// Asks the policy what to do, twice a second, and does it: connects as central, starts
     /// bursts, drops links.
     async fn drive(&self) {
+        let mut survey_s = 0u16;
         loop {
             Timer::after(TICK).await;
             if status::retired() {
                 continue;
+            }
+            let wanted_s = status::survey_period_s();
+            if wanted_s != survey_s {
+                survey_s = wanted_s;
+                let period_ms = match wanted_s {
+                    0 => Settings::default().survey_period_ms,
+                    s => u32::from(s) * 1000,
+                };
+                info!("survey every {=u32} s", period_ms / 1000);
+                self.with_policy(|p| p.set_survey_period_ms(period_ms, Self::now_ms()));
             }
             while let Ok((id, beacon, rssi)) = HEARD.try_receive() {
                 self.with_policy(|p| p.heard(id, beacon, rssi, Self::now_ms()));

@@ -134,6 +134,17 @@ pub fn adv_interval_ms() -> u16 {
     ADV_INTERVAL_MS.load(Ordering::Relaxed)
 }
 
+/// The survey period the controller asked for, seconds; 0 = the default.
+static SURVEY_PERIOD_S: AtomicU16 = AtomicU16::new(0);
+
+pub fn set_survey_period_s(s: u16) {
+    SURVEY_PERIOD_S.store(s, Ordering::Relaxed);
+}
+
+pub fn survey_period_s() -> u16 {
+    SURVEY_PERIOD_S.load(Ordering::Relaxed)
+}
+
 /// Sets how many antennas the next bursts use (1 turns diversity off).
 pub fn set_antennas(n: u8) {
     ANTENNAS.store(n.max(1), Ordering::Relaxed);

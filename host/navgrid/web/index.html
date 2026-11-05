@@ -53,6 +53,7 @@
         <option value="Diversity">diversity</option>
         <option value="Environment">environment period (s)</option>
         <option value="Firmware">firmware (build tag)</option>
+        <option value="Survey">survey period (s, 0 = default)</option>
       </select>
       <input type="number" name="value" value="3" step="1">
       <label><input type="checkbox" name="flag"> on / gas</label>
@@ -276,6 +277,7 @@ $('#control').addEventListener('submit', async (e) => {
     Advertising: { Advertising: { interval_ms: value } },
     Diversity: { Diversity: flag },
     Environment: { Environment: { period_s: value, gas: flag } },
+    Survey: { Survey: { period_s: value } },
   }[f.get('kind')];
   const body = f.get('kind') === 'Firmware'
     ? { target: f.get('target'), firmware: f.get('tag').trim() }

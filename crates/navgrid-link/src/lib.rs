@@ -223,6 +223,22 @@ impl Policy {
         }
     }
 
+    /// Anchor links survey every `period_ms` from now on; links whose next survey is further off
+    /// than that are brought forward, so a survey started now begins within a period.
+    pub fn set_survey_period_ms(&mut self, period_ms: u32, now_ms: u64) {
+        self.settings.survey_period_ms = period_ms;
+        if self.role != Role::Anchor {
+            return;
+        }
+        for i in 0..self.links.len() {
+            let jitter = u64::from(self.jitter(period_ms / 10));
+            let l = &mut self.links[i];
+            if let Some(next) = l.next_burst_ms.as_mut() {
+                *next = (*next).min(now_ms + u64::from(period_ms) + jitter);
+            }
+        }
+    }
+
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
@@ -919,6 +935,34 @@ mod tests {
         assert_eq!(t.next(CONNECT_TIMEOUT_MS + 3), Action::Connect(NodeId(2)));
         t.link_up(NodeId(2), true, Role::Anchor, false, CONNECT_TIMEOUT_MS + 500);
         assert!(matches!(t.next(CONNECT_TIMEOUT_MS + 501), Action::Burst(_)));
+    }
+
+    #[test]
+    fn a_shorter_survey_period_brings_the_next_surveys_forward() {
+        let mut p = anchor(1);
+        p.link_up(NodeId(2), true, Role::Anchor, false, 0);
+        let Action::Burst(peer) = p.next(5_000) else {
+            panic!("first survey")
+        };
+        p.burst_done(peer, 10_000);
+        assert_eq!(p.next(70_000), Action::Nothing, "next survey 15 min away");
+        p.set_survey_period_ms(60_000, 70_000);
+        assert_eq!(
+            p.next(70_000 + 66_001),
+            Action::Burst(NodeId(2)),
+            "within a period and its jitter"
+        );
+        p.burst_done(NodeId(2), 140_000);
+        assert_eq!(p.next(140_000 + 59_000), Action::Nothing);
+        assert_eq!(p.next(140_000 + 66_001), Action::Burst(NodeId(2)));
+        // Back to the default: the next one at the default period, not brought forward.
+        p.burst_done(NodeId(2), 210_000);
+        p.set_survey_period_ms(Settings::default().survey_period_ms, 210_000);
+        assert_eq!(
+            p.next(210_000 + 66_001),
+            Action::Burst(NodeId(2)),
+            "already scheduled stays"
+        );
     }
 
     #[test]

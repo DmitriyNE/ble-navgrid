@@ -28,6 +28,14 @@ whoever waits for it next, so one stuck exchange can no longer take a node's ses
 good. The third failure was the rollout's own catch: a node on the leaking build can't get past
 the first session to take the fix, so it needs a restart first.
 
+**A survey cadence, and control records one at a time.** Anchor links survey every 15 min, four
+bursts an hour per pair, too few for medians at ±1–6 m a burst. `Command::Survey { period_s }`
+sets the period on a node (10 s to an hour, 0 for the default) and brings the next surveys
+forward, so a survey hour at 60 s collects about sixty bursts a pair. A new record kind, so the
+sink and every node need the build before the first such command. `navgrid control` now sends
+one record at a time and waits for each to be mirrored back, sending it again up to twice: six
+records back to back lost five in the sink's UART (DEF-43).
+
 **DEF-71 found: the host runner stopped on one link's encryption event.** Asked to fix the
 cause rather than restart on silence. The sink's serial had N005's own report from 13:20,
 353 s after its boot: "host stopped: BleHost(Disconnected)", twenty-four minutes before it was

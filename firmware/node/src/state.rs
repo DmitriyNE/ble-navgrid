@@ -215,6 +215,16 @@ pub fn apply_commands() -> usize {
                     warn!("command {:?}: no BME688 driver yet", command);
                     Status::Unsupported
                 }
+                Command::Survey { period_s } => {
+                    if period_s == 0 || (10..=3600).contains(&period_s) {
+                        info!("command: survey every {=u16} s (0: the default)", period_s);
+                        status::set_survey_period_s(period_s);
+                        Status::Applied
+                    } else {
+                        warn!("command: survey period {=u16} s is out of range", period_s);
+                        Status::Invalid
+                    }
+                }
                 Command::Firmware(firmware) => {
                     let news = update::want(firmware);
                     if firmware == crate::FIRMWARE {

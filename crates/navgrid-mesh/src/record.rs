@@ -66,6 +66,7 @@ pub enum Setting {
     Diversity,
     Advertising,
     Firmware,
+    Survey,
 }
 
 /// What a record is about, among its origin's records. With the origin it forms the [`Key`].
@@ -331,6 +332,9 @@ pub enum Command {
     /// build only, and reports it applied once it runs it; until then the command stays pending,
     /// which is how a rollout shows. Without one, a node takes any offer for its board.
     Firmware(Firmware),
+    /// How often anchor links survey, in seconds; 0 = the node's default (15 min). A survey runs
+    /// at a minute for an hour or so, then goes back to the default (FR-M6).
+    Survey { period_s: u16 },
 }
 
 impl Command {
@@ -341,6 +345,7 @@ impl Command {
             Self::Diversity(_) => Setting::Diversity,
             Self::Advertising { .. } => Setting::Advertising,
             Self::Firmware(_) => Setting::Firmware,
+            Self::Survey { .. } => Setting::Survey,
         }
     }
 }

@@ -63,6 +63,11 @@ pub enum ControlCmd {
     /// The build the node should run (`0.1.0+1950d45d`): it takes offers of that build only, and
     /// the command stays pending until it runs it.
     Firmware { tag: String },
+    /// How often anchor links survey, in seconds (10–3600); 0 = the default, 15 min.
+    Survey {
+        #[arg(long)]
+        period_s: u16,
+    },
 }
 
 /// How long to wait for the sink to mirror the record back.
@@ -85,6 +90,7 @@ pub fn run(args: &ControlArgs) -> Result<()> {
         ControlCmd::Firmware { tag } => {
             Command::Firmware(parse_tag(tag).with_context(|| format!("{tag}: not a build tag like 0.1.0+1950d45d"))?)
         }
+        ControlCmd::Survey { period_s } => Command::Survey { period_s: *period_s },
     };
     let key = auth::controller_key(&fleet.key()?);
     // The controller's epoch is the clock: every run writes newer versions than the last.
@@ -100,39 +106,34 @@ pub fn run(args: &ControlArgs) -> Result<()> {
         .timeout(Duration::from_millis(200))
         .open()
         .with_context(|| format!("opening {}", args.sink))?;
+    // One record at a time, each sent again if the sink doesn't mirror it: records sent back to
+    // back get lost in the sink's UART receive (DEF-43).
+    let mut pending = Vec::new();
+    let mut awaited = Vec::new();
     for (record, &target) in records.iter().zip(&targets) {
         let mut record_buf = [0u8; navgrid_proto::MESH_RECORD_LEN];
         let bytes = postcard::to_slice(record, &mut record_buf).context("encoding the record")?;
         let mut out = vec![0u8; MAX_DOWNLINK_FRAME];
         let frame = navgrid_proto::encode_downlink(&UpdateMsg::Record(bytes), &mut out);
-        port.write_all(frame).context("writing to the sink")?;
+        let mut echoed = false;
+        for _attempt in 0..3 {
+            port.write_all(frame).context("writing to the sink")?;
+            if wait_echo(&mut *port, &mut pending, record.version, ECHO_WITHIN)? {
+                echoed = true;
+                break;
+            }
+        }
         println!(
-            "sent to {}: {} v{}.{} for {}",
+            "sent to {}: {} v{}.{} for {}{}",
             Path::new(&args.sink).display(),
             command_text(&command),
             record.version.epoch,
             record.version.counter,
-            name(target, &registry)
+            name(target, &registry),
+            if echoed { "" } else { ", not mirrored back" }
         );
-    }
-    let deadline = Instant::now() + ECHO_WITHIN;
-    let mut pending = Vec::new();
-    let mut awaited: Vec<_> = records.iter().map(|r| r.version).collect();
-    while Instant::now() < deadline && !awaited.is_empty() {
-        let mut buf = [0u8; 256];
-        match port.read(&mut buf) {
-            Ok(n) => pending.extend_from_slice(&buf[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(e) => return Err(e).context("reading from the sink"),
-        }
-        for mut f in monitor::take_frames(&mut pending) {
-            if let Ok(Message::Record(r)) = navgrid_proto::decode(&mut f)
-                && let Ok(echo) = postcard::from_bytes::<Record>(&r.bytes)
-                && echo.origin == CONTROLLER
-                && matches!(echo.body, Body::Desired(_))
-            {
-                awaited.retain(|&v| v != echo.version);
-            }
+        if !echoed {
+            awaited.push(record.version);
         }
     }
     if awaited.is_empty() {
@@ -154,6 +155,35 @@ pub fn run(args: &ControlArgs) -> Result<()> {
         records.len(),
         ECHO_WITHIN.as_secs()
     )
+}
+
+/// Reads the sink until it mirrors the controller's record of `version` back, for up to `within`.
+fn wait_echo(
+    port: &mut dyn serialport::SerialPort,
+    pending: &mut Vec<u8>,
+    version: navgrid_mesh::Version,
+    within: Duration,
+) -> Result<bool> {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        let mut buf = [0u8; 256];
+        match port.read(&mut buf) {
+            Ok(n) => pending.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => return Err(e).context("reading from the sink"),
+        }
+        for mut f in monitor::take_frames(pending) {
+            if let Ok(Message::Record(r)) = navgrid_proto::decode(&mut f)
+                && let Ok(echo) = postcard::from_bytes::<Record>(&r.bytes)
+                && echo.origin == CONTROLLER
+                && matches!(echo.body, Body::Desired(_))
+                && echo.version == version
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// `all` is every enrolled device; anything else is one target.
