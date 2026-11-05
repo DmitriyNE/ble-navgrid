@@ -317,6 +317,27 @@ impl Service {
                 _ => {}
             }
         }
+        // Nodes the last solve placed whose own records haven't come round yet (the sink mirrors
+        // its whole state only every few minutes): on the map all the same, by the registry.
+        if let Some((_, solution)) = &self.last_solve {
+            for placed in &solution.placed {
+                let id = format!("{:012x}", placed.id.0);
+                if nodes.iter().any(|n| n["id"] == id.as_str()) {
+                    continue;
+                }
+                let device = self.registry.as_ref().and_then(|r| r.by_id(placed.id));
+                nodes.push(json!({
+                    "id": id, "name": self.name(placed.id),
+                    "label": device.and_then(|d| d.name.clone()),
+                    "role": device.map_or("Anchor".to_string(), |d| format!("{:?}", d.role)),
+                    "sink": device.is_some_and(|d| d.sink),
+                    "hops": Value::Null, "neighbours": Vec::<String>::new(), "firmware": "",
+                    "age_s": Value::Null, "pinned": self.pins.get(&placed.id).map(|p| json!({"x": p[0], "y": p[1], "z": p[2], "placed": true})),
+                    "health": Value::Null, "position": Value::Null, "own_position": Value::Null,
+                    "solved": self.solved_of(placed.id),
+                }));
+            }
+        }
         let solve = self.last_solve.as_ref().map(|(at, s)| {
             json!({
                 "ago_s": at.elapsed().as_secs(), "nodes": s.nodes, "pins": s.pins, "links": s.links,

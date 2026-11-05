@@ -13,7 +13,9 @@
   .muted { color: var(--muted); }
   .grid { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.2fr); gap: 20px; }
   @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
-  canvas { width: 100%; height: auto; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  canvas { display: block; width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .mapwrap { position: relative; }
+  .tip { position: absolute; pointer-events: none; display: none; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; font-size: 12px; line-height: 1.35; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,.15); z-index: 2; }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
   th { color: var(--muted); font-weight: 600; }
@@ -34,8 +36,8 @@
 <div class="grid">
   <div>
     <h2>Floor plan</h2>
-    <canvas id="map" width="640" height="480"></canvas>
-    <div class="muted">squares: anchors (filled: pinned); circles: tags; lines: the survey's pairs, thicker with more bursts, amber beyond 2σ of the solution, dashed when cut; faint rings: a solved node's σ.</div>
+    <div class="mapwrap"><canvas id="map"></canvas><div id="maptip" class="tip"></div></div>
+    <div class="muted">squares: anchors (filled: pinned, or the local frame's two); circles: tags; lines: the survey's pairs, thicker with more bursts, amber beyond 2σ of the solution, dashed when cut, dotted for tag links; shaded: a solved node's 1σ. Hover a node for its details.</div>
     <h2>Find</h2>
     <form id="find">
       <label>from <select name="from"></select></label>
@@ -201,66 +203,183 @@ function fitClass(p) {
   return Math.abs(p.residual_m) > 2 * sigma ? 'warn' : 'ok';
 }
 
+// The metres the map shows: kept across refreshes, refitted only when a node leaves it or it
+// is far too big, so the picture doesn't jump with every solve.
+const mapView = { box: null, hits: [] };
+const cssVar = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
+
+function fitBox(placed) {
+  const xs = placed.map((e) => e.p.x), ys = placed.map((e) => e.p.y);
+  const need = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+  const b = mapView.box;
+  const inside = b && need.minX >= b.minX + 0.5 && need.maxX <= b.maxX - 0.5 && need.minY >= b.minY + 0.5 && need.maxY <= b.maxY - 0.5;
+  const span = Math.max(need.maxX - need.minX, need.maxY - need.minY, 4);
+  const tooBig = b && Math.max(b.maxX - b.minX, b.maxY - b.minY) > 2.5 * (span + 3);
+  if (inside && !tooBig) return b;
+  mapView.box = {
+    minX: Math.floor(need.minX - 1.5), maxX: Math.ceil(need.maxX + 1.5),
+    minY: Math.floor(need.minY - 1.5), maxY: Math.ceil(need.maxY + 1.5),
+  };
+  return mapView.box;
+}
+
+// A grid step in metres at least `px` pixels apart.
+function gridStep(scale, px) {
+  for (const s of [0.25, 0.5, 1, 2, 5, 10, 20, 50]) if (s * scale >= px) return s;
+  return 100;
+}
+
 function drawMap(nodes) {
   const canvas = $('#map');
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth || 640, H = Math.round(W * 0.75);
+  canvas.style.height = `${H}px`;
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  }
   const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
+  ctx.font = '12px system-ui, sans-serif';
+  const fg = cssVar('--fg'), muted = cssVar('--muted'), line = cssVar('--line'), accent = cssVar('--accent'), warn = cssVar('--warn');
+  mapView.hits = [];
   const placed = nodes.map((n) => ({ n, p: positionOf(n) })).filter((e) => e.p);
   if (placed.length === 0) {
-    ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--muted');
-    ctx.fillText('no positions yet', 16, 24);
+    ctx.fillStyle = muted;
+    ctx.fillText('no positions yet: pin nodes, or let the survey solve', 16, 24);
     return;
   }
-  const xs = placed.map((e) => e.p.x), ys = placed.map((e) => e.p.y);
-  const minX = Math.min(...xs) - 1, maxX = Math.max(...xs) + 1, minY = Math.min(...ys) - 1, maxY = Math.max(...ys) + 1;
-  const scale = Math.min((W - 40) / Math.max(maxX - minX, 1), (H - 40) / Math.max(maxY - minY, 1));
-  const sx = (x) => 20 + (x - minX) * scale;
-  const sy = (y) => H - 20 - (y - minY) * scale;
-  const fg = getComputedStyle(document.body).getPropertyValue('--fg');
-  const accent = getComputedStyle(document.body).getPropertyValue('--accent');
+  const box = fitBox(placed);
+  const L = 40, R = 12, T = 12, B = 28;
+  const scale = Math.min((W - L - R) / (box.maxX - box.minX), (H - T - B) / (box.maxY - box.minY));
+  const ox = L + ((W - L - R) - (box.maxX - box.minX) * scale) / 2;
+  const oy = T + ((H - T - B) - (box.maxY - box.minY) * scale) / 2;
+  const sx = (x) => ox + (x - box.minX) * scale;
+  const sy = (y) => oy + (box.maxY - y) * scale;
+
+  // Grid, axes in metres, the origin.
+  const minor = gridStep(scale, 18), major = gridStep(scale, 64);
+  ctx.lineWidth = 1;
+  for (let x = Math.ceil(box.minX / minor) * minor; x <= box.maxX + 1e-6; x += minor) {
+    const isMajor = Math.abs(x / major - Math.round(x / major)) < 1e-6;
+    ctx.strokeStyle = line; ctx.globalAlpha = isMajor ? 0.9 : 0.4;
+    ctx.beginPath(); ctx.moveTo(sx(x), sy(box.minY)); ctx.lineTo(sx(x), sy(box.maxY)); ctx.stroke();
+    if (isMajor) { ctx.globalAlpha = 1; ctx.fillStyle = muted; ctx.textAlign = 'center'; ctx.fillText(`${+x.toFixed(2)}`, sx(x), sy(box.minY) + 16); }
+  }
+  for (let y = Math.ceil(box.minY / minor) * minor; y <= box.maxY + 1e-6; y += minor) {
+    const isMajor = Math.abs(y / major - Math.round(y / major)) < 1e-6;
+    ctx.strokeStyle = line; ctx.globalAlpha = isMajor ? 0.9 : 0.4;
+    ctx.beginPath(); ctx.moveTo(sx(box.minX), sy(y)); ctx.lineTo(sx(box.maxX), sy(y)); ctx.stroke();
+    if (isMajor) { ctx.globalAlpha = 1; ctx.fillStyle = muted; ctx.textAlign = 'right'; ctx.fillText(`${+y.toFixed(2)}`, sx(box.minX) - 6, sy(y) + 4); }
+  }
+  ctx.globalAlpha = 1; ctx.textAlign = 'left';
+  ctx.fillStyle = muted;
+  ctx.fillText('x m →', W - R - 44, H - 6);
+  ctx.save(); ctx.translate(12, T + 40); ctx.rotate(-Math.PI / 2); ctx.fillText('y m →', 0, 0); ctx.restore();
+  if (0 >= box.minX && 0 <= box.maxX && 0 >= box.minY && 0 <= box.maxY) {
+    ctx.strokeStyle = muted; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(sx(0) - 8, sy(0)); ctx.lineTo(sx(0) + 8, sy(0)); ctx.moveTo(sx(0), sy(0) - 8); ctx.lineTo(sx(0), sy(0) + 8); ctx.stroke();
+  }
+
+  // The survey's pairs: thicker with more bursts, amber beyond 2σ, dashed when cut; tag links dotted.
   const byName = Object.fromEntries(placed.map((e) => [e.n.name, e.p]));
-  const warn = getComputedStyle(document.body).getPropertyValue('--warn');
   const pairs = (state.survey && state.survey.pairs.length) ? state.survey.pairs : state.links.map((l) => ({ a: l.from, b: l.to, n: 1, quality: l.quality, residual_m: null }));
   for (const p of pairs) {
     const a = byName[p.a], b = byName[p.b];
     if (!a || !b) continue;
-    const cls = fitClass(p);
+    const cls = p.tag ? 'muted' : fitClass(p);
     ctx.strokeStyle = cls === 'warn' ? warn : fg;
-    ctx.globalAlpha = cls === 'muted' ? 0.15 + 0.5 * (p.quality / 255) : 0.8;
-    ctx.lineWidth = 1 + Math.min(3, Math.log2(1 + p.n));
-    if (p.cut) ctx.setLineDash([4, 4]);
+    ctx.globalAlpha = p.tag ? 0.25 : (cls === 'muted' ? 0.2 + 0.4 * (p.quality / 255) : 0.7);
+    ctx.lineWidth = p.tag ? 1 : 1 + Math.min(3, Math.log2(1 + p.n) / 2);
+    ctx.setLineDash(p.tag ? [1, 4] : (p.cut ? [5, 4] : []));
     ctx.beginPath(); ctx.moveTo(sx(a.x), sy(a.y)); ctx.lineTo(sx(b.x), sy(b.y)); ctx.stroke();
-    ctx.setLineDash([]);
   }
-  ctx.globalAlpha = 1;
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+
+  // σ ellipses, then the nodes, then labels placed clear of each other and of the nodes.
   for (const { n, p } of placed) {
-    const x = sx(p.x), y = sy(p.y);
-    const sig = (n.position && n.position.sigma) || (n.solved && n.solved.sigma);
-    if ((p.how === 'solved' || p.how === 'local') && sig && sig[0] != null) {
-      const r = Math.max(sig[0], sig[1]) * scale;
-      if (r > 1 && r < W) {
-        ctx.strokeStyle = fg; ctx.globalAlpha = 0.25; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+    const sig = (p.how === 'solved' || p.how === 'local') && ((n.position && n.position.sigma) || (n.solved && n.solved.sigma));
+    if (sig && sig[0] != null && sig[1] != null) {
+      const rx = sig[0] * scale, ry = sig[1] * scale;
+      if (rx > 1 && ry > 1 && rx < W && ry < H) {
+        ctx.fillStyle = n.role === 'Anchor' ? fg : accent; ctx.globalAlpha = 0.07;
+        ctx.beginPath(); ctx.ellipse(sx(p.x), sy(p.y), rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = ctx.fillStyle; ctx.globalAlpha = 0.3; ctx.lineWidth = 1; ctx.stroke();
         ctx.globalAlpha = 1;
       }
     }
+  }
+  const taken = [];
+  for (const { n, p } of placed) {
+    const x = sx(p.x), y = sy(p.y);
     ctx.strokeStyle = n.role === 'Anchor' ? fg : accent;
-    ctx.fillStyle = ctx.strokeStyle;
-    ctx.lineWidth = 2;
+    ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = 2;
     if (n.role === 'Anchor') {
       ctx.beginPath(); ctx.rect(x - 6, y - 6, 12, 12);
-      if (p.how === 'pin' || p.how === 'gauge') ctx.fill(); else ctx.stroke();
+      if (p.how === 'pin' || p.how === 'gauge') ctx.fill(); else { ctx.fillStyle = cssVar('--bg'); ctx.fill(); ctx.stroke(); }
     } else {
       ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
-      if (p.how === 'own') ctx.stroke(); else ctx.fill();
+      if (p.how === 'own') { ctx.fillStyle = cssVar('--bg'); ctx.fill(); ctx.stroke(); } else ctx.fill();
     }
-    ctx.fillStyle = fg;
-    ctx.fillText(n.name, x + 9, y + 4);
+    taken.push({ x0: x - 8, y0: y - 8, x1: x + 8, y1: y + 8 });
+    mapView.hits.push({ x, y, n, p });
   }
-  ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--muted');
-  ctx.fillText(`${fmt(maxX - minX, 0)} × ${fmt(maxY - minY, 0)} m`, 16, H - 6);
+  const overlaps = (r) => taken.some((t) => r.x0 < t.x1 && r.x1 > t.x0 && r.y0 < t.y1 && r.y1 > t.y0);
+  for (const { n, p } of placed) {
+    const x = sx(p.x), y = sy(p.y);
+    const z = (p.z != null && Number.isFinite(p.z)) ? `z ${fmt(p.z, 1)}` : '';
+    const w = Math.max(ctx.measureText(n.name).width, ctx.measureText(z).width) + 2, h = z ? 26 : 14;
+    const spots = [[10, -10], [-10 - w, -10], [-w / 2, -12 - h], [-w / 2, 10], [10, 4 - h], [-10 - w, 4 - h]];
+    let at = spots[0];
+    for (const s of spots) {
+      const r = { x0: x + s[0], y0: y + s[1], x1: x + s[0] + w, y1: y + s[1] + h };
+      if (!overlaps(r) && r.x0 >= 0 && r.x1 <= W && r.y0 >= 0 && r.y1 <= H) { at = s; break; }
+    }
+    taken.push({ x0: x + at[0], y0: y + at[1], x1: x + at[0] + w, y1: y + at[1] + h });
+    ctx.fillStyle = fg; ctx.fillText(n.name, x + at[0], y + at[1] + 11);
+    if (z) { ctx.fillStyle = muted; ctx.fillText(z, x + at[0], y + at[1] + 24); }
+  }
+
+  // A scale bar.
+  const bar = gridStep(scale, 80);
+  ctx.strokeStyle = fg; ctx.lineWidth = 2;
+  const bx = W - R - bar * scale - 4, by = T + 10;
+  ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + bar * scale, by); ctx.moveTo(bx, by - 4); ctx.lineTo(bx, by + 4); ctx.moveTo(bx + bar * scale, by - 4); ctx.lineTo(bx + bar * scale, by + 4); ctx.stroke();
+  ctx.fillStyle = fg; ctx.textAlign = 'center'; ctx.fillText(`${bar} m`, bx + bar * scale / 2, by + 16); ctx.textAlign = 'left';
 }
+
+// The hover card: what the page knows about the node under the pointer.
+function nodeCard(n, p) {
+  const sig = (n.position && n.position.sigma) || (n.solved && n.solved.sigma);
+  const rows = [
+    `<b>${n.name}</b> ${n.role}${n.sink ? ' (sink)' : ''}${n.label ? ` · ${n.label}` : ''}`,
+    `x ${fmt(p.x)} y ${fmt(p.y)} z ${fmt(p.z)} m <span class="muted">${p.how}</span>`,
+  ];
+  if (sig && sig[0] != null) rows.push(`σ ${fmt(sig[0])} ${fmt(sig[1])} ${fmt(sig[2])} m`);
+  if (n.health) rows.push(`${n.health.battery_mv} mV, ${fmt(n.health.temperature_c, 1)} °C`);
+  rows.push(`firmware ${n.firmware}`);
+  if (n.neighbours && n.neighbours.length) rows.push(`links ${n.neighbours.join(' ')}`);
+  return rows.join('<br>');
+}
+
+$('#map').addEventListener('mousemove', (e) => {
+  const tip = $('#maptip');
+  const r = e.target.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  let best = null, bestD = 14;
+  for (const h of mapView.hits) {
+    const d = Math.hypot(h.x - mx, h.y - my);
+    if (d < bestD) { best = h; bestD = d; }
+  }
+  if (!best) { tip.style.display = 'none'; return; }
+  tip.innerHTML = nodeCard(best.n, best.p);
+  tip.style.display = 'block';
+  const left = Math.min(best.x + 14, r.width - tip.offsetWidth - 4);
+  tip.style.left = `${Math.max(4, left)}px`;
+  tip.style.top = `${Math.max(4, best.y - tip.offsetHeight - 10)}px`;
+});
+$('#map').addEventListener('mouseleave', () => { $('#maptip').style.display = 'none'; });
+window.addEventListener('resize', () => { if (state) drawMap(state.nodes.slice().sort((a, b) => a.name.localeCompare(b.name))); });
 
 async function post(url, body) {
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
