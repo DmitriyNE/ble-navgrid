@@ -60,6 +60,13 @@ pub struct ServeArgs {
     height_sigma_m: f32,
     #[arg(long, default_value_t = 100)]
     min_quality: u8,
+    /// A floor plan (PNG) under the 2D map; its scale and placement are kept in
+    /// `floorplan.json` in the fleet directory, set on the page.
+    #[arg(long)]
+    floorplan: Option<PathBuf>,
+    /// The plan's metres per pixel when `floorplan.json` doesn't say yet.
+    #[arg(long, default_value_t = 0.02)]
+    floorplan_m_per_px: f32,
     #[command(flatten)]
     fleet: FleetArgs,
 }
@@ -83,6 +90,9 @@ struct Service {
     /// frame is shown mirrored; kept in `approx.json` and `frame.json`.
     approx: BTreeMap<NodeId, ApproxPlace>,
     approx_path: PathBuf,
+    /// The floor plan's image and how it lies in the map's frame.
+    plan: Option<Plan>,
+    plan_path: PathBuf,
     mirror: bool,
     frame_path: PathBuf,
     recent: VecDeque<String>,
@@ -533,6 +543,10 @@ impl Service {
             "records": self.replica.records().len(),
             "nodes": nodes, "links": links, "commands": commands, "solve": solve,
             "survey": self.survey(), "fleet": fleet, "nearby": nearby,
+            "floorplan": self.plan.as_ref().map(|p| json!({
+                "width": p.width, "height": p.height, "m_per_px": p.place.m_per_px,
+                "origin_px": p.place.origin_px, "rotation_deg": p.place.rotation_deg, "opacity": p.place.opacity,
+            })),
             "recent": self.recent.iter().rev().take(50).collect::<Vec<_>>(),
         })
     }
@@ -567,6 +581,14 @@ impl Service {
         let named: BTreeMap<String, ApproxPlace> = self.approx.iter().map(|(&id, a)| (self.name(id), *a)).collect();
         if let Ok(text) = serde_json::to_string_pretty(&named) {
             let _ = std::fs::write(&self.approx_path, text + "\n");
+        }
+    }
+
+    fn save_plan(&self) {
+        if let Some(plan) = &self.plan
+            && let Ok(text) = serde_json::to_string_pretty(&plan.place)
+        {
+            let _ = std::fs::write(&self.plan_path, text + "\n");
         }
     }
 
@@ -627,6 +649,30 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         .unwrap_or(0);
     let pins_path = dir.join("pins.json");
     let approx_path = dir.join("approx.json");
+    let plan_path = dir.join("floorplan.json");
+    let plan = match &args.floorplan {
+        Some(path) => {
+            let png = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+            let (width, height) = png_size(&png).with_context(|| format!("{}: not a PNG", path.display()))?;
+            let place = std::fs::read_to_string(&plan_path)
+                .ok()
+                .and_then(|t| serde_json::from_str::<PlanPlace>(&t).ok())
+                .unwrap_or(PlanPlace {
+                    m_per_px: args.floorplan_m_per_px,
+                    // The image's bottom-left corner at the origin, x right, y up.
+                    origin_px: [0.0, height as f32],
+                    rotation_deg: 0.0,
+                    opacity: 0.5,
+                });
+            Some(Plan {
+                png,
+                width,
+                height,
+                place,
+            })
+        }
+        None => None,
+    };
     let frame_path = dir.join("frame.json");
     let mirror = std::fs::read_to_string(&frame_path)
         .ok()
@@ -643,6 +689,8 @@ pub fn run(args: &ServeArgs) -> Result<()> {
         pins_path: pins_path.clone(),
         approx: BTreeMap::new(),
         approx_path: approx_path.clone(),
+        plan,
+        plan_path,
         mirror,
         frame_path,
         recent: VecDeque::new(),
@@ -856,6 +904,20 @@ fn handle(mut stream: TcpStream, shared: &Shared, port: &Port) -> Result<()> {
         reader.read_exact(&mut body)?;
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
+    if (method, path) == ("GET", "/floorplan.png") {
+        let png = shared.lock().expect("service").plan.as_ref().map(|p| p.png.clone());
+        let (status, bytes) = match png {
+            Some(b) => ("200 OK", b),
+            None => ("404 Not Found", Vec::new()),
+        };
+        let head = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: max-age=3600\r\n\r\n",
+            bytes.len()
+        );
+        stream.write_all(head.as_bytes())?;
+        stream.write_all(&bytes)?;
+        return Ok(());
+    }
     let params: BTreeMap<String, String> = query
         .split('&')
         .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), percent_decode(v))))
@@ -924,6 +986,14 @@ fn handle(mut stream: TcpStream, shared: &Shared, port: &Port) -> Result<()> {
             ),
         },
         ("POST", "/api/approx") => match approx(shared, &body) {
+            Ok(v) => ("200 OK", "application/json", v.to_string()),
+            Err(e) => (
+                "400 Bad Request",
+                "application/json",
+                json!({"error": format!("{e:#}")}).to_string(),
+            ),
+        },
+        ("POST", "/api/floorplan") => match floorplan(shared, &body) {
             Ok(v) => ("200 OK", "application/json", v.to_string()),
             Err(e) => (
                 "400 Bad Request",
@@ -1052,6 +1122,60 @@ fn ranging(shared: &Shared, body: &[u8]) -> Result<Value> {
     Ok(json!({"node": node, "ranging": on}))
 }
 
+/// A floor plan: the PNG, its size in pixels, and where it lies.
+struct Plan {
+    png: Vec<u8>,
+    width: u32,
+    height: u32,
+    place: PlanPlace,
+}
+
+/// How a plan lies in the map's frame: metres per pixel, the pixel at the frame's origin (x
+/// right, y up from there), a rotation, and how strongly it's drawn.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+struct PlanPlace {
+    m_per_px: f32,
+    origin_px: [f32; 2],
+    rotation_deg: f32,
+    opacity: f32,
+}
+
+/// A PNG's width and height, from its IHDR chunk.
+fn png_size(png: &[u8]) -> Option<(u32, u32)> {
+    if png.len() < 24 || &png[..8] != b"\x89PNG\r\n\x1a\n" || &png[12..16] != b"IHDR" {
+        return None;
+    }
+    let be = |i: usize| u32::from_be_bytes([png[i], png[i + 1], png[i + 2], png[i + 3]]);
+    Some((be(16), be(20)))
+}
+
+/// The plan's placement from the page: any of `m_per_px`, `origin_px`, `rotation_deg`, `opacity`.
+fn floorplan(shared: &Shared, body: &[u8]) -> Result<Value> {
+    let v: Value = serde_json::from_slice(body).context("the request body")?;
+    let mut s = shared.lock().expect("service");
+    let plan = s.plan.as_mut().context("no floor plan (serve --floorplan)")?;
+    let num = |k: &str| v.get(k).and_then(Value::as_f64).map(|x| x as f32);
+    if let Some(m) = num("m_per_px").filter(|m| *m > 0.0) {
+        plan.place.m_per_px = m;
+    }
+    if let Some(r) = num("rotation_deg") {
+        plan.place.rotation_deg = r;
+    }
+    if let Some(o) = num("opacity") {
+        plan.place.opacity = o.clamp(0.0, 1.0);
+    }
+    if let Some(o) = v.get("origin_px").and_then(Value::as_array)
+        && let [Some(x), Some(y)] = [o.first().and_then(Value::as_f64), o.get(1).and_then(Value::as_f64)]
+    {
+        plan.place.origin_px = [x as f32, y as f32];
+    }
+    let place = plan.place;
+    s.save_plan();
+    Ok(
+        json!({"m_per_px": place.m_per_px, "origin_px": place.origin_px, "rotation_deg": place.rotation_deg, "opacity": place.opacity}),
+    )
+}
+
 /// A node's approximate place: x and y on the plan, z if known, 1-sigma across.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 struct ApproxPlace {
@@ -1146,6 +1270,8 @@ mod tests {
             pins: BTreeMap::new(),
             approx: BTreeMap::new(),
             approx_path: std::env::temp_dir().join(format!("navgrid-approx-test-{}.json", std::process::id())),
+            plan: None,
+            plan_path: std::env::temp_dir().join(format!("navgrid-plan-test-{}.json", std::process::id())),
             mirror: false,
             frame_path: std::env::temp_dir().join(format!("navgrid-frame-test-{}.json", std::process::id())),
             pins_path: std::env::temp_dir().join(format!("navgrid-serve-test-{}.json", std::process::id())),
@@ -1292,6 +1418,15 @@ mod tests {
         s.pins.remove(&NodeId(4));
         s.save_pins();
         let _ = std::fs::remove_file(&s.pins_path);
+    }
+
+    #[test]
+    fn a_plan_is_a_png_with_its_size() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&2580u32.to_be_bytes());
+        png.extend_from_slice(&2100u32.to_be_bytes());
+        assert_eq!(png_size(&png), Some((2580, 2100)));
+        assert_eq!(png_size(b"GIF89a not a png at all"), None);
     }
 
     #[test]

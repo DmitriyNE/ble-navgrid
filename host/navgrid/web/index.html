@@ -49,6 +49,8 @@
       <span id="views3d">view <button type="button" data-view="top">top</button><button type="button" data-view="front">front</button><button type="button" data-view="side">side</button><button type="button" data-view="iso">iso</button></span>
       <button type="button" id="mapfit" title="fit the view to the nodes (or double-click the map)">fit</button>
       <button type="button" id="mirror" title="ranges can't tell a local frame's handedness: flip it">mirror</button>
+      <span id="plantools">plan <input type="range" id="planopacity" min="0" max="1" step="0.05" title="the plan's opacity">
+        <button type="button" id="planscale" title="click two points a known distance apart on the plan, then give the distance">scale…</button></span>
       <label>z <input type="number" id="zmin" step="0.1" placeholder="min"> to <input type="number" id="zmax" step="0.1" placeholder="max"> m</label>
     </div>
     <div class="mapwrap"><canvas id="map"></canvas><div id="maptip" class="tip"></div></div>
@@ -222,6 +224,10 @@ function render() {
     $('#solve').textContent += ` — frame from ${state.solve.approx_count} approximate positions`;
   }
   $('#mirror').style.display = state.solve && state.solve.local_frame ? '' : 'none';
+  $('#plantools').style.display = state.floorplan ? '' : 'none';
+  if (state.floorplan && !planImg.src) planImg.src = '/floorplan.png';
+  const po = $('#planopacity');
+  if (state.floorplan && document.activeElement !== po) po.value = String(state.floorplan.opacity);
   $('#mirror').classList.toggle('on', !!(state.solve && state.solve.mirror));
   const asel = document.querySelector('#baro select[name=against]');
   if (asel && document.activeElement !== asel) {
@@ -258,7 +264,21 @@ const view = {
   yaw: -0.7, pitch: 0.55, dist: null, target: null, // 3D camera
   drag: null,
   placing: null, // a node to place approximately at the next click on the plan
+  scaling: null, // the scale tool: [] then the first click, waiting for the second
 };
+const planImg = new Image();
+let planLoaded = false;
+planImg.onload = () => { planLoaded = true; if (state) drawMap(sortedNodes()); };
+
+// The plan's pixel (u, v) in the map's frame, and back.
+function planToWorld(fp, u, v) {
+  const t = fp.rotation_deg * Math.PI / 180, a = (u - fp.origin_px[0]) * fp.m_per_px, b = -(v - fp.origin_px[1]) * fp.m_per_px;
+  return [a * Math.cos(t) - b * Math.sin(t), a * Math.sin(t) + b * Math.cos(t)];
+}
+function worldToPlan(fp, x, y) {
+  const t = -fp.rotation_deg * Math.PI / 180, a = x * Math.cos(t) - y * Math.sin(t), b = x * Math.sin(t) + y * Math.cos(t);
+  return [a / fp.m_per_px + fp.origin_px[0], -b / fp.m_per_px + fp.origin_px[1]];
+}
 const cssVar = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
 
 // Height colours: blue (low) through green to amber (high).
@@ -282,6 +302,13 @@ function gridStep(scale, px) {
 
 function fitBox(placed, force) {
   const xs = placed.map((e) => e.p.x), ys = placed.map((e) => e.p.y);
+  const fp = state && state.floorplan;
+  if (fp) {
+    for (const [u, v] of [[0, 0], [fp.width, 0], [0, fp.height], [fp.width, fp.height]]) {
+      const [x, y] = planToWorld(fp, u, v);
+      xs.push(x); ys.push(y);
+    }
+  }
   const need = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
   const b = view.box;
   const inside = b && need.minX >= b.minX + 0.5 && need.maxX <= b.maxX - 0.5 && need.minY >= b.minY + 0.5 && need.maxY <= b.maxY - 0.5;
@@ -404,6 +431,25 @@ function draw2d(ctx, W, H, { placed, pairs, byName, zlo, zhi }) {
   const sx = (x) => ox + (x - cx) * scale;
   const sy = (y) => oy - (y - cy) * scale;
   view.toWorld2d = (px, py) => [cx + (px - ox) / scale, cy - (py - oy) / scale];
+  // The floor plan under everything.
+  const fp = state.floorplan;
+  if (fp && planLoaded) {
+    ctx.save();
+    ctx.globalAlpha = fp.opacity;
+    ctx.translate(sx(0), sy(0));
+    ctx.rotate(-fp.rotation_deg * Math.PI / 180);
+    const k = fp.m_per_px * scale;
+    ctx.drawImage(planImg, -fp.origin_px[0] * k, -fp.origin_px[1] * k, fp.width * k, fp.height * k);
+    ctx.restore();
+  }
+  if (view.scaling) {
+    ctx.fillStyle = cssVar('--accent');
+    ctx.fillText(view.scaling.length ? 'now the second point (Esc to cancel)' : 'scale: click the first point of a known distance (Esc to cancel)', 50, 40);
+    for (const [x, y] of view.scaling) {
+      ctx.strokeStyle = cssVar('--accent'); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(sx(x), sy(y), 5, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
   // The world rectangle on screen.
   const wx0 = cx + (0 - ox) / scale, wx1 = cx + (W - ox) / scale, wy1 = cy + (oy - 0) / scale, wy0 = cy + (oy - H) / scale;
   const minor = gridStep(scale, 18), major = gridStep(scale, 64);
@@ -647,6 +693,19 @@ const hitAt = (mx, my) => {
     const [mx, my] = pos(e);
     const was = view.drag;
     view.drag = null; canvas.classList.remove('dragging');
+    if (was && !was.moved && view.scaling && view.mode === '2d' && view.toWorld2d && state.floorplan) {
+      view.scaling.push(view.toWorld2d(mx, my));
+      if (view.scaling.length === 2) {
+        const fp = state.floorplan;
+        const [a, b] = view.scaling.map(([x, y]) => worldToPlan(fp, x, y));
+        view.scaling = null;
+        const px = Math.hypot(a[0] - b[0], a[1] - b[1]);
+        const metres = parseFloat(prompt(`How far apart are those two points, in metres? (${fmt(px * fp.m_per_px)} m at the plan's scale now)`) || '');
+        if (metres > 0 && px > 0) post('/api/floorplan', { m_per_px: metres / px }).then(() => { view.box = null; refresh(); });
+      }
+      drawMap(sortedNodes());
+      return;
+    }
     if (was && !was.moved && view.placing && view.mode === '2d' && view.toWorld2d) {
       const [x, y] = view.toWorld2d(mx, my);
       const sigma = Number((document.querySelector('#approxform input[name=sigma]') || {}).value || 1);
@@ -696,7 +755,15 @@ const hitAt = (mx, my) => {
   }
   for (const id of ['#zmin', '#zmax']) $(id).addEventListener('input', () => drawMap(sortedNodes()));
   $('#mirror').addEventListener('click', async () => { await post('/api/mirror', {}); await post('/api/solve', {}); view.box = null; refresh(); });
-  window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && view.placing) { view.placing = null; drawMap(sortedNodes()); } });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && (view.placing || view.scaling)) { view.placing = null; view.scaling = null; drawMap(sortedNodes()); }
+  });
+  $('#planscale').addEventListener('click', () => { view.scaling = []; view.mode = '2d'; drawMap(sortedNodes()); });
+  $('#planopacity').addEventListener('input', (e) => {
+    if (state && state.floorplan) state.floorplan.opacity = Number(e.target.value);
+    drawMap(sortedNodes());
+  });
+  $('#planopacity').addEventListener('change', (e) => post('/api/floorplan', { opacity: Number(e.target.value) }));
   window.addEventListener('resize', () => drawMap(sortedNodes()));
 }
 
