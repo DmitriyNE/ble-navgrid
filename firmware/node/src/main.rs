@@ -33,7 +33,7 @@ mod update;
 
 use bt_hci::cmd::le::LeCsReadLocalSupportedCapabilities;
 use bt_hci::param::LeConnRole;
-use defmt::{error, info, unwrap, warn};
+use defmt::{info, unwrap, warn};
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_nrf::mode::Blocking;
@@ -502,11 +502,12 @@ async fn main(spawner: Spawner) {
         let sink = async {};
         embassy_futures::join::join3(sink, report::health(mpsl, node, FIRMWARE), state::run(mpsl)).await;
     };
-    // The runner returns only on an error, e.g. an HCI event bt-hci can't parse; everything stops
-    // then, so say why.
+    // The runner returns only on an error. The node can't receive anything after that, while its
+    // controller keeps advertising and the mesh believes its links up (DEF-71), so it is fatal:
+    // a crash record and a restart, which the host sees at the next boot.
     let host = async {
         if let Err(e) = runner.run_with_handler(&cs::Events).await {
-            error!("host stopped: {:?}", e);
+            core::panic!("host stopped: {:?}", e);
         }
     };
     join(host, role).await;

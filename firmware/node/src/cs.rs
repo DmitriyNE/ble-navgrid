@@ -145,7 +145,6 @@ pub struct Events;
 
 impl EventHandler for Events {
     fn on_ext_adv_reports(&self, reports: LeExtAdvReportsIter) {
-        crate::mesh::radio_seen();
         for report in reports.flatten() {
             for ad in AdStructure::decode(report.data).flatten() {
                 if let AdStructure::ManufacturerSpecificData {

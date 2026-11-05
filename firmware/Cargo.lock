@@ -1981,7 +1981,6 @@ dependencies = [
 [[package]]
 name = "trouble-host"
 version = "0.8.0"
-source = "git+https://github.com/GreatKet/trouble.git?rev=fa9886d3f92d0b9a8adf7323a9b10b991a131d2c#fa9886d3f92d0b9a8adf7323a9b10b991a131d2c"
 dependencies = [
  "bt-hci",
  "defmt 1.2.0",
@@ -2000,7 +1999,6 @@ dependencies = [
 [[package]]
 name = "trouble-host-macros"
 version = "0.6.0"
-source = "git+https://github.com/GreatKet/trouble.git?rev=fa9886d3f92d0b9a8adf7323a9b10b991a131d2c#fa9886d3f92d0b9a8adf7323a9b10b991a131d2c"
 dependencies = [
  "convert_case",
  "darling",

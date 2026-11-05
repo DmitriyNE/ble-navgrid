@@ -39,3 +39,9 @@ nrf-sdc = { git = "https://github.com/DmitriyNE/nrf-sdc.git", rev = "63812578287
 nrf-mpsl = { git = "https://github.com/DmitriyNE/nrf-sdc.git", rev = "638125782879d7c4664f47a583560fc6b53e53e1" }
 bt-hci = { git = "https://github.com/DmitriyNE/bt-hci.git", rev = "4886657c01f38fc49d6100b4e01430e2f991d55d" }
 bt-hci-transport = { git = "https://github.com/DmitriyNE/bt-hci.git", rev = "4886657c01f38fc49d6100b4e01430e2f991d55d" }
+
+# TrouBLE with our fixes on GreatKet's revision (log 2026-11-05: a security event for a link
+# already gone stopped the host runner for good, DEF-71). A local clone beside this repository,
+# branch `navgrid`, until the fork is published and the patch can point at it.
+[patch."https://github.com/GreatKet/trouble.git"]
+trouble-host = { path = "../../trouble/host" }
