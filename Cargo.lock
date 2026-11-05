@@ -858,6 +858,7 @@ dependencies = [
  "defmt-decoder",
  "ed25519-dalek",
  "heapless",
+ "navgrid-baro",
  "navgrid-link",
  "navgrid-mesh",
  "navgrid-proto",
