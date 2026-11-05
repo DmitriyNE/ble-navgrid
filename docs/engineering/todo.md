@@ -168,6 +168,15 @@ Each item works through the host and the mesh first; the field tool shortens it.
 
 **Diagnostics over the air** (architecture §13) are done (log 2026-11-03): boot and crash
 reports, logs at a configured level, a sink serving 4 nodes, and reflectors' own sink links.
+
+The fleet move (log 2026-11-04/05), next:
+
+- [ ] **N002 and N004 by probe** to 0.1.0+4cc7c50b (the DK's image), each in the DK's adapter
+      with the DK's radio quiet (DEF-19); N002 needs a power cycle first (DEF-70).
+- [ ] **The backoff build c4aa933** to the fleet over the air (`navgrid update` of the signed TAG
+      image, then `control all firmware`), and the DK by probe.
+- [ ] **A log buffer worth reading:** 1 KiB of defmt holds fifty lines; 4 KiB when the RAM budget
+      (spike 2026-11-04) allows, or a ring of only the warnings.
 Left from them: measure the TAG and DK 32 kHz crystals against a reference and declare their
 real accuracy (DEF-2), and find what wedges the sink's uploads (DEF-46).
 

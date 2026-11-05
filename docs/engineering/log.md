@@ -4,6 +4,23 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**Late morning: N001 by probe, a backoff for failing connects, and the J-Link off USB.** N001,
+on the previous mesh build 7e878185-dirty, was plugged into the DK's adapter and its log read
+from RAM (the logger's buffer is 1 KiB, about fifty lines): it took a page of the DK's image at
+70 s after its reboot, then spent its time connecting to N004 on the pre-mesh build (that build
+has no legacy guard; "SpsmNotSupported" at the sync channel), timing out sessions with N005 at
+30 s, and flooding "beacon: no room to keep it" while the driver sat in a connect; the DK's
+link to it lasted 22 s and ended with "first hello: Channel". Flashed by probe with
+0.1.0+4cc7c50b, 174 s at 100 kHz. The policy now doubles the wait after each failed connect to
+the same peer, up to the first-session pause of 5 min, forgetting the failures when a link
+comes up (c4aa933; a TAG image is signed and waits in the scratchpad). After the flash the DK
+did not link to N001 in five minutes, and N005 lost its hop count during the flash, so the
+DK's link to it fell then; the next read of N001's RAM through the J-Link took the J-Link off
+USB altogether, probe and serial port, and it was not back after two minutes (DEF-19 widened:
+probe traffic through the DK's J-Link, even to the TAG in the adapter, while the DK's radio is
+busy). N002, on the pre-mesh build at 3 m and −72 dBm, was heard every 63 s until 10:41 and
+then no more, never linked today: the DEF-70 wedge, a power cycle or the probe.
+
 **Morning: the DK ran all night; three nodes still to move.** Uptime 8.7 h on the DK without a
 crash, sessions with N005 every minute, bursts to it. Its offers to the other three were
 declined all night: the two on the pre-mesh build are stuck after their transfers broke at
