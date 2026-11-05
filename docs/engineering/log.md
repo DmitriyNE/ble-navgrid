@@ -4,6 +4,17 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**The first barometer calibration.** All six TAGs side by side on one table for about eleven
+minutes (N007 by wire first: a still tag opens no links, so it never takes an update over the
+air), offsets from the per-minute median, saved in the registry: N001 +10.4, N002 −18.5, N004
+−10.4, N005 −3.0, N006 +1.5, N007 +18.7 Pa, i.e. up to 1.6 m of height each before calibration.
+The per-minute spread was 1–4 Pa (indoor pressure moving within the minute between readings
+taken up to a minute apart), so each offset is good to about 1 Pa, 8–10 cm; an earlier, shorter
+session agreed within 1–4 Pa. N004 sat in the debug adapter 10 cm low for part of it, and was
+recalibrated with the others once out. A longer session would tighten it; aligning the readings
+in time (every node sampling on the same second) would more. The anchors went back to roughly
+their old places and the survey started afresh at 19:16 with barometric heights in the solve.
+
 **Evening: barometry, routes-only nodes and a viewer.**
 - **The BME688 runs** (`navgrid-baro`, `firmware/node/src/baro.rs`): our own driver on SERIAL21
   (P1.12/P1.11, 0x76), forced mode with pressure at x16, temperature x2, humidity x1, the IIR

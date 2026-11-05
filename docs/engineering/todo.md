@@ -198,9 +198,14 @@ The fleet move (log 2026-11-04/05), next:
       four-path pairs (log 2026-11-05); an offset per link kind, fitted in the survey solve.
 - [ ] **Liveness on the page:** when the sink last had a session with each node (beacons come
       from the controller even when a node's host is dead, so "heard" isn't alive).
-- [ ] **Barometer calibration session** with the fleet side by side, then heights in the
-      survey; the Environment record on (`control … environment --period-s 60`) once every node
-      runs a build that knows its new fields; N007 by wire before it is switched on again.
+- [x] **Barometer calibration session** (2026-11-05): six TAGs, offsets in the registry.
+- [ ] **Time-aligned barometry:** readings taken up to a minute apart carry the room's pressure
+      swings (1–4 Pa); sample on a shared second (the mesh's time) or compare beacon pressures
+      heard in one scan.
+- [ ] **Still tags never update:** a tag that isn't moving opens no links, so it takes no offer;
+      link it briefly when an update is wanted, or let an anchor connect to it.
+- [ ] **The registry's firmware field from the page:** `serve` doesn't record what nodes report
+      (the monitor does), so the registry lags after over-the-air rollouts.
 - [ ] **Sigma model for survey pairs:** a pair's median has a bias its standard error leaves
       out; the solve's normalized rms runs 3–5 with a 5 cm floor. A floor of 10–15 cm, or the
       bias fitted per link kind.
