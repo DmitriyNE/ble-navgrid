@@ -12,7 +12,9 @@ rendered with `sips`, flattened onto white and cropped with ImageMagick; its sca
 own dimension chains (the 1000 + 50 mm chains every 44.55 pt, two 4750 mm segments 201.5 pt
 apart: 23.57 mm a point, 1.405 cm a pixel at 4000 px across), which the building's overall
 width on the plan, about 33.8 m, agrees with. Anchors placed approximately on the plan then
-solve in the plan's frame.
+solve in the plan's frame: with N001, N002 and N004 placed (±1 m), the solve moved onto the
+plan and put them 16–33 cm from where they were clicked, N005 and N006 from the ranges alone;
+the frame question (the mirror) is gone.
 
 **Approximate positions, and a frame that can't hang on a bad pair.** A pair can read short
 too (N006–N002 read 2.9 m short, and the user confirmed the shape that says so), so the
