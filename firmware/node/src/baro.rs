@@ -36,7 +36,10 @@ pub async fn run(
     // The board's pull-ups are on the sensor's breakout; the chip's own add to them harmlessly.
     config.sda_pullup = true;
     config.scl_pullup = true;
-    let mut i2c = Twim::new(serial, Irqs, sda, scl, config, &mut []);
+    // The register writes are constants the compiler keeps in flash, which the TWIM's DMA can't
+    // read: it copies them through this first.
+    let mut tx_ram = [0u8; 4];
+    let mut i2c = Twim::new(serial, Irqs, sda, scl, config, &mut tx_ram);
     let calibration = match start(&mut i2c).await {
         Ok(c) => c,
         Err(e) => {
