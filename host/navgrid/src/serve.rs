@@ -28,7 +28,9 @@ use crate::fleet::{Fleet, FleetArgs, Registry};
 use crate::mesh_view::{HOST, node_name};
 use crate::monitor::{self, View};
 use crate::sign::parse_tag;
-use crate::solve::{Solution, controller_writer, latest_pairs, position_records, send_record, solve_pairs};
+use crate::solve::{
+    Solution, anchor_pairs, controller_writer, is_tag, latest_pairs, position_records, send_record, solve_pairs,
+};
 use crate::survey::{History, Observation, PairStats, now_s};
 
 #[derive(clap::Args)]
@@ -201,6 +203,7 @@ impl Service {
                     "quality": p.quality, "paths": p.paths,
                     "solved_m": fit.and_then(|f| f.solved_m), "residual_m": fit.and_then(|f| f.residual_m),
                     "cut": fit.is_some_and(|f| f.cut),
+                    "tag": is_tag(&self.replica, p.a) || is_tag(&self.replica, p.b),
                 })
             })
             .collect();
@@ -540,7 +543,7 @@ fn solve_now(shared: &Shared, port: &Port) -> Result<Value> {
     let (solution, records) = {
         let mut s = shared.lock().expect("service");
         let pins: Vec<(NodeId, [f32; 3])> = s.pins.iter().map(|(&id, &p)| (id, p)).collect();
-        let pairs = s.survey_pairs();
+        let pairs = anchor_pairs(&s.replica, s.survey_pairs());
         let solution = solve_pairs(&s.replica, &pins, &pairs, s.offset_m, s.height_sigma_m)?;
         // A local frame stays on the page: the mesh gets positions once pins fix the frame.
         let records = if solution.local_frame.is_some() {

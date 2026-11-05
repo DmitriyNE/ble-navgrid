@@ -134,6 +134,23 @@ pub fn solve_replica(
     solve_pairs(replica, extra_pins, &pairs, offset_m, height_sigma_m)
 }
 
+/// Whether `id` is a tag by its node record in `replica`: a tag moves, so its links don't
+/// survey the anchors. A node without a record counts as an anchor.
+pub fn is_tag(replica: &Replica<Heap>, id: NodeId) -> bool {
+    replica.records().any(|s| {
+        let r = s.record();
+        r.origin == id && matches!(&r.body, Body::Node(n) if n.role != navgrid_mesh::Role::Anchor)
+    })
+}
+
+/// The pairs between anchors: what the survey solves the anchors from.
+pub fn anchor_pairs(replica: &Replica<Heap>, pairs: Vec<PairStats>) -> Vec<PairStats> {
+    pairs
+        .into_iter()
+        .filter(|p| !is_tag(replica, p.a) && !is_tag(replica, p.b))
+        .collect()
+}
+
 /// Every pair's latest burst in `replica` (both directions, if it holds both), as the survey
 /// would see them.
 pub fn latest_pairs(replica: &Replica<Heap>, min_quality: u8) -> Vec<PairStats> {
@@ -357,7 +374,7 @@ pub fn run(args: &SolveArgs) -> Result<()> {
             } else {
                 now_s().saturating_sub(args.window_s)
             };
-            let pairs = history.aggregate(since, args.min_quality);
+            let pairs = anchor_pairs(&replica, history.aggregate(since, args.min_quality));
             println!(
                 "survey {}: {} bursts over {} pairs, {} pairs in the window\n",
                 path.display(),

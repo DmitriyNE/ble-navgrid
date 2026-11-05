@@ -194,6 +194,10 @@ The fleet move (log 2026-11-04/05), next:
 - [x] **A survey cadence command** (2026-11-05): `navgrid control all survey --period-s 60` (and
       on the page) makes anchor links survey every minute, bringing the next surveys forward;
       `--period-s 0` goes back to the 15 min default. A burst-now for one pair is still to do.
+- [ ] **Per-path-count offsets:** the sink's one-path pairs read 1–2.5 m long against the TAGs'
+      four-path pairs (log 2026-11-05); an offset per link kind, fitted in the survey solve.
+- [ ] **Liveness on the page:** when the sink last had a session with each node (beacons come
+      from the controller even when a node's host is dead, so "heard" isn't alive).
 - [ ] **Truth distances:** a `truth.json` of tape-measured pair distances in the fleet directory,
       shown against the medians, and a fit of the offset (DEF-6) from them.
 - [ ] **The floor plan under the map:** an image with a scale and origin, so pins and the

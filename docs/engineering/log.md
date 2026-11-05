@@ -28,6 +28,19 @@ whoever waits for it next, so one stuck exchange can no longer take a node's ses
 good. The third failure was the rollout's own catch: a node on the leaking build can't get past
 the first session to take the fix, so it needs a restart first.
 
+**The rollout stalled, the survey's first numbers.** The sink and N002 run e5935caa; the
+others still run builds with DEF-71 or DEF-74 and stopped taking offers: N001 and N004 went
+unheard within minutes (deaf, then a connection used their advertising set up), N005 was never
+heard after 14:42 (its battery read 2.55 V at 14:09), N006 and N007 are heard but take nothing.
+They need a restart or a wire. No Survey record goes out before every node runs e5935caa: an
+older node can't decode the new kind, and a record it can't decode in a session is the DEF-64
+hazard. The survey kept 290 bursts over 15 pairs in an hour, most of them N007's: a mobile tag
+bursts all the time, so tag links are now kept out of the anchor solve (shown on the page,
+marked). Anchor pairs had 1–8 bursts each at the 15 min cadence, the sink's one-path ones
+reading 1–2.5 m off the rest; solved in a local frame (the sink at the origin, N002 on +x),
+the residuals ran 3.7 times the sigma the solver believed: the medians' standard errors leave
+out each pair's bias, and the one-path links need their own offset.
+
 **A survey cadence, and control records one at a time.** Anchor links survey every 15 min, four
 bursts an hour per pair, too few for medians at ±1–6 m a burst. `Command::Survey { period_s }`
 sets the period on a node (10 s to an hour, 0 for the default) and brings the next surveys

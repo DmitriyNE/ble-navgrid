@@ -144,7 +144,7 @@ function render() {
   sb.innerHTML = '';
   for (const p of sv.pairs.slice().sort((a, b) => (a.a + a.b).localeCompare(b.a + b.b))) {
     const tr = document.createElement('tr');
-    const res = p.residual_m == null ? '' : `${p.residual_m >= 0 ? '+' : ''}${fmt(p.residual_m)}${p.cut ? ' cut' : ''}`;
+    const res = p.tag ? '<span class="muted">tag link, not in the survey</span>' : (p.residual_m == null ? '' : `${p.residual_m >= 0 ? '+' : ''}${fmt(p.residual_m)}${p.cut ? ' cut' : ''}`);
     tr.innerHTML = `<td>${p.a}–${p.b}</td><td class="r">${p.n} <span class="muted">${p.from_a}/${p.from_b}</span></td><td class="r">${fmt(p.median_m)}</td><td class="r">${fmt(p.spread_m)}</td><td class="r">${fmt(p.sigma_m)}</td>` +
       `<td class="r">${fmt(p.last_m)}</td><td class="r">${p.last_age_s ?? ''}</td><td class="r">${p.quality}</td><td class="r">${fmt(p.solved_m)}</td><td class="r ${fitClass(p)}">${res}</td>`;
     sb.appendChild(tr);
