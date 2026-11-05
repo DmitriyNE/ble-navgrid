@@ -673,7 +673,9 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
             }
             Timer::after(Duration::from_millis(200)).await;
         }
+        let mut slot = SessionSlot(Some(peer));
         let result = self.exchange(channel, first).await;
+        slot.0.take();
         status::count_session();
         let side = state::session_side();
         let theirs = state::end_session(peer);
@@ -995,6 +997,20 @@ impl<'s, 'a, 'd> Mesh<'s, 'a, 'd> {
                 warn!("connection parameters: no update within {} s", PARAMS_WITHIN.as_secs());
                 false
             }
+        }
+    }
+}
+
+/// Frees the node's one session slot if the session's future is dropped mid-exchange: a link
+/// that falls during a session takes its future with it, and the slot would otherwise stay
+/// taken for good, every later session on every link finding it busy (DEF-73, 2026-11-05).
+struct SessionSlot(Option<NodeId>);
+
+impl Drop for SessionSlot {
+    fn drop(&mut self) {
+        if let Some(peer) = self.0.take() {
+            warn!("session with {=u64:012x}: cut short, slot freed", peer.0);
+            let _ = state::end_session(peer);
         }
     }
 }
