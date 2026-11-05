@@ -4,6 +4,16 @@ Newest first. Conventions: [README](README.md).
 
 ## 2026-11-05
 
+**The office's plan under the map.** `serve --floorplan PNG` draws a plan under the 2D view;
+its scale, origin, rotation and opacity live in `floorplan.json` in the fleet directory and are
+set on the page (a two-point scale tool: click the ends of a known length, type it). The
+office's drawing (a PDF, kept out of the repository in `floorplans/`, excluded locally) was
+rendered with `sips`, flattened onto white and cropped with ImageMagick; its scale came from its
+own dimension chains (the 1000 + 50 mm chains every 44.55 pt, two 4750 mm segments 201.5 pt
+apart: 23.57 mm a point, 1.405 cm a pixel at 4000 px across), which the building's overall
+width on the plan, about 33.8 m, agrees with. Anchors placed approximately on the plan then
+solve in the plan's frame.
+
 **Approximate positions, and a frame that can't hang on a bad pair.** A pair can read short
 too (N006–N002 read 2.9 m short, and the user confirmed the shape that says so), so the
 one-sided rule alone can pick the wrong explanation: in a test, a short pair with the most

@@ -215,8 +215,8 @@ The fleet move (log 2026-11-04/05), next:
       bias fitted per link kind.
 - [ ] **Truth distances:** a `truth.json` of tape-measured pair distances in the fleet directory,
       shown against the medians, and a fit of the offset (DEF-6) from them.
-- [ ] **The floor plan under the map:** an image with a scale and origin, so pins and the
-      solution read against the walls.
+- [x] **The floor plan under the map** (2026-11-05): 2D only; in 3D still to do (a textured
+      floor needs the image split into triangles, canvas has no perspective transform).
 - [ ] **Range quality on anchor links:** the sink's one-path bursts read ±1–6 m at 7–13 m (log
       2026-11-05); more procedures per survey burst, and the first-path estimator on multipath
       (DEF-51).
