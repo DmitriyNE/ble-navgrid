@@ -165,6 +165,8 @@ pub struct Policy {
     links: Vec<LinkState, MAX_LINKS>,
     /// Peers not to connect to before the time given.
     retry: Vec<(NodeId, u64), 8>,
+    /// Connections to a peer that failed in a row, for the backoff.
+    failures: Vec<(NodeId, u8), 8>,
     /// Connections under way, with when to give up on them.
     pending: Vec<(NodeId, u64), 4>,
     /// The peer a burst runs with now.
@@ -189,6 +191,7 @@ impl Policy {
             heard: Vec::new(),
             links: Vec::new(),
             retry: Vec::new(),
+            failures: Vec::new(),
             pending: Vec::new(),
             busy: None,
             moving: role == Role::Anchor,
@@ -332,6 +335,7 @@ impl Policy {
     /// A link to `peer` came up.
     pub fn link_up(&mut self, peer: NodeId, central: bool, peer_role: Role, peer_sink: bool, now_ms: u64) {
         self.retry.retain(|(p, _)| *p != peer);
+        self.failures.retain(|(p, _)| *p != peer);
         self.pending.retain(|(p, _)| *p != peer);
         if self.link(peer).is_some() {
             return;
@@ -382,9 +386,25 @@ impl Policy {
     /// A connection attempt to `peer` failed.
     pub fn connect_failed(&mut self, peer: NodeId, now_ms: u64) {
         self.pending.retain(|(p, _)| *p != peer);
+        // Doubling with each failure in a row, up to the first-session backoff: a node
+        // initiating to a peer it can't reach neither advertises nor hears much meanwhile.
+        let failures = match self.failures.iter_mut().find(|(p, _)| *p == peer) {
+            Some((_, n)) => {
+                *n = n.saturating_add(1);
+                *n
+            }
+            None => {
+                if self.failures.is_full() {
+                    self.failures.swap_remove(0);
+                }
+                let _ = self.failures.push((peer, 1));
+                1
+            }
+        };
         let retry = u64::from(self.settings.retry_ms);
         let jitter = u64::from(self.jitter(retry as u32));
-        self.defer(peer, now_ms + retry / 2 + jitter);
+        let wait = (retry / 2) << failures.min(10);
+        self.defer(peer, now_ms + wait.min(FIRST_SESSION_RETRY_MS) + jitter);
     }
 
     fn defer(&mut self, peer: NodeId, until_ms: u64) {
@@ -899,6 +919,47 @@ mod tests {
         assert_eq!(t.next(CONNECT_TIMEOUT_MS + 3), Action::Connect(NodeId(2)));
         t.link_up(NodeId(2), true, Role::Anchor, false, CONNECT_TIMEOUT_MS + 500);
         assert!(matches!(t.next(CONNECT_TIMEOUT_MS + 501), Action::Burst(_)));
+    }
+
+    #[test]
+    fn failed_connects_to_a_peer_back_off_twice_as_long_each_time() {
+        let mut t = anchor(1);
+        let retry = u64::from(t.settings.retry_ms);
+        let peer = NodeId(900);
+        let mut now = 1;
+        t.heard(peer, beacon(Role::Anchor, 2), -50, now);
+        assert_eq!(t.next(now), Action::Connect(peer));
+        // The wait before each new attempt, keeping the beacon fresh meanwhile.
+        let wait_until_next_attempt = |t: &mut Policy, now: &mut u64| {
+            let deferred = *now;
+            loop {
+                *now += 1_000;
+                t.heard(peer, beacon(Role::Anchor, 2), -50, *now);
+                if t.next(*now) == Action::Connect(peer) {
+                    return *now - deferred;
+                }
+                assert!(*now - deferred <= FIRST_SESSION_RETRY_MS + retry, "capped");
+            }
+        };
+        let mut waits = Vec::<u64, 8>::new();
+        for _ in 0..5 {
+            t.connect_failed(peer, now);
+            let _ = waits.push(wait_until_next_attempt(&mut t, &mut now));
+        }
+        // Each wait is about twice the one before, until the cap.
+        for w in waits.windows(2) {
+            assert!(w[1] >= w[0] * 3 / 2 || w[0] >= FIRST_SESSION_RETRY_MS, "{:?}", waits);
+        }
+        assert!(waits[0] < retry * 2 && waits[4] > retry * 8, "{:?}", waits);
+        // A link that comes up forgets the failures.
+        t.link_up(peer, true, Role::Anchor, false, now);
+        t.link_down(peer, now + 1);
+        now += retry / 4 + 2; // a dropped link's own pause
+        t.heard(peer, beacon(Role::Anchor, 2), -50, now);
+        assert_eq!(t.next(now), Action::Connect(peer));
+        t.connect_failed(peer, now);
+        let wait = wait_until_next_attempt(&mut t, &mut now);
+        assert!(wait < retry * 2, "{wait} ms");
     }
 
     #[test]
