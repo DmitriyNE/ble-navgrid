@@ -70,8 +70,10 @@ impl Observation {
 /// Observations kept per pair; older ones go.
 pub const KEEP_PER_PAIR: usize = 1000;
 
-/// The smallest standard error believed for an aggregate, metres.
-const SIGMA_FLOOR_M: f32 = 0.05;
+/// The smallest sigma believed for a pair, metres: a pair's median carries a bias more bursts
+/// don't shrink (a reflected path reads long), so its sigma is never just the standard error. At
+/// a 5 cm floor one biased pair counted as 30σ and bent the whole solution (log 2026-11-05).
+const SIGMA_FLOOR_M: f32 = 0.25;
 
 /// The observations per pair, oldest first.
 #[derive(Default)]
@@ -266,7 +268,11 @@ mod tests {
         assert!(p.spread_m > 0.1 && p.spread_m < 0.3, "{}", p.spread_m);
         // Three bursts: the standard error of the median, from the larger of the spread and a
         // burst's own sigma, over the square root of the count.
-        assert!((p.sigma_m - 0.8 / 3f32.sqrt()).abs() < 1e-3, "{}", p.sigma_m);
+        assert!(
+            (p.sigma_m - (0.8 / 3f32.sqrt()).max(SIGMA_FLOOR_M)).abs() < 1e-3,
+            "{}",
+            p.sigma_m
+        );
         assert_eq!(p.last_m, 4.9);
         assert_eq!(p.quality, 220);
         // A window that leaves one burst: its own sigma.

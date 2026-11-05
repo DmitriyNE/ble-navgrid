@@ -274,16 +274,17 @@ impl Service {
             .collect();
         record_pins.retain(|(id, _)| !pins.iter().any(|(p, _)| p == id));
         let all_pins: Vec<(NodeId, [f32; 3])> = pins.iter().copied().chain(record_pins).collect();
+        // The reference is an anchor the solve places: a tag's or a routes-only node's height
+        // means nothing in the frame.
+        let anchor = |id: &NodeId| !crate::solve::left_out(&self.replica, Some(registry), *id);
         let (reference, z_ref) = if all_pins.len() >= 2 {
-            match all_pins.iter().find(|(id, _)| usable.contains(id)) {
+            match all_pins.iter().find(|(id, _)| usable.contains(id) && anchor(id)) {
                 Some(&(id, p)) => (id, p[2]),
                 None => return (Vec::new(), None),
             }
         } else {
-            match usable
-                .iter()
-                .max_by_key(|id| self.baro.latest().filter(|r| r.node == **id).count())
-            {
+            // The same one each solve, so the frame's zero doesn't wander: the lowest ID.
+            match usable.iter().filter(|id| anchor(id)).min_by_key(|id| id.0) {
                 Some(&id) => (id, 0.0),
                 None => return (Vec::new(), None),
             }
